@@ -573,7 +573,7 @@ const store = M_store;
 const E = process.env;
 const app = express();
 const origins = (E.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
-app.use(cors({ origin: (o, cb) => cb(null, !o || origins.includes(o) || origins.includes('*')), credentials: true }));
+app.use(cors({ origin: (o, cb) => cb(null, !o || origins.includes(o) || origins.includes('*') || /\.onrender\.com$/.test(o)), credentials: true }));
 app.use(express.json({ limit: '8mb' }));
 
 // Session id (cookie) — the one-attempt lock is keyed on it.
@@ -694,4 +694,6 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
   });
 });
 
+const __html = new URL('./index.html', import.meta.url);
+app.get(['/', '/app'], (req, res) => { try { res.type('html').send(fs.readFileSync(__html)); } catch (e) { res.status(404).send('index.html missing'); } });
 app.listen(E.PORT || 8787, () => console.log(`OneLink backend on :${E.PORT || 8787}${MOCK ? ' (MOCK)' : ''}`));
