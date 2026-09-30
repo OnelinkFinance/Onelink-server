@@ -616,7 +616,7 @@ const E = process.env;
 const app = express();
 const origins = (E.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
 app.use(cors({ origin: (o, cb) => cb(null, !o || origins.includes(o) || origins.includes('*') || /\.onrender\.com$/.test(o)), credentials: true }));
-app.use(express.json({ limit: '8mb' }));
+app.use(express.json({ limit: '12mb' }));
 
 // Session id (cookie) — the one-attempt lock is keyed on it.
 app.use((q, s, next) => {
@@ -734,6 +734,57 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
     source: MOCK ? 'Zoho Analytics · MOCK server' : 'Zoho Books + Zoho Analytics',
     validationId, checkedAt
   });
+});
+
+// ---- documents: stored in Upstash (survives restarts) + local disk cache ----
+const FILE_DIR = path.resolve('./data/files');
+app.post('/api/files', M_auth.requireAuth, async (q, s) => {
+  const { name, mime, data } = q.body || {};
+  if (!name || typeof data !== 'string' || !data) return s.status(400).json({ ok: false, error: 'name + data required' });
+  if (data.length > 10_000_000) return s.status(413).json({ ok: false, error: 'File over 7 MB' });
+  const id = crypto.randomUUID();
+  const meta = JSON.stringify({ name: String(name).slice(0, 200), mime: String(mime || 'application/octet-stream').slice(0, 100), by: q.user.name, at: Date.now() });
+  try {
+    fs.mkdirSync(FILE_DIR, { recursive: true });
+    fs.writeFileSync(path.join(FILE_DIR, id), data); fs.writeFileSync(path.join(FILE_DIR, id + '.json'), meta);
+    if (M_cloud.enabled) { await M_cloud.kvSet('onelink:file:' + id, data); await M_cloud.kvSet('onelink:filemeta:' + id, meta); }
+    s.json({ ok: true, id });
+  } catch (e) { console.error('File store failed:', e.message); s.status(502).json({ ok: false, error: 'Storage failed' }); }
+});
+app.get('/api/files/:id', M_auth.requireAuth, async (q, s) => {
+  const id = String(q.params.id);
+  if (!/^[0-9a-f-]{36}$/.test(id)) return s.status(400).end();
+  let data = null, meta = null;
+  const f = path.join(FILE_DIR, id);
+  if (fs.existsSync(f)) { data = fs.readFileSync(f, 'utf8'); meta = fs.readFileSync(f + '.json', 'utf8'); }
+  else if (M_cloud.enabled) { data = await M_cloud.kvGet('onelink:file:' + id); meta = await M_cloud.kvGet('onelink:filemeta:' + id); }
+  if (!data) return s.status(404).json({ ok: false, error: 'File not found' });
+  const m = JSON.parse(meta || '{}');
+  s.set({ 'Content-Type': m.mime || 'application/octet-stream', 'Content-Disposition': 'inline; filename="' + String(m.name || 'file').replace(/[^\w. -]/g, '_') + '"' });
+  s.send(Buffer.from(data, 'base64'));
+});
+
+// ---- Zoho Analytics discovery (lists what the server's Zoho login can see) ----
+app.get('/api/zoho/analytics-discover', async (q, s) => {
+  if (!E.DIAG_KEY || q.query.key !== E.DIAG_KEY) return s.status(403).json({ ok: false });
+  try {
+    const t = await accessToken(), base = 'https://analyticsapi.zoho.' + (E.ZOHO_DC || 'com') + '/restapi/v2';
+    const h = o => ({ headers: Object.assign({ Authorization: 'Zoho-oauthtoken ' + t }, o ? { 'ZANALYTICS-ORGID': o } : {}) });
+    const orgs = await (await fetch(base + '/orgs', h())).json();
+    const ws = await (await fetch(base + '/workspaces', h())).json();
+    const out = { orgs, workspaces: ws, views: {} };
+    const all = [].concat(ws?.data?.ownedWorkspaces || [], ws?.data?.sharedWorkspaces || []);
+    for (const w of all.slice(0, 10)) {
+      const v = await (await fetch(base + '/workspaces/' + w.workspaceId + '/views', h(w.orgId))).json();
+      out.views[w.workspaceName + ' (' + w.workspaceId + ', org ' + w.orgId + ')'] = (v?.data?.views || []).map(x => x.viewType + ' · ' + x.viewName + ' · ' + x.viewId);
+    }
+    if (q.query.view && q.query.ws && q.query.org) {
+      const cfg = encodeURIComponent(JSON.stringify({ responseFormat: 'json' }));
+      const r = await fetch(base + '/workspaces/' + q.query.ws + '/views/' + q.query.view + '/data?CONFIG=' + cfg, h(q.query.org));
+      const txt = await r.text(); out.sample = { status: r.status, body: txt.slice(0, 3000) };
+    }
+    s.json(out);
+  } catch (e) { s.status(502).json({ ok: false, error: e.message }); }
 });
 
 const __html = new URL('./index.html', import.meta.url);
