@@ -1,0 +1,6 @@
+[
+  { "Client ID": "C-1001", "Client Name": "Lino Venture Shipbrokers", "Company Name": "Lino Venture Shipbrokers LLC-FZ", "Allocated": 5000, "Used": 1020, "Available Balance": 3980, "Categories": "Licence renewal,Visa,Certificate" },
+  { "Client ID": "C-1002", "Client Name": "Tosin", "Company Name": "Tosin", "Allocated": 33450, "Used": 32715, "Available Balance": 735, "Categories": "Licence renewal,Visa" },
+  { "Client ID": "C-1003", "Client Name": "UpperMoon Foundation", "Company Name": "UpperMoon Foundation", "Allocated": 8000, "Used": 8000, "Available Balance": 0, "Categories": "Licence renewal" },
+  { "Client ID": "C-1004", "Client Name": "Google Holding", "Company Name": "Google Holding LTD", "Allocated": 2000, "Used": 750, "Available Balance": 1250, "Categories": "Certificate,Good standing" }
+]
