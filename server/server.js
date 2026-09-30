@@ -788,5 +788,30 @@ app.get('/api/zoho/analytics-discover', async (q, s) => {
 });
 
 const __html = new URL('./index.html', import.meta.url);
-app.get(['/', '/app'], (req, res) => { try { res.type('html').send(fs.readFileSync(__html)); } catch (e) { res.status(404).send('index.html missing'); } });
+// The Claude Design export has a few dates frozen at export time. Swap them for live ones as the page is served,
+// so every new export stays current without hand edits. A rule whose text is not found in an export simply does nothing.
+const TODAY = "new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })";
+const LIVE_RULES = [
+  // re-render every 30 s so the greeting, day line and times move on their own
+  ['this._sess = setInterval(() => this.checkSession(), 15000);', "this._sess = setInterval(() => this.checkSession(), 15000); this._live = setInterval(() => this.setState({ liveNow: Date.now() }), 30000);"],
+  ['clearInterval(this._sess);', 'clearInterval(this._sess); clearInterval(this._live);'],
+  [/dayLine: '[A-Z][a-z]+day · \d{1,2} [A-Z][a-z]+ \d{4}',/, "dayLine: new Date().toLocaleDateString('en-GB', { weekday: 'long' }) + ' · ' + " + TODAY + ','],
+  [/(requests · 18 March to )\d{1,2} [A-Z][a-z]+ \d{4}( · )/, "$1' + " + TODAY + " + '$2"],
+  [/' messages · \d{1,2} to \d{1,2} [A-Z][a-z]+ \d{4}'/, "' messages · updated live'"],
+  [/ — \d{1,2} to \d{1,2} [A-Z][a-z]+\.'/, ".'"]
+];
+let liveHtml = { mtime: 0, body: null };
+function servedHtml() {
+  const mtime = fs.statSync(__html).mtimeMs;
+  if (liveHtml.mtime !== mtime) {
+    let body = fs.readFileSync(__html, 'utf8'), hit = 0;
+    for (const [from, to] of LIVE_RULES) { const next = body.replace(from, to); if (next !== body) hit++; body = next; }
+    liveHtml = { mtime, body };
+    console.log('Live dates: applied', hit, 'of', LIVE_RULES.length, 'rules to index.html');
+  }
+  return liveHtml.body;
+}
+app.get(['/', '/app'], (req, res) => {
+  try { res.set('Cache-Control', 'no-cache').type('html').send(servedHtml()); } catch (e) { res.status(404).send('index.html missing'); }
+});
 app.listen(E.PORT || 8787, () => console.log(`OneLink backend on :${E.PORT || 8787}${MOCK ? ' (MOCK)' : ''}`));
