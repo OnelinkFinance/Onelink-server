@@ -536,6 +536,26 @@ function mount(app) {
     s.json({ ok: true, rev: db.rev });
   });
 
+  // Master Admin adds historical items the server does not have yet — ids already present are never touched.
+  // Each new item is slotted in by date ('09 Apr') so the newest-first order holds; existing order is kept.
+  app.post('/api/sync/merge', requireAuth, (q, s) => {
+    if (!isMaster(q.user)) return s.status(403).json({ ok: false });
+    const { col, items } = q.body || {};
+    if (!COLS.includes(col) || !Array.isArray(items)) return s.status(400).json({ ok: false, error: 'col + items[] required' });
+    const have = new Set(db[col].map(x => x.id));
+    const add = items.filter(x => x && typeof x.id === 'string' && !have.has(x.id));
+    if (!add.length) return s.json({ ok: true, added: 0, rev: db.rev });
+    const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const key = d => { const m = /^(\d{1,2}) ([A-Z][a-z]{2})/.exec(String(d || '')), i = m ? MO.indexOf(m[2]) : -1; return i >= 0 ? i * 100 + Number(m[1]) : 1e9; };
+    for (const it of add.sort((a, b) => key(b.date) - key(a.date))) {
+      const k = key(it.date), i = db[col].findIndex(x => key(x.date) < k);
+      if (i < 0) db[col].push(it); else db[col].splice(i, 0, it);
+    }
+    db.rev++; persist();
+    broadcast({ type: 'reload' });
+    s.json({ ok: true, added: add.length, rev: db.rev });
+  });
+
   app.post('/api/sync/put', requireAuth, (q, s) => {
     const { col, item } = q.body || {};
     if (!COLS.includes(col) || !item || typeof item.id !== 'string') return s.status(400).json({ ok: false, error: 'col + item.id required' });
