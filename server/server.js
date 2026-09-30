@@ -468,6 +468,35 @@ try { db = Object.assign(db, JSON.parse(fs.readFileSync(FILE, 'utf8'))); } catch
 let saveT = null;
 const persist = () => { clearTimeout(saveT); saveT = setTimeout(() => { fs.mkdirSync(path.dirname(FILE), { recursive: true }); fs.writeFileSync(FILE + '.tmp', JSON.stringify(db)); fs.renameSync(FILE + '.tmp', FILE); push('platform', JSON.stringify(db)); }, 150); };
 
+// Insert items whose id is not in db[col] yet. Each goes before the first entry older than it ('09 Apr'),
+// so the newest-first order holds; existing entries are never changed or reordered.
+const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const dateKey = d => { const m = /^(\d{1,2}) ([A-Z][a-z]{2})/.exec(String(d || '')), i = m ? MO.indexOf(m[2]) : -1; return i >= 0 ? i * 100 + Number(m[1]) : 1e9; };
+function mergeMissing(col, items) {
+  const have = new Set(db[col].map(x => x.id));
+  const add = items.filter(x => x && typeof x.id === 'string' && !have.has(x.id));
+  for (const it of add.sort((a, b) => dateKey(b.date) - dateKey(a.date))) {
+    const k = dateKey(it.date), i = db[col].findIndex(x => dateKey(x.date) < k);
+    if (i < 0) db[col].push(it); else db[col].splice(i, 0, it);
+  }
+  return add.length;
+}
+
+// ledger.json is the source of truth for the request history (rebuilt from the Alaan Card Invoices group).
+// It lives beside server.js, apart from the Claude Design export, and is applied on every start:
+// an empty server takes all of it; a server with data only gains the requests it is missing.
+try {
+  const L = JSON.parse(fs.readFileSync(new URL('./ledger.json', import.meta.url), 'utf8'));
+  if (!db.requests.length) {
+    for (const c of COLS) if (Array.isArray(L[c])) db[c] = L[c];
+    db.rev++; persist(); console.log('Ledger: loaded', db.requests.length, 'requests into an empty server.');
+  } else {
+    const n = mergeMissing('requests', L.requests || []);
+    if (n) { db.rev++; persist(); }
+    console.log('Ledger:', n ? 'added ' + n + ' missing requests.' : 'server already up to date.');
+  }
+} catch (e) { console.error('Ledger not applied:', e.message); }
+
 const clients = new Set(); // { res, user }
 const ops = u => u.dept === 'OPERATIONS' && !isMaster(u);
 // What each user may see
@@ -542,18 +571,11 @@ function mount(app) {
     if (!isMaster(q.user)) return s.status(403).json({ ok: false });
     const { col, items } = q.body || {};
     if (!COLS.includes(col) || !Array.isArray(items)) return s.status(400).json({ ok: false, error: 'col + items[] required' });
-    const have = new Set(db[col].map(x => x.id));
-    const add = items.filter(x => x && typeof x.id === 'string' && !have.has(x.id));
-    if (!add.length) return s.json({ ok: true, added: 0, rev: db.rev });
-    const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const key = d => { const m = /^(\d{1,2}) ([A-Z][a-z]{2})/.exec(String(d || '')), i = m ? MO.indexOf(m[2]) : -1; return i >= 0 ? i * 100 + Number(m[1]) : 1e9; };
-    for (const it of add.sort((a, b) => key(b.date) - key(a.date))) {
-      const k = key(it.date), i = db[col].findIndex(x => key(x.date) < k);
-      if (i < 0) db[col].push(it); else db[col].splice(i, 0, it);
-    }
+    const added = mergeMissing(col, items);
+    if (!added) return s.json({ ok: true, added: 0, rev: db.rev });
     db.rev++; persist();
     broadcast({ type: 'reload' });
-    s.json({ ok: true, added: add.length, rev: db.rev });
+    s.json({ ok: true, added, rev: db.rev });
   });
 
   app.post('/api/sync/put', requireAuth, (q, s) => {
