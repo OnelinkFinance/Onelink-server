@@ -258,7 +258,22 @@ export const TEMPLATE_RULES = [
   ["    if (this.state.settings.recheckBeforeRelease && !validated) return this.runZoho(id, 'credit');",
    "    if (!validated) return this.runZoho(id, 'credit');"],
   ["      zeroLine: zeroList.length + (zeroList.length === 1 ? ' open request has no client balance in Zoho' : ' open requests have no client balance in Zoho'),",
-   "      zeroLine: zeroList.length + (zeroList.length === 1 ? ' open request does not have sufficient balance in Zoho Analytics' : ' open requests do not have sufficient balance in Zoho Analytics'),"]
+   "      zeroLine: zeroList.length + (zeroList.length === 1 ? ' open request does not have sufficient balance in Zoho Analytics' : ' open requests do not have sufficient balance in Zoho Analytics'),"],
+  // Master Control: accounts and sign-ins update instantly and survive a reload
+  ["    return this.normAcct({ key: u.key, name: u.name, username: u.username, dept: u.dept, role: u.role, active: u.active, perms: u.perms || [], created: u.created, lastLogin: u.lastLogin || '—', locked: u.locked, pwHash: 'server' });",
+   "    return this.normAcct({ key: u.key, name: u.name, username: u.username, dept: u.dept, role: u.role, active: u.active, perms: u.perms || [], created: u.created, lastLogin: u.lastLogin || '—', locked: u.locked, online: !!u.online, passwordSet: u.passwordSet || '—', pwHash: 'server' });"],
+  ["      this._prevAccounts = next.accounts;\n      this.setState(next);\n    });\n  }",
+   "      this._prevAccounts = next.accounts;\n      this.setState(next);\n      if (isM) this.loadLoginLog();\n    });\n  }\n  /* Sign-in history from the server — Master Control shows it straight after a reload, not only new events. */\n  loadLoginLog() {\n    this.api('/api/admin/login-history').then(o => {\n      if (!o.ok || !Array.isArray(o.json)) return;\n      this.setState({ loginLog: o.json.map(x => ({ at: new Date(x.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }), kind: x.kind, who: x.who, detail: x.detail })) });\n    }).catch(() => {});\n  }"],
+  ["      this.flash(uf.mode === 'add' ? uf.name.trim() + ' can now sign in from any device' : 'Saved on the live server', null, 'ph ph-cloud-check');",
+   "      this.flash(uf.mode === 'add' ? uf.name.trim() + ' can now sign in from any device' : 'Saved on the live server', null, 'ph ph-cloud-check');\n      this.liveLoad(false);"],
+  ["    if (this.isLive()) return this.api('/api/admin/users/' + key + '/active', { method: 'POST', body: { active: on } }).then(o => this.flash(o.ok ? (this.users()[key].name + (on ? ' reactivated' : ' deactivated — signed out everywhere')) : 'The server refused the change', null, o.ok ? 'ph ph-cloud-check' : 'ph ph-prohibit'));",
+   "    if (this.isLive()) return this.api('/api/admin/users/' + key + '/active', { method: 'POST', body: { active: on } }).then(o => { this.flash(o.ok ? (this.users()[key].name + (on ? ' reactivated' : ' deactivated — signed out everywhere')) : 'The server refused the change', null, o.ok ? 'ph ph-cloud-check' : 'ph ph-prohibit'); if (o.ok) this.liveLoad(false); });"],
+  ["      if (this.isLive()) this.api('/api/admin/users/' + m.id, { method: 'DELETE' }).catch(() => {});",
+   "      if (this.isLive()) this.api('/api/admin/users/' + m.id, { method: 'DELETE' }).then(() => this.liveLoad(false)).catch(() => {});"],
+  ["          lastLogin: a.lastLogin, permCount:",
+   "          lastLogin: a.lastLogin, liveLine: a.locked ? 'Locked — wrong passwords' : a.online ? '● Online now' : '', liveFg: a.locked ? 'var(--fgRed)' : 'var(--fgGreen)', pwSet: a.passwordSet || '—', permCount:"],
+  ['<span style="width:118px; display:flex; flex-direction:column; gap:1px">\n                      <span style="font-size:11.5px; color:var(--ink3)">{{ ur.permCount }}</span>\n                      <span style="font-size:10.5px; color:var(--mut3)">seen {{ ur.lastLogin }}</span>',
+   '<span style="width:150px; display:flex; flex-direction:column; gap:1px">\n                      <span style="font-size:11.5px; color:var(--ink3)">{{ ur.permCount }}</span>\n                      <span style="font-size:10.5px; color:{{ ur.liveFg }}">{{ ur.liveLine }}</span>\n                      <span style="font-size:10.5px; color:var(--mut3)">last sign-in {{ ur.lastLogin }}</span>\n                      <span style="font-size:10.5px; color:var(--mut3)">password set {{ ur.pwSet }}</span>']
 ];
 
 // Returns { text, hit, total }. All-or-nothing: if any rule does not match exactly once, the input is returned unchanged.

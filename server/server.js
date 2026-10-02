@@ -19,6 +19,7 @@ const files = {
   users: path.resolve(process.env.USERS_FILE || './data/users.json'),
   platform: path.resolve(process.env.DATA_FILE || './data/platform.json')
 };
+files.loginhistory = path.join(path.dirname(files.users), 'login-history.json'); // survives restarts like users/platform
 async function cmd(args) {
   const r = await fetch(URL_, { method: 'POST', headers: { Authorization: 'Bearer ' + TOK, 'Content-Type': 'application/json' }, body: JSON.stringify(args) });
   if (!r.ok) throw new Error('Upstash ' + r.status);
@@ -425,7 +426,11 @@ const { push } = M_cloud;
 const FILE = path.resolve(process.env.USERS_FILE || './data/users.json');
 const IDLE_MS = 30 * 60 * 1000, LOCK_AFTER = 5, LOCK_MS = 15 * 60 * 1000;
 const sessions = new Map();           // token -> { user, last }
-const history = [];
+// Sign-in history: kept in data/login-history.json (and Upstash) so Master Control still has it after a restart.
+const HFILE = path.join(path.dirname(FILE), 'login-history.json');
+const history = (() => { try { return JSON.parse(fs.readFileSync(HFILE, 'utf8')); } catch { return []; } })();
+let hSaveT = null;
+const saveHistory = () => { clearTimeout(hSaveT); hSaveT = setTimeout(() => { const j = JSON.stringify(history); try { fs.mkdirSync(path.dirname(HFILE), { recursive: true }); fs.writeFileSync(HFILE, j); } catch {} push('loginhistory', j); }, 300); };
 let onEvent = () => {};               // set by sync layer for live broadcast
 const setBroadcast = fn => { onEvent = fn; };
 
@@ -440,7 +445,7 @@ const OPS = ['VIEW_DASHBOARD', 'VIEW_OPERATIONS_DASHBOARD', 'VIEW_OWN_REQUESTS',
 function seedTeam() {
   const pw = process.env.SEED_TEAM_PASSWORD;
   if (!pw || pw.length < 8) return [];
-  const mk = (key, name, dept) => ({ key, name, username: key + '@onelink.solutions', role: dept, dept, active: true, perms: dept === 'OPERATIONS' ? OPS : [], pw: hash(pw), failCount: 0, lockedUntil: 0, created: new Date().toISOString() });
+  const mk = (key, name, dept) => ({ key, name, username: key + '@onelink.solutions', role: dept, dept, active: true, perms: dept === 'OPERATIONS' ? OPS : [], pw: hash(pw), pwSetAt: new Date().toISOString(), failCount: 0, lockedUntil: 0, created: new Date().toISOString() });
   return [mk('adnan', 'Adnan', 'MANAGEMENT'), ...['amina', 'anastasiya', 'maram', 'musa', 'wafaa'].map(k => mk(k, k[0].toUpperCase() + k.slice(1), 'OPERATIONS'))];
 }
 function load() {
@@ -448,18 +453,23 @@ function load() {
     const pw = process.env.MASTER_ADMIN_PASSWORD;
     if (!pw || pw.length < 12) throw new Error('Set MASTER_ADMIN_PASSWORD (12+ chars) for the first start — it creates the Master Admin account.');
     fs.mkdirSync(path.dirname(FILE), { recursive: true });
-    save([{ key: 'sven', name: 'Sven', username: (process.env.MASTER_ADMIN_EMAIL || 'sven@onelink.solutions').toLowerCase(), role: 'MASTER_ADMIN', dept: 'FINANCE', active: true, perms: ['*'], pw: hash(pw), failCount: 0, lockedUntil: 0, created: new Date().toISOString() }, ...seedTeam()]);
+    save([{ key: 'sven', name: 'Sven', username: (process.env.MASTER_ADMIN_EMAIL || 'sven@onelink.solutions').toLowerCase(), role: 'MASTER_ADMIN', dept: 'FINANCE', active: true, perms: ['*'], pw: hash(pw), pwSetAt: new Date().toISOString(), failCount: 0, lockedUntil: 0, created: new Date().toISOString() }, ...seedTeam()]);
   }
   return JSON.parse(fs.readFileSync(FILE, 'utf8'));
 }
 function save(users) { const j = JSON.stringify(users, null, 2); fs.writeFileSync(FILE + '.tmp', j); fs.renameSync(FILE + '.tmp', FILE); push('users', j); }
-const pub = u => ({ key: u.key, name: u.name, username: u.username, role: u.role, dept: u.dept, active: u.active, perms: u.perms || [], created: u.created, lastLogin: u.lastLogin || '—', locked: (u.lockedUntil || 0) > Date.now() });
-const broadcastUsers = () => onEvent({ type: 'accounts', items: load().map(pub) });
+// Dubai time, as the rest of the platform shows it ('02 Oct · 14:05').
+const when = iso => { if (!iso) return '—'; const d = new Date(iso); if (isNaN(d)) return String(iso); return d.toLocaleString('en-GB', { timeZone: 'Asia/Dubai', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).replace(',', ' ·'); };
+const onlineKeys = () => { const k = new Set(); for (const v of sessions.values()) if (Date.now() - v.last <= IDLE_MS) k.add(v.user); return k; };
+const pub = (u, on = onlineKeys()) => ({ key: u.key, name: u.name, username: u.username, role: u.role, dept: u.dept, active: u.active, perms: u.perms || [], created: u.created,
+  lastLogin: when(u.lastLogin), lastLoginAt: u.lastLogin || null, online: on.has(u.key), passwordSetAt: u.pwSetAt || null, passwordSet: u.pwSetAt ? when(u.pwSetAt) : 'not recorded yet', // tracked from this version on
+  locked: (u.lockedUntil || 0) > Date.now() });
+const broadcastUsers = () => { const on = onlineKeys(); onEvent({ type: 'accounts', items: load().map(u => pub(u, on)) }); };
 
 function record(kind, who, detail, ip) {
   const e = { at: new Date().toISOString(), kind, who, detail, ip };
   history.unshift(e); history.length = Math.min(history.length, 500);
-  fs.appendFile(path.join(path.dirname(FILE), 'login-history.jsonl'), JSON.stringify(e) + '\n', () => {});
+  saveHistory();
   onEvent({ type: 'login', item: e });
 }
 
@@ -486,6 +496,12 @@ const keyFor = (username, users) => {
   return k;
 };
 
+setInterval(() => {
+  let gone = 0;
+  for (const [t, v] of sessions) if (Date.now() - v.last > IDLE_MS) { sessions.delete(t); gone++; }
+  if (gone) broadcastUsers();
+}, 60_000).unref();
+
 function mount(app) {
   app.post('/api/auth/login', (q, s) => {
     const id = String(q.body?.username || '').trim().toLowerCase(), pw = String(q.body?.password || '');
@@ -498,14 +514,14 @@ function mount(app) {
       u.failCount = (u.failCount || 0) + 1;
       const left = LOCK_AFTER - u.failCount;
       if (u.failCount >= LOCK_AFTER) { u.failCount = 0; u.lockedUntil = Date.now() + LOCK_MS; }
-      save(users);
+      save(users); broadcastUsers();
       return bad(401, left > 0 ? `Email or password is not right. ${left} attempt${left === 1 ? '' : 's'} left.` : 'Five wrong passwords — account locked for 15 minutes.', left > 0 ? 'FAILED' : 'LOCKED');
     }
     u.failCount = 0; u.lockedUntil = 0; u.lastLogin = new Date().toISOString(); save(users);
     const t = crypto.randomBytes(32).toString('base64url');
     sessions.set(t, { user: u.key, last: Date.now() });
     s.append('Set-Cookie', `ol_auth=${t}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${IDLE_MS / 1000}`);
-    record('SUCCESS', u.name, 'Signed in', q.ip);
+    record('SUCCESS', u.name, 'Signed in', q.ip); broadcastUsers();
     s.json({ ok: true, token: t, user: pub(u) });
   });
   // Operations user forgot their password → Sven is notified live (response never reveals whether the account exists)
@@ -524,20 +540,20 @@ function mount(app) {
     const ok = want.length >= 12 && code.length === want.length && crypto.timingSafeEqual(Buffer.from(code), Buffer.from(want));
     if (!ok) { record('FAILED', u ? u.name : 'master', 'Wrong recovery code', q.ip); return s.status(403).json({ ok: false, error: 'That recovery code is not right.' }); }
     if (pw.length < 12) return s.status(400).json({ ok: false, error: 'Use at least twelve characters.' });
-    u.pw = hash(pw); u.failCount = 0; u.lockedUntil = 0; u.active = true; save(users); kill(u.key);
-    record('RESET', u.name, 'Master password reset with the recovery code', q.ip);
+    u.pw = hash(pw); u.pwSetAt = new Date().toISOString(); u.failCount = 0; u.lockedUntil = 0; u.active = true; save(users); kill(u.key);
+    record('RESET', u.name, 'Master password reset with the recovery code', q.ip); broadcastUsers();
     s.json({ ok: true });
   });
-  app.post('/api/auth/logout', requireAuth, (q, s) => { sessions.delete(q.token); record('LOGOUT', q.user.name, 'Signed out', q.ip); s.json({ ok: true }); });
+  app.post('/api/auth/logout', requireAuth, (q, s) => { sessions.delete(q.token); record('LOGOUT', q.user.name, 'Signed out', q.ip); broadcastUsers(); s.json({ ok: true }); });
   app.get('/api/auth/me', requireAuth, (q, s) => s.json({ ok: true, user: pub(q.user) }));
 
-  app.get('/api/admin/users', requireAuth, requireMaster, (_q, s) => s.json(load().map(pub)));
+  app.get('/api/admin/users', requireAuth, requireMaster, (_q, s) => { const on = onlineKeys(); s.json(load().map(u => pub(u, on))); });
   app.post('/api/admin/users', requireAuth, requireMaster, (q, s) => {
     const b = q.body || {}, users = load(), username = String(b.username || '').trim().toLowerCase();
     if (!/.+@.+\..+/.test(username) || !b.name || String(b.password || '').length < 8) return s.status(400).json({ ok: false, error: 'Name, work email and an 8+ character password are required.' });
     if (users.some(u => u.username === username)) return s.status(409).json({ ok: false, error: 'An account already uses that email.' });
     const dept = b.dept || 'OPERATIONS';
-    const u = { key: keyFor(username, users), name: String(b.name), username, role: b.role || dept, dept, active: b.active !== false, perms: Array.isArray(b.perms) ? b.perms : (dept === 'OPERATIONS' ? OPS : []), pw: hash(String(b.password)), failCount: 0, lockedUntil: 0, created: new Date().toISOString() };
+    const u = { key: keyFor(username, users), name: String(b.name), username, role: b.role || dept, dept, active: b.active !== false, perms: Array.isArray(b.perms) ? b.perms : (dept === 'OPERATIONS' ? OPS : []), pw: hash(String(b.password)), pwSetAt: new Date().toISOString(), failCount: 0, lockedUntil: 0, created: new Date().toISOString() };
     users.push(u); save(users); record('USER_CREATED', q.user.name, u.name, q.ip); broadcastUsers(); s.json({ ok: true, user: pub(u) });
   });
   app.patch('/api/admin/users/:key', requireAuth, requireMaster, (q, s) => {
@@ -558,8 +574,8 @@ function mount(app) {
   app.post('/api/admin/users/:key/password', requireAuth, requireMaster, (q, s) => {
     const users = load(), u = users.find(x => x.key === q.params.key), pw = String(q.body?.password || '');
     if (!u || pw.length < 8) return s.status(400).json({ ok: false });
-    u.pw = hash(pw); u.failCount = 0; u.lockedUntil = 0; save(users); kill(u.key);
-    record('PASSWORD_RESET', q.user.name, u.name, q.ip); broadcastUsers(); s.json({ ok: true });
+    u.pw = hash(pw); u.pwSetAt = new Date().toISOString(); u.failCount = 0; u.lockedUntil = 0; save(users); kill(u.key);
+    record('PASSWORD_RESET', q.user.name, u.name, q.ip); broadcastUsers(); s.json({ ok: true, user: pub(u) });
   });
   app.delete('/api/admin/users/:key', requireAuth, requireMaster, (q, s) => {
     const users = load(), u = users.find(x => x.key === q.params.key);
@@ -568,6 +584,11 @@ function mount(app) {
     record('USER_DELETED', q.user.name, u.name, q.ip); broadcastUsers(); s.json({ ok: true });
   });
   app.get('/api/admin/login-history', requireAuth, requireMaster, (_q, s) => s.json(history.slice(0, 200)));
+  // One-glance account status for the Master Administrator. Passwords are scrypt hashes and can never be shown.
+  app.get('/api/admin/accounts-status', requireAuth, requireMaster, (_q, s) => {
+    const on = onlineKeys();
+    s.json(load().map(u => { const p = pub(u, on); return { name: p.name, username: p.username, role: p.role, active: p.active, locked: p.locked, online: p.online, lastSignIn: p.lastLogin, passwordLastSet: p.passwordSet }; }));
+  });
 }
 
 return { setBroadcast, load, pub, requireAuth, isMaster, mount };
@@ -670,7 +691,7 @@ function mount(app) {
   app.get('/api/sync/snapshot', requireAuth, (q, s) => {
     const u = q.user, out = { rev: db.rev, me: pub(u), empty: db.requests.length === 0 };
     for (const c of COLS) out[c] = db[c].filter(x => visible(u, c, x));
-    out.accounts = loadUsers().map(pub);
+    out.accounts = loadUsers().map(u => pub(u));
     s.json(out);
   });
 
