@@ -240,7 +240,7 @@ export const TEMPLATE_RULES = [
 ` },
   { start: '    const zeroList = s.requests.filter(', end: '      go: () => this.open(z.r.id)\n    }));',
     to: `    const zeroList = s.requests.filter(x => openStates.indexOf(x.status) >= 0 && typeof x.zohoBalance === 'number' && x.zohoBalance < x.requested)
-      .map(x => ({ r: x, available: x.zohoBalance }));
+      .map(x => ({ r: x, rec: {}, available: x.zohoBalance })); // rec kept: Master Control's tiles still read z.rec.missing
     const zeroAlerts = zeroList.slice(0, 6).map(z => ({
       client: z.r.person && z.r.person !== '—' ? z.r.person : z.r.company,
       company: z.r.company, by: uAll[z.r.by] ? uAll[z.r.by].name : z.r.by, amount: this.fmt(z.r.requested),
@@ -256,7 +256,9 @@ export const TEMPLATE_RULES = [
   ["    if (this.state.settings.requireZohoBeforeApprove && !validated) return this.runZoho(id, 'approve');",
    `    if (!validated) return this.runZoho(id, 'approve');\n    if (validated.ok !== true || validated.partialOnly) return this.flash('${INSUFFICIENT}', null, 'ph ph-flag');`],
   ["    if (this.state.settings.recheckBeforeRelease && !validated) return this.runZoho(id, 'credit');",
-   "    if (!validated) return this.runZoho(id, 'credit');"]
+   "    if (!validated) return this.runZoho(id, 'credit');"],
+  ["      zeroLine: zeroList.length + (zeroList.length === 1 ? ' open request has no client balance in Zoho' : ' open requests have no client balance in Zoho'),",
+   "      zeroLine: zeroList.length + (zeroList.length === 1 ? ' open request does not have sufficient balance in Zoho Analytics' : ' open requests do not have sufficient balance in Zoho Analytics'),"]
 ];
 
 // Returns { text, hit, total }. All-or-nothing: if any rule does not match exactly once, the input is returned unchanged.
