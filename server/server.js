@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import { patchPage } from './client-workflow.js';
 
 // ---- cloud.js ----
 const M_cloud = await (async () => {
@@ -50,8 +51,8 @@ return { enabled, kvGet, kvSet, push };
 // ---- zoho.js ----
 const M_zoho = await (async () => {
 const { kvGet, kvSet } = M_cloud;
-// Zoho OAuth refresh + Books contact lookup + Analytics balance row.
-// Client identity is EXACT-match only: spelling, spacing, punctuation and case.
+// Zoho OAuth refresh + Books client search/lookup + Analytics balance row.
+// Client identity is the Zoho Books contact_id picked from the live list — never a typed name.
 const E = process.env;
 const dc = () => E.ZOHO_DC || 'com';
 let token = null, tokenExp = 0, rt = E.ZOHO_REFRESH_TOKEN || null;
@@ -90,74 +91,151 @@ async function accessToken() {
 // Strict equality — no trimming, no case folding, no fuzzy matching, no guessing.
 const exact = (list, name, ...getters) => list.find(x => getters.some(g => g(x) === name)) || null;
 
-// Loose normaliser — used ONLY for the relevance check, never for identity.
+// Loose normaliser — used ONLY for the relevance check and search ranking, never for identity.
 const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
-async function booksFindContactExact(name) {
-  if (!E.ZOHO_BOOKS_ORG_ID) return { skipped: true };
+// Live sources. Defaults are the verified Elite OneLink org (Books) and the "Elite Onelink" workspace
+// (Analytics), whose CFD Customer Balances table is keyed by the Books contact_id. Env overrides all.
+const booksOrg = () => E.ZOHO_BOOKS_ORG_ID || '898300452';
+const zaOrg = () => E.ZOHO_ORG_ID || '926340534';
+const zaWs = () => E.ZOHO_WORKSPACE_ID || '3241925000000011002';
+const zaTable = () => E.ZA_BALANCE_TABLE || 'CFD Customer Balances';
+
+async function books(p, params) {
   const t = await accessToken();
-  const q = new URLSearchParams({ organization_id: E.ZOHO_BOOKS_ORG_ID, search_text: name, per_page: '200' });
-  const res = await fetch(`https://www.zohoapis.${dc()}/books/v3/contacts?${q}`, { headers: { Authorization: 'Zoho-oauthtoken ' + t } });
+  const q = new URLSearchParams({ organization_id: booksOrg(), ...params });
+  const res = await fetch(`https://www.zohoapis.${dc()}/books/v3/${p}?${q}`, { headers: { Authorization: 'Zoho-oauthtoken ' + t } });
+  if (res.status === 404) return null;
+  if (res.status === 429) throw Object.assign(new Error('Zoho Books rate limit'), { code: 'RATE' });
   if (!res.ok) throw Object.assign(new Error('Zoho Books ' + res.status), { code: 'BOOKS' });
-  const j = await res.json();
-  const hit = exact(j.contacts || [], name, c => c.contact_name, c => c.company_name);
-  return hit ? { contactId: hit.contact_id, contactName: hit.contact_name, companyName: hit.company_name } : null;
+  return res.json();
+}
+const contactOut = c => ({ contactId: String(c.contact_id), contactName: c.contact_name, companyName: c.company_name || '', status: c.status });
+
+// Type-ahead: active Books customers whose contact name or company name contains the typed letters.
+// Two narrow searches (search_text would also match emails and notes), merged, prefix matches first.
+const searchCache = new Map(); // term -> { at, list }
+async function booksSearchClients(term) {
+  const key = term.toLowerCase(), hit = searchCache.get(key);
+  if (hit && Date.now() - hit.at < 60_000) return hit.list;
+  const base = { contact_type: 'customer', filter_by: 'Status.Active', per_page: '25', sort_column: 'contact_name' };
+  const [byName, byCompany] = await Promise.all([
+    books('contacts', { ...base, contact_name_contains: term }),
+    books('contacts', { ...base, company_name_contains: term })
+  ]);
+  const seen = new Map();
+  for (const c of [...(byName?.contacts || []), ...(byCompany?.contacts || [])]) if (!seen.has(c.contact_id)) seen.set(c.contact_id, contactOut(c));
+  const n = norm(term), starts = c => norm(c.contactName).startsWith(n) || norm(c.companyName).startsWith(n) ? 0 : 1;
+  const list = [...seen.values()].sort((a, b) => starts(a) - starts(b) || a.contactName.localeCompare(b.contactName)).slice(0, 20);
+  searchCache.set(key, { at: Date.now(), list });
+  if (searchCache.size > 500) searchCache.delete(searchCache.keys().next().value);
+  return list;
 }
 
-async function analyticsFindClientExact(name) {
-  if (!E.ZOHO_VIEW_ID) return null; // balance table not shared yet — Books alone validates identity
-  const need = ['ZOHO_ORG_ID', 'ZOHO_WORKSPACE_ID', 'ZOHO_VIEW_ID'].filter(k => !E[k]);
-  if (need.length) throw Object.assign(new Error('Missing env: ' + need.join(', ')), { code: 'ENV' });
-  const t = await accessToken();
-  const C = col();
-  const esc = s => String(s).replace(/'/g, "''");
-  const crit = `("${C.client}" = '${esc(name)}' or "${C.company}" = '${esc(name)}')`;
-  const config = JSON.stringify({ responseFormat: 'json', criteria: crit });
-  const url = `https://analyticsapi.zoho.${dc()}/restapi/v2/workspaces/${E.ZOHO_WORKSPACE_ID}/views/${E.ZOHO_VIEW_ID}/data?CONFIG=${encodeURIComponent(config)}`;
-  const res = await fetch(url, { headers: { Authorization: 'Zoho-oauthtoken ' + t, 'ZANALYTICS-ORGID': E.ZOHO_ORG_ID } });
-  if (res.status === 429) throw Object.assign(new Error('Zoho Analytics rate limit'), { code: 'RATE' });
-  if (!res.ok) throw Object.assign(new Error('Zoho Analytics ' + res.status + ' ' + (await res.text()).slice(0, 200)), { code: 'ANALYTICS' });
-  const j = await res.json();
-  const rows = j.data || (j.response && j.response.result && j.response.result.rows) || [];
-  // Analytics criteria can be case-insensitive — re-check strictly here.
-  const hit = exact(rows, name, r => r[C.client], r => r[C.company]);
-  return hit ? toRecord(hit) : null;
+// The selected client, re-read from Books by its id — the browser never supplies the name.
+async function booksGetContact(contactId) {
+  if (!/^\d{1,30}$/.test(String(contactId || ''))) return null;
+  const j = await books('contacts/' + contactId, {});
+  return j && j.contact ? contactOut(j.contact) : null;
 }
 
+// Requests created before the dropdown only carry a name: exact match on contact or company name.
+async function booksFindContactExact(name) {
+  const j = await books('contacts', { search_text: name, per_page: '200' });
+  const hit = exact(j?.contacts || [], name, c => c.contact_name, c => c.company_name);
+  return hit ? contactOut(hit) : null;
+}
+
+// Columns of the balance table. Own env names (ZA_BALANCE_*), so settings left over from the
+// earlier per-view lookup (ZA_COL_*) cannot point the live check at the wrong columns.
 function col() {
   return {
-    client: E.ZA_COL_CLIENT || 'Client Name', company: E.ZA_COL_COMPANY || 'Company Name', id: E.ZA_COL_CLIENT_ID || 'Client ID',
-    allocated: E.ZA_COL_ALLOCATED || 'Allocated', used: E.ZA_COL_USED || 'Used',
-    available: E.ZA_COL_AVAILABLE || 'Available Balance', categories: E.ZA_COL_CATEGORIES || 'Categories'
+    id: E.ZA_BALANCE_ID_COL || 'Resolved Customer ID', client: E.ZA_BALANCE_NAME_COL || 'Resolved Customer Name', company: E.ZA_BALANCE_COMPANY_COL || '',
+    allocated: E.ZA_BALANCE_CREDITS_COL || 'Credits AED', used: E.ZA_BALANCE_DEBITS_COL || 'Debits AED',
+    available: E.ZA_BALANCE_COL || 'Balance AED', categories: E.ZA_BALANCE_CATEGORIES_COL || ''
   };
 }
 const num = v => Number(String(v ?? '').replace(/[^0-9.-]/g, '')) || 0;
 function toRecord(r) {
   const C = col();
   return {
-    clientId: r[C.id] || null, clientName: r[C.client] || '', companyName: r[C.company] || '',
+    clientId: r[C.id] || null, clientName: r[C.client] || '', companyName: C.company ? r[C.company] || '' : '',
     allocated: num(r[C.allocated]), used: num(r[C.used]),
-    available: r[C.available] !== undefined ? num(r[C.available]) : num(r[C.allocated]) - num(r[C.used]),
-    categories: String(r[C.categories] || '').split(',').map(s => s.trim()).filter(Boolean)
+    available: r[C.available] !== undefined && r[C.available] !== '' ? num(r[C.available]) : num(r[C.allocated]) - num(r[C.used]),
+    categories: C.categories ? String(r[C.categories] || '').split(',').map(s => s.trim()).filter(Boolean) : []
   };
 }
 
-return { zohoReady, accessToken, exact, norm, booksFindContactExact, analyticsFindClientExact, col, toRecord };
+function parseCsv(text) {
+  const rows = [];
+  let row = [], cur = '', q = false;
+  const s = String(text || '').replace(/^﻿/, '');
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (q) { if (ch === '"') { if (s[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+    else if (ch === '"') q = true;
+    else if (ch === ',') { row.push(cur); cur = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && s[i + 1] === '\n') i++; row.push(cur); rows.push(row); row = []; cur = ''; }
+    else cur += ch;
+  }
+  if (cur || row.length) { row.push(cur); rows.push(row); }
+  const [head, ...body] = rows.filter(r => r.length > 1 || r[0]);
+  return body.map(r => Object.fromEntries((head || []).map((h, i) => [h, r[i]])));
+}
+
+// Live balance for one Books contact, read from Zoho Analytics with a SQL export job
+// (the balance table is a query table, which the synchronous view export does not serve).
+async function analyticsBalance(contactId) {
+  if (!/^\d{1,30}$/.test(String(contactId || ''))) return null;
+  const t = await accessToken(), C = col();
+  const h = { headers: { Authorization: 'Zoho-oauthtoken ' + t, 'ZANALYTICS-ORGID': zaOrg() } };
+  const base = `https://analyticsapi.zoho.${dc()}/restapi/v2/bulk/workspaces/${zaWs()}`;
+  const fail = async (res, what) => {
+    if (res.status === 429) throw Object.assign(new Error('Zoho Analytics rate limit'), { code: 'RATE' });
+    throw Object.assign(new Error(`Zoho Analytics ${what} ${res.status} ${(await res.text()).slice(0, 200)}`), { code: 'ANALYTICS' });
+  };
+  const sql = `select * from "${zaTable().replace(/"/g, '')}" where "${C.id.replace(/"/g, '')}" = ${contactId}`;
+  const r1 = await fetch(`${base}/data?CONFIG=${encodeURIComponent(JSON.stringify({ sqlQuery: sql, responseFormat: 'csv' }))}`, h);
+  if (!r1.ok) await fail(r1, 'export');
+  const jobId = (await r1.json())?.data?.jobId;
+  if (!jobId) throw Object.assign(new Error('Zoho Analytics returned no export job'), { code: 'ANALYTICS' });
+  for (let i = 0, wait = 400; i < 30; i++, wait = Math.min(wait * 1.5, 2000)) {
+    await new Promise(r => setTimeout(r, wait));
+    const r2 = await fetch(`${base}/exportjobs/${jobId}`, h);
+    if (!r2.ok) await fail(r2, 'job');
+    const code = String((await r2.json())?.data?.jobCode || '');
+    if (code === '1003' || code === '1005') throw Object.assign(new Error('Zoho Analytics export job failed (' + code + ')'), { code: 'ANALYTICS' });
+    if (code !== '1004') continue;
+    const r3 = await fetch(`${base}/exportjobs/${jobId}/data`, h);
+    if (!r3.ok) await fail(r3, 'download');
+    const hit = parseCsv(await r3.text()).find(r => String(r[C.id]).replace(/\.0+$/, '') === String(contactId));
+    return hit ? toRecord(hit) : null;
+  }
+  throw Object.assign(new Error('Zoho Analytics export timed out'), { code: 'ANALYTICS' });
+}
+
+return { zohoReady, accessToken, exact, norm, booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, col, toRecord, config: () => ({ booksOrg: booksOrg(), analyticsOrg: zaOrg(), workspace: zaWs(), table: zaTable() }) };
 })();
 
 // ---- rules.js ----
 const M_rules = await (async () => {
 const { norm } = M_zoho;
 // The approval rules, in one pure function so they can be unit-tested.
+// Live data only: the Books contact and the Analytics balance row are passed in by the caller.
 
 const STATUS = {
-  APPROVED: 'Approved (Pending Sven Final Check)',
-  PARTIAL: 'Partially Approved',
+  PROVISIONAL: 'Partially Approved – pending final confirmation with Sven',
+  FLAGGED: 'Flagged – Sven review',
   NOT: 'Not Approved'
 };
+const MSG = {
+  NOT_FOUND: 'Client not found in Zoho Books. Cannot proceed.',
+  INSUFFICIENT: 'Client does not have sufficient balance in Zoho Analytics. Flagging Sven for review.',
+  PASSED: 'Partially Approved – pending final confirmation with Sven.'
+};
 
-// Relevance: the purpose must fall in a category the client's MCP ledger covers,
-// and the request's company must belong to the matched client record.
+// Relevance: the purpose must fall in a category the client's ledger covers (when it lists any),
+// and the request's company must belong to the matched client record (when it names one).
 function relevance(req, rec) {
   const p = norm(req.purpose);
   const catOk = !rec.categories.length || rec.categories.some(c => { const n = norm(c); return n && (p.includes(n) || n.includes(p)); });
@@ -166,30 +244,32 @@ function relevance(req, rec) {
   return { ok: catOk && coOk, catOk, coOk };
 }
 
+// books: the Zoho Books contact (required). rec: its Zoho Analytics balance row (null = no balance).
+// Nothing here ever grants final approval — the best outcome is provisional, pending Sven.
 function decide({ req, books, rec }) {
   const requested = Number(req.requestedAmount) || 0;
-  const booksMatched = !!(books && !books.skipped);
-  const analyticsMatched = !!rec;
-  const base = { requested, booksMatched, analyticsMatched, booksContactId: booksMatched ? books.contactId : null };
+  const base = { requested, booksMatched: !!books, analyticsMatched: !!rec, booksContactId: books ? books.contactId : null, flagSven: true };
 
-  // 1. Client name must exist in Zoho Books OR Zoho Analytics.
-  if (!booksMatched && !analyticsMatched) return { ...base, ok: false, clientMatched: false, relevancePassed: false, reason: 'CLIENT_NOT_FOUND', approvalStatus: STATUS.NOT, approvedAmount: 0, flagSven: true, notes: 'Client name not found in Zoho Books or Zoho Analytics — rejected.' };
-  // Balance only lives in Analytics; a Books-only match has no balance to release against.
-  if (!analyticsMatched) return { ...base, ok: false, clientMatched: true, relevancePassed: false, available: 0, reason: 'NO_ANALYTICS_RECORD', approvalStatus: STATUS.NOT, approvedAmount: 0, flagSven: true, notes: 'Client exists in Zoho Books but has no balance record in Zoho Analytics.' };
+  // 1. The client must exist in Zoho Books.
+  if (!books) return { ...base, ok: false, clientMatched: false, relevancePassed: false, available: 0, reason: 'CLIENT_NOT_FOUND', approvalStatus: STATUS.NOT, approvedAmount: 0, notes: MSG.NOT_FOUND };
 
-  const out = { ...base, clientMatched: true, clientId: rec.clientId, companyName: rec.companyName || req.company, available: rec.available, allocated: rec.allocated, used: rec.used };
+  const out = { ...base, clientMatched: true, clientId: books.contactId, companyName: books.companyName || req.company };
+  // 2. The balance must be validated in Zoho Analytics — no row means no validated balance.
+  if (!rec) return { ...out, ok: false, relevancePassed: false, available: 0, allocated: 0, used: 0, remaining: 0, reason: 'NO_ANALYTICS_RECORD', approvalStatus: STATUS.FLAGGED, approvedAmount: 0, notes: MSG.INSUFFICIENT + ' (No balance record for this client in Zoho Analytics.)' };
+  Object.assign(out, { available: rec.available, allocated: rec.allocated, used: rec.used });
 
-  // 3. Relevance to the client's MCP data.
+  // 3. Relevance to the client's ledger.
   const rel = relevance(req, rec);
-  if (!rel.ok) return { ...out, ok: false, relevancePassed: false, remaining: rec.available, reason: 'NOT_RELEVANT', approvalStatus: STATUS.NOT, approvedAmount: 0, flagSven: true, notes: !rel.catOk ? `Purpose "${req.purpose}" is not a category on the client's ledger (${rec.categories.join(', ')}).` : `Company "${req.company}" does not belong to this client record.` };
+  if (!rel.ok) return { ...out, ok: false, relevancePassed: false, remaining: rec.available, reason: 'NOT_RELEVANT', approvalStatus: STATUS.FLAGGED, approvedAmount: 0, notes: !rel.catOk ? `Purpose "${req.purpose}" is not a category on the client's ledger (${rec.categories.join(', ')}).` : `Company "${req.company}" does not belong to this client record.` };
 
-  // 2/4/5. Balance.
-  if (rec.available <= 0) return { ...out, ok: false, relevancePassed: true, remaining: 0, reason: 'ZERO_AVAILABLE_BALANCE', approvalStatus: STATUS.NOT, approvedAmount: 0, flagSven: true, notes: 'Zero client balance in Zoho Analytics.' };
-  if (rec.available < requested) return { ...out, ok: true, partialOnly: true, relevancePassed: true, remaining: 0, reason: 'PARTIAL_BALANCE', approvalStatus: STATUS.PARTIAL, approvedAmount: rec.available, flagSven: true, notes: `Capped at available balance ${rec.available}; ${requested - rec.available} short. Needs Sven final confirmation.` };
-  return { ...out, ok: true, relevancePassed: true, remaining: rec.available - requested, reason: 'VALIDATION_PASSED', approvalStatus: STATUS.APPROVED, approvedAmount: requested, flagSven: true, notes: 'Full balance available. Pending Sven final check.' };
+  // 4. Zero or insufficient balance → flag Sven; nothing approved.
+  if (rec.available <= 0 || rec.available < requested) return { ...out, ok: false, relevancePassed: true, remaining: Math.max(0, rec.available), reason: 'INSUFFICIENT_BALANCE', approvalStatus: STATUS.FLAGGED, approvedAmount: 0, notes: MSG.INSUFFICIENT };
+
+  // 5. Sufficient → provisional only; Sven gives the final confirmation.
+  return { ...out, ok: true, relevancePassed: true, remaining: rec.available - requested, reason: 'VALIDATION_PASSED', approvalStatus: STATUS.PROVISIONAL, approvedAmount: requested, notes: MSG.PASSED };
 }
 
-return { STATUS, relevance, decide };
+return { STATUS, MSG, relevance, decide };
 })();
 
 // ---- sheets.js ----
@@ -197,7 +277,8 @@ const M_sheets = await (async () => {
 
 // Finance_Approval_Records — append-only log with frozen header + status colours.
 
-const HEADER = ['Client Name', 'Company Name', 'Amount Requested', 'Amount Approved', 'Approval Status', 'Zoho Analytics Balance', 'Notes / Flags'];
+const HEADER = ['Client Name', 'Company Name', 'Amount Requested', 'Amount Approved', 'Approval Status', 'Zoho Analytics Balance', 'Notes / Flags', 'Timestamp', 'Reviewer'];
+const LAST = String.fromCharCode(64 + HEADER.length); // 'I'
 let api = null, sheetId = null, ready = false;
 
 function client() {
@@ -221,34 +302,40 @@ async function ensure(s, id) {
     sheetId = r.data.replies[0].addSheet.properties.sheetId;
   } else sheetId = sh.properties.sheetId;
 
-  const head = await s.spreadsheets.values.get({ spreadsheetId: id, range: `${tab()}!A1:G1` });
-  if (!head.data.values || !head.data.values.length) {
-    await s.spreadsheets.values.update({ spreadsheetId: id, range: `${tab()}!A1:G1`, valueInputOption: 'RAW', requestBody: { values: [HEADER] } });
-    const range = { sheetId, startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 7 };
+  // A new tab gets the full header; an older 7-column tab gains Timestamp + Reviewer. Data rows are never touched.
+  const head = await s.spreadsheets.values.get({ spreadsheetId: id, range: `${tab()}!A1:${LAST}1` });
+  const have = (head.data.values && head.data.values[0]) || [];
+  if (have.join('|') !== HEADER.join('|')) {
+    await s.spreadsheets.values.update({ spreadsheetId: id, range: `${tab()}!A1:${LAST}1`, valueInputOption: 'RAW', requestBody: { values: [HEADER] } });
+    const range = { sheetId, startRowIndex: 1, startColumnIndex: 0, endColumnIndex: HEADER.length };
     const rule = (formula, color, index) => ({ addConditionalFormatRule: { index, rule: { ranges: [range], booleanRule: { condition: { type: 'CUSTOM_FORMULA', values: [{ userEnteredValue: formula }] }, format: { backgroundColor: rgb(color) } } } } });
     await s.spreadsheets.batchUpdate({ spreadsheetId: id, requestBody: { requests: [
       { updateSheetProperties: { properties: { sheetId, gridProperties: { frozenRowCount: 1 } }, fields: 'gridProperties.frozenRowCount' } },
       { repeatCell: { range: { sheetId, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { textFormat: { bold: true } } }, fields: 'userEnteredFormat.textFormat.bold' } },
       { repeatCell: { range: { sheetId, startRowIndex: 1, startColumnIndex: 2, endColumnIndex: 4 }, cell: { userEnteredFormat: { numberFormat: { type: 'NUMBER', pattern: '#,##0.00' } } }, fields: 'userEnteredFormat.numberFormat' } },
       { repeatCell: { range: { sheetId, startRowIndex: 1, startColumnIndex: 5, endColumnIndex: 6 }, cell: { userEnteredFormat: { numberFormat: { type: 'NUMBER', pattern: '#,##0.00' } } }, fields: 'userEnteredFormat.numberFormat' } },
-      rule('=REGEXMATCH($E2,"^Approved")', '#d9ead3', 0),
-      rule('=$E2="Partially Approved"', '#fff2cc', 1),
+      rule('=REGEXMATCH($E2,"^Partially Approved")', '#d9ead3', 0),
+      rule('=REGEXMATCH($E2,"^Flagged")', '#fff2cc', 1),
       rule('=$E2="Not Approved"', '#f4cccc', 2)
     ] } });
   }
   ready = true;
 }
 
+// USER_ENTERED keeps numbers numeric; text that starts like a formula ('=', '+', '-', '@') stays text.
+const txt = v => /^[=+\-@]/.test(String(v ?? '')) ? "'" + v : (v ?? '');
+
+// row: one funding-check record as exported to the group chat (see exportRecord in server.js).
 async function appendRecord(row) {
   const s = client();
   if (!s) return { written: false, why: 'GOOGLE_SHEET_ID / GOOGLE_SERVICE_ACCOUNT_B64 not set' };
   const id = process.env.GOOGLE_SHEET_ID;
   await ensure(s, id);
   const r = await s.spreadsheets.values.append({
-    spreadsheetId: id, range: `${tab()}!A:G`, valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS',
-    requestBody: { values: [[row.clientName, row.companyName, row.requested, row.approved, row.status, row.balance, row.notes]] }
+    spreadsheetId: id, range: `${tab()}!A:${LAST}`, valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: [[txt(row.clientName), txt(row.companyName), row.requested, row.approved, txt(row.status), row.balance, txt(row.notes), txt(row.timestamp), txt(row.reviewer)]] }
   });
-  await s.spreadsheets.batchUpdate({ spreadsheetId: id, requestBody: { requests: [{ autoResizeDimensions: { dimensions: { sheetId, dimension: 'COLUMNS', startIndex: 0, endIndex: 7 } } }] } });
+  await s.spreadsheets.batchUpdate({ spreadsheetId: id, requestBody: { requests: [{ autoResizeDimensions: { dimensions: { sheetId, dimension: 'COLUMNS', startIndex: 0, endIndex: HEADER.length } } }] } });
   return { written: true, range: r.data.updates.updatedRange };
 }
 
@@ -541,7 +628,7 @@ function mayWrite(u, col, item, prev) {
 function upsert(col, item) {
   const list = db[col], i = list.findIndex(x => x.id === item.id);
   const prev = i >= 0 ? list[i] : null;
-  if (i >= 0) list[i] = item; else list.unshift(item);
+  if (i >= 0) list[i] = item; else if (col === 'chat') list.push(item); else list.unshift(item); // chat is oldest-first, the rest newest-first
   if (col === 'audit' && list.length > 5000) list.length = 5000;
   db.rev++; persist();
   return prev;
@@ -601,12 +688,19 @@ function mount(app) {
   app.get('/api/sync/health', (_q, s) => s.json({ ok: true, rev: db.rev, online: clients.size }));
 }
 
-return { mount };
+// Server-authored items (funding-check results): stored and pushed live like any user write.
+function postSystem(col, item) {
+  upsert(col, item);
+  broadcast({ type: 'put', col, item, rev: db.rev, by: 'system' }, col, item);
+  return item;
+}
+
+return { mount, postSystem };
 })();
 
 // ---- server.js ----
-const { booksFindContactExact, analyticsFindClientExact, toRecord, exact, col, accessToken, zohoReady } = M_zoho;
-const { decide } = M_rules;
+const { booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, accessToken, zohoReady, config: zohoConfig } = M_zoho;
+const { decide, MSG } = M_rules;
 const { appendRecord } = M_sheets;
 const gate = M_gate;
 const auth = M_auth;
@@ -631,19 +725,8 @@ store.mount(app);
 // Every Zoho route requires a signed-in session — no guest or anonymous access.
 app.use('/api/zoho', auth.requireAuth);
 
-const MOCK = E.ZOHO_MOCK === '1';
-const mockRows = MOCK ? JSON.parse(fs.readFileSync(new URL('./scripts/mock-clients.json', import.meta.url))) : [];
-const NOT_FOUND_MSG = 'Client name not found in Zoho Books or Zoho Analytics. Fund request cannot be created.';
-
-async function findExact(name) {
-  if (MOCK) {
-    const C = col();
-    const hit = exact(mockRows, name, r => r[C.client], r => r[C.company]);
-    return { books: hit ? { contactId: 'MOCK-' + hit[C.id] } : null, rec: hit ? toRecord(hit) : null };
-  }
-  const [books, rec] = await Promise.all([booksFindContactExact(name), analyticsFindClientExact(name)]);
-  return { books, rec };
-}
+const NOT_FOUND_MSG = MSG.NOT_FOUND;
+const REVIEWER = 'Sven';
 const zohoErr = (s, e) => s.status(e.code === 'ENV' ? 500 : e.code === 'AUTH' ? 401 : e.code === 'RATE' ? 429 : 502)
   .json({ ok: false, reason: 'ZOHO_UNAVAILABLE', code: e.code, error: e.message });
 
@@ -653,38 +736,91 @@ async function notifySven(text, extra) {
   catch { return false; }
 }
 
-app.get('/api/health', async (_q, s) => s.json({ ok: true, mock: MOCK, zoho: MOCK ? 'mock' : await zohoReady, books: !!E.ZOHO_BOOKS_ORG_ID, analytics: !!E.ZOHO_VIEW_ID, time: new Date().toISOString() }));
+// Dubai time, in the formats the platform already uses ('02 Oct', '14:05', '02 Oct · 14:05').
+function stamp(d = new Date()) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Dubai', year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(d).map(x => [x.type, x.value]));
+  const mo = String(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(p.month) + 1).padStart(2, '0');
+  return { day: Number(p.day) + ' ' + p.month, at: p.hour + ':' + p.minute, both: p.day + ' ' + p.month + ' · ' + p.hour + ':' + p.minute, sheet: `${p.year}-${mo}-${p.day} ${p.hour}:${p.minute}:${p.second} GST` };
+}
+const aed = n => 'AED ' + Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
+
+app.get('/api/health', async (_q, s) => s.json({ ok: true, zoho: await zohoReady, live: zohoConfig(), sheet: !!(E.GOOGLE_SHEET_ID && E.GOOGLE_SERVICE_ACCOUNT_B64), time: new Date().toISOString() }));
 
 app.get('/api/zoho/test', async (_q, s) => {
-  if (MOCK) return s.json({ ok: true, mock: true });
-  try { await accessToken(); s.json({ ok: true, oauth: 'refreshed' }); } catch (e) { zohoErr(s, e); }
+  try { await accessToken(); s.json({ ok: true, oauth: 'refreshed', live: zohoConfig() }); } catch (e) { zohoErr(s, e); }
 });
 
-// STEP 1 — exact client check. One attempt; a miss locks the session.
+// STEP 1a — type-ahead. Live Zoho Books customers matching the typed letters (2+).
+app.get('/api/zoho/clients', async (q, s) => {
+  const term = typeof q.query.q === 'string' ? q.query.q.trim().slice(0, 100) : '';
+  if (term.length < 2) return s.json({ ok: true, clients: [], tooShort: true });
+  try {
+    const clients = await booksSearchClients(term);
+    s.json({ ok: true, clients, notFound: !clients.length, message: clients.length ? '' : NOT_FOUND_MSG, source: 'Zoho Books · live' });
+  } catch (e) { zohoErr(s, e); }
+});
+
+// Live Analytics balance in the shape the browser shows.
+const balanceOut = rec => rec
+  ? { found: true, available: rec.available, allocated: rec.allocated, used: rec.used, source: 'Zoho Analytics · live' }
+  : { found: false, available: 0, allocated: 0, used: 0, source: 'Zoho Analytics · live' };
+
+// STEP 1b — the user picked a client from the list. Only a Books contact_id is accepted: the name is
+// re-read from Zoho Books, so nothing typed by hand can become a client. The balance is fetched right away.
 app.post('/api/zoho/validate-client', async (q, s) => {
   const lk = gate.locked(q.sid);
   if (lk) return s.status(423).json({ found: false, locked: true, reason: 'WORKFLOW_LOCKED', error: NOT_FOUND_MSG, lockedName: lk.name });
-  const name = typeof q.body?.clientName === 'string' ? q.body.clientName : '';
-  if (!name) return s.status(400).json({ found: false, reason: 'BAD_REQUEST', error: 'clientName required' });
+  const contactId = String(q.body?.contactId ?? '');
+  if (!/^\d{1,30}$/.test(contactId)) return s.status(400).json({ found: false, reason: 'SELECT_FROM_LIST', error: 'Select the client from the Zoho Books list — typed names are not accepted.' });
 
-  let found;
-  try { found = await findExact(name); } catch (e) { return zohoErr(s, e); }
-  const booksHit = !!(found.books && !found.books.skipped), analyticsHit = !!found.rec;
-
-  if (!booksHit && !analyticsHit) {
-    gate.lock(q.sid, name);
-    await notifySven(`BLOCKED — fund request attempted for "${name}", not in Zoho Books or Zoho Analytics.`, { clientName: name });
+  let books;
+  try { books = await booksGetContact(contactId); } catch (e) { return zohoErr(s, e); }
+  if (!books || books.status !== 'active') {
+    gate.lock(q.sid, contactId);
+    await notifySven(`BLOCKED — fund request attempted for Zoho Books contact ${contactId}, which is not an active client.`, { contactId });
     return s.status(422).json({ found: false, locked: true, reason: 'CLIENT_NOT_FOUND', error: NOT_FOUND_MSG });
   }
-  const matchedIn = booksHit && analyticsHit ? 'Zoho Books + Analytics' : booksHit ? 'Zoho Books' : 'Zoho Analytics';
-  const clientId = found.rec?.clientId || found.books?.contactId || null;
-  s.json({ found: true, clientName: name, clientId, matchedIn, token: gate.issue(name, clientId, matchedIn) });
+  let balance;
+  try { balance = balanceOut(await analyticsBalance(books.contactId)); } catch (e) { balance = { found: false, error: e.message, source: 'Zoho Analytics · not reachable' }; }
+  s.json({
+    found: true, clientName: books.contactName, companyName: books.companyName, clientId: books.contactId, matchedIn: 'Zoho Books',
+    token: gate.issue(books.contactName, books.contactId, 'Zoho Books'), balance
+  });
+});
+
+// Re-read the selected client's balance (e.g. before sending, if the page sat open).
+app.get('/api/zoho/client-balance', async (q, s) => {
+  const contactId = String(q.query.contactId || '');
+  if (!/^\d{1,30}$/.test(contactId)) return s.status(400).json({ ok: false, error: 'contactId required' });
+  try { s.json({ ok: true, clientId: contactId, balance: balanceOut(await analyticsBalance(contactId)), checkedAt: new Date().toISOString() }); } catch (e) { zohoErr(s, e); }
 });
 
 // Restart from the beginning — the only way to clear the lock.
 app.post('/api/zoho/restart', (q, s) => { gate.unlock(q.sid); s.json({ ok: true }); });
 
-// STEP 2+ — balance, relevance, approval, sheet. Requires the step-1 token.
+// The approval/flag outcome as one record. It is posted to the group chat and that same exported
+// record is what lands in the funding sheet, so the chat and the sheet can never disagree.
+function exportRecord(req, d, user, ids) {
+  const t = stamp();
+  const rec = {
+    requestId: req.requestId || null, clientName: req.clientName, clientId: d.clientId || null, companyName: d.companyName || req.company,
+    requested: req.requestedAmount, approved: d.approvedAmount, balance: d.analyticsMatched ? d.available : 0,
+    status: d.approvalStatus, reason: d.reason, notes: d.notes, timestamp: t.sheet, reviewer: REVIEWER,
+    checkedBy: user.name, validationId: ids.validationId, checkedAt: ids.checkedAt
+  };
+  const chat = store.postSystem('chat', {
+    id: 'z' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex'), day: t.day, at: t.at, who: 'Zoho', kind: 'msg', req: rec.requestId,
+    text: `Zoho check · ${rec.clientName}${rec.requestId ? ' · ' + rec.requestId : ''} — requested ${aed(rec.requested)}, Zoho Analytics balance ${aed(rec.balance)}. ${d.ok ? rec.status + '.' : rec.notes} Reviewer: ${REVIEWER}.`,
+    zoho: rec
+  });
+  store.postSystem('notifications', {
+    id: 'zn' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex'), to: 'sven', at: t.both, read: false, req: rec.requestId,
+    text: (d.ok ? 'Pending your final confirmation — ' : 'Flagged for your review — ') + `${rec.clientName}: ${aed(rec.requested)} requested, ${aed(rec.balance)} in Zoho Analytics. ${rec.notes}`
+  });
+  return chat.zoho;
+}
+
+// STEP 2 — balance check and approval/flag, then the sheet. Live Zoho Books + Zoho Analytics only.
 app.post('/api/zoho/client-funding-check', async (q, s) => {
   const b = q.body || {};
   const req = {
@@ -694,45 +830,46 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
   if (!req.clientName) return s.status(400).json({ ok: false, reason: 'BAD_REQUEST', error: 'clientName required' });
   if (!(req.requestedAmount > 0)) return s.status(400).json({ ok: false, reason: 'BAD_REQUEST', error: 'requestedAmount must be > 0' });
 
-  // Token proves step 1 passed for this exact name. Legacy requests (created before the gate) re-validate exactly below.
-  if (b.validationToken) {
-    let v; try { v = gate.verify(b.validationToken, req.clientName); } catch (e) { return zohoErr(s, e); }
-    if (!v.ok) return s.status(403).json({ ok: false, reason: 'INVALID_VALIDATION_TOKEN', why: v.why, error: NOT_FOUND_MSG });
-  }
+  // A token proves the client was picked from the Books list (it carries the contact_id).
+  // Requests raised before the dropdown carry none and must match a Books contact exactly by name.
+  let books;
+  try {
+    if (b.validationToken) {
+      const v = gate.verify(b.validationToken, req.clientName);
+      if (!v.ok) return s.status(403).json({ ok: false, reason: 'INVALID_VALIDATION_TOKEN', why: v.why, error: NOT_FOUND_MSG });
+      books = await booksGetContact(v.clientId);
+      if (books && books.contactName !== req.clientName) books = null;
+    } else books = await booksFindContactExact(req.clientName);
+  } catch (e) { return zohoErr(s, e); }
 
-  let found;
-  try { found = await findExact(req.clientName); } catch (e) { return zohoErr(s, e); }
+  // Hard stop: not in Zoho Books → no approval logic, no sheet row, nothing.
+  if (!books) return s.status(422).json({ ok: false, clientMatched: false, reason: 'CLIENT_NOT_FOUND', approvalStatus: 'Not Approved', approvedAmount: 0, flagSven: true, error: NOT_FOUND_MSG, notes: NOT_FOUND_MSG, sheet: { written: false, why: 'client not in Zoho Books' } });
 
-  // Hard stop: no approval logic, no sheet row, nothing.
-  if (!(found.books && !found.books.skipped) && !found.rec) {
-    return s.status(422).json({ ok: false, clientMatched: false, reason: 'CLIENT_NOT_FOUND', approvalStatus: 'Not Approved', approvedAmount: 0, flagSven: true, error: NOT_FOUND_MSG, sheet: { written: false, why: 'client not validated' } });
-  }
+  // The balance must come from Zoho Analytics — if it cannot be read, nothing is decided.
+  let rec;
+  try { rec = await analyticsBalance(books.contactId); } catch (e) { return zohoErr(s, e); }
 
-  const d = decide({ req, ...found });
+  const d = decide({ req, books, rec });
   const validationId = 'ZV-' + crypto.randomBytes(4).toString('hex').toUpperCase();
   const checkedAt = new Date().toISOString();
+  const exported = exportRecord(req, d, q.user, { validationId, checkedAt });
 
   let sheet;
   try {
-    sheet = await appendRecord({
-      clientName: req.clientName, companyName: d.companyName || req.company,
-      requested: req.requestedAmount, approved: d.approvedAmount, status: d.approvalStatus,
-      balance: d.available ?? '', notes: `${d.reason} · ${d.notes} · ${req.purpose} · ${req.requestId} · ${validationId} · ${checkedAt}`
-    });
+    sheet = await appendRecord({ ...exported, notes: `${exported.reason} · ${exported.notes} · ${req.purpose} · ${exported.requestId || '—'} · ${validationId} · checked by ${exported.checkedBy}` });
   } catch (e) { sheet = { written: false, why: e.message }; }
 
-  const svenSummary = { clientName: req.clientName, requestedAmount: req.requestedAmount, approvedAmount: d.approvedAmount, approvalStatus: d.approvalStatus, flagReason: d.reason === 'VALIDATION_PASSED' ? '' : d.notes };
-  const svenNotified = d.flagSven ? await notifySven(`OneLink funding check — ${svenSummary.clientName}: ${svenSummary.approvalStatus}. Requested ${svenSummary.requestedAmount}, approved ${svenSummary.approvedAmount}.${svenSummary.flagReason ? ' Flag: ' + svenSummary.flagReason : ''}`, { summary: svenSummary }) : false;
+  const svenSummary = { clientName: req.clientName, requestedAmount: req.requestedAmount, zohoAnalyticsBalance: exported.balance, approvalStatus: d.approvalStatus, flagReason: d.ok ? '' : d.notes };
+  const svenNotified = await notifySven(`OneLink funding check — ${req.clientName}: ${d.approvalStatus}. Requested ${aed(req.requestedAmount)}, Zoho Analytics balance ${aed(exported.balance)}.${d.ok ? '' : ' ' + d.notes}`, { summary: svenSummary });
 
   s.json({
     ok: d.ok, reason: d.reason, approvalStatus: d.approvalStatus, approvedAmount: d.approvedAmount,
     clientMatched: d.clientMatched, booksMatched: d.booksMatched, analyticsMatched: d.analyticsMatched, relevancePassed: d.relevancePassed,
-    clientId: d.clientId || d.booksContactId || null,
+    clientId: d.clientId || null,
     availableBalance: d.available ?? 0, allocatedBalance: d.allocated ?? 0, usedBalance: d.used ?? 0,
     remainingAfterRequest: d.remaining ?? 0, requestedAmount: req.requestedAmount,
-    notes: d.notes, flagSven: d.flagSven, svenNotified, svenSummary, sheet,
-    source: MOCK ? 'Zoho Analytics · MOCK server' : 'Zoho Books + Zoho Analytics',
-    validationId, checkedAt
+    notes: d.notes, flagSven: d.flagSven, svenNotified, svenSummary, sheet, reviewer: REVIEWER, exported,
+    source: 'Zoho Books + Zoho Analytics', validationId, checkedAt
   });
 });
 
@@ -806,12 +943,16 @@ function servedHtml() {
   if (liveHtml.mtime !== mtime) {
     let body = fs.readFileSync(__html, 'utf8'), hit = 0;
     for (const [from, to] of LIVE_RULES) { const next = body.replace(from, to); if (next !== body) hit++; body = next; }
+    const wf = patchPage(body);
+    body = wf.html;
     liveHtml = { mtime, body };
     console.log('Live dates: applied', hit, 'of', LIVE_RULES.length, 'rules to index.html');
+    if (wf.hit) console.log('Zoho client workflow: applied', wf.hit, 'of', wf.total, 'rules');
+    else console.error('Zoho client workflow NOT applied — this export no longer matches (' + wf.missed + '). The server still refuses typed client names.');
   }
   return liveHtml.body;
 }
 app.get(['/', '/app'], (req, res) => {
   try { res.set('Cache-Control', 'no-cache').type('html').send(servedHtml()); } catch (e) { res.status(404).send('index.html missing'); }
 });
-app.listen(E.PORT || 8787, () => console.log(`OneLink backend on :${E.PORT || 8787}${MOCK ? ' (MOCK)' : ''}`));
+app.listen(E.PORT || 8787, () => console.log(`OneLink backend on :${E.PORT || 8787}`));
