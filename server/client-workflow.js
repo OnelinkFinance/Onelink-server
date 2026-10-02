@@ -183,7 +183,7 @@ const GATE_JS = `  verifyClient() {
     const s = this.state, back = () => this.setState({ peekId: null, peekMissing: false });
     if (!s.peekId && !s.peekMissing) return { open: false, closed: true };
     const r = s.peekId ? this.reqById(s.peekId) : null;
-    if (!r) return { open: true, closed: false, found: false, missing: true, back: back, missingText: 'This request is not on the platform — it was not submitted, or it has been removed.', full: back };
+    if (!r) return { open: true, closed: false, found: false, missing: true, back: back, missingText: isOps ? 'No access — request not created by you (or it was not submitted).' : 'This request is not on the platform — it was not submitted, or it has been removed.', full: back };
     const u = this.users()[r.by], open = ['NEW', 'ACTION'].indexOf(r.status) >= 0;
     const facts = [
       { label: 'Purpose', value: r.purpose || '—' },
@@ -202,6 +202,24 @@ const GATE_JS = `  verifyClient() {
       approve: () => this.approveFull(r.id), ask: () => this.openModal('info', r.id), decline: () => this.openModal('decline', r.id),
       full: () => this.open(r.id)
     };
+  }
+  /* Master Operations Control (Amina by default — set on the server) sees and acts on every Operations request. */
+  isOpsMaster(u) { return !!(u && u.opsMaster); }
+  /* Opening a request is logged on the server (security log); someone else's request is refused there. */
+  logView(id) {
+    if (!id || !this.isLive() || !this._token) return;
+    this._viewed = this._viewed || {};
+    if (Date.now() - (this._viewed[id] || 0) < 60000) return;
+    this._viewed[id] = Date.now();
+    this.api('/api/audit/view', { method: 'POST', body: { req: id } }).then(o => { if (o.status === 403) this.flash(o.json.error || 'No access — request not created by you', null, 'ph ph-lock-simple'); }).catch(() => {});
+  }
+  escalate(id) {
+    const r = this.reqById(id), me = this.me(), why = (this.state.draft || '').trim();
+    if (!r) return;
+    this.apply(id, { flagged: true, escalatedBy: me.key }, me.name + ' escalated this to Sven' + (why ? ' — ' + why : ''),
+      { to: 'sven', text: 'ESCALATED by ' + me.name + ' — ' + r.id + ' · ' + r.company + ' · ' + this.fmt(r.requested) + (why ? ': ' + why : '') });
+    this.setState({ draft: '' });
+    this.flash('Escalated to Sven — ' + r.id, null, 'ph ph-arrow-fat-line-up');
   }
   /* Runs right after a request is sent: live balance check, approval or flag. The server posts the
      result to the group chat, notifies Sven and writes the funding sheet row. */
@@ -301,7 +319,9 @@ export const TEMPLATE_RULES = [
       detail.zeroLine = '${INSUFFICIENT} Requested ' + this.fmt(r.requested) + ' · Zoho Analytics balance ' + this.fmt(avail) + '.';
       detail.flagged = !!r.flagged;
       detail.flag = () => this.flagForSven(r.id, 'client does not have sufficient balance in Zoho Analytics');
-      detail.balanceLine = known && !isOps ? 'Zoho Analytics balance ' + this.fmt(avail) + (r.zohoStatus ? ' · ' + r.zohoStatus : '') : r.zohoStatus ? 'Zoho Analytics check · ' + r.zohoStatus : 'Zoho Analytics balance not checked yet';
+      detail.canEscalate = isOps && this.isOpsMaster(me) && ['NEW', 'ACTION', 'APPROVED'].indexOf(r.status) >= 0;
+      detail.escalate = () => this.escalate(r.id);
+      detail.balanceLine = known && !(isOps && !this.isOpsMaster(me)) ? 'Zoho Analytics balance ' + this.fmt(avail) + (r.zohoStatus ? ' · ' + r.zohoStatus : '') : r.zohoStatus ? 'Zoho Analytics check · ' + r.zohoStatus : 'Zoho Analytics balance not checked yet';
 ` },
   { start: '    const zeroList = s.requests.filter(', end: '      go: () => this.open(z.r.id)\n    }));',
     to: `    const zeroList = s.requests.filter(x => openStates.indexOf(x.status) >= 0 && typeof x.zohoBalance === 'number' && x.zohoBalance < x.requested)
@@ -326,7 +346,7 @@ export const TEMPLATE_RULES = [
    "      zeroLine: zeroList.length + (zeroList.length === 1 ? ' open request does not have sufficient balance in Zoho Analytics' : ' open requests do not have sufficient balance in Zoho Analytics'),"],
   // Master Control: accounts and sign-ins update instantly and survive a reload
   ["    return this.normAcct({ key: u.key, name: u.name, username: u.username, dept: u.dept, role: u.role, active: u.active, perms: u.perms || [], created: u.created, lastLogin: u.lastLogin || '—', locked: u.locked, pwHash: 'server' });",
-   "    return this.normAcct({ key: u.key, name: u.name, username: u.username, dept: u.dept, role: u.role, active: u.active, perms: u.perms || [], created: u.created, lastLogin: u.lastLogin || '—', locked: u.locked, online: !!u.online, passwordSet: u.passwordSet || '—', pwHash: 'server' });"],
+   "    return this.normAcct({ key: u.key, name: u.name, username: u.username, dept: u.dept, role: u.role, active: u.active, perms: u.perms || [], created: u.created, lastLogin: u.lastLogin || '—', locked: u.locked, online: !!u.online, passwordSet: u.passwordSet || '—', opsMaster: !!u.opsMaster, pwHash: 'server' });"],
   ["      this._prevAccounts = next.accounts;\n      this.setState(next);\n    });\n  }",
    "      this._prevAccounts = next.accounts;\n      this.setState(next);\n      this._rev = Math.max(this._rev || 0, j.rev || 0);\n      if (isM) { this.loadLoginLog(); if (!this._revT) this._revT = setInterval(() => this.revCheck(), 20000); }\n    });\n  }\n  /* Safety net for the Master view: if the server holds changes this screen never received, reload them. */\n  revCheck() {\n    if (!this.state.authed || !this._token) return;\n    this.api('/api/sync/health').then(o => { if (o.ok && o.json.rev > (this._rev || 0)) this.liveLoad(false); }).catch(() => {});\n  }\n  /* Sign-in history from the server — Master Control shows it straight after a reload, not only new events. */\n  loadLoginLog() {\n    this.api('/api/admin/login-history').then(o => {\n      if (!o.ok || !Array.isArray(o.json)) return;\n      this.setState({ loginLog: o.json.map(x => ({ at: new Date(x.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }), kind: x.kind, who: x.who, detail: x.detail })) });\n    }).catch(() => {});\n  }"],
   ["      this.flash(uf.mode === 'add' ? uf.name.trim() + ' can now sign in from any device' : 'Saved on the live server', null, 'ph ph-cloud-check');",
@@ -391,11 +411,11 @@ export const TEMPLATE_RULES = [
    "          if (col === 'requests' && o.json && o.json.renamed) this.renameRequest(item.id, o.json.renamed);\n          if (col === 'requests' && o.json && o.json.reject) this.rejectRequest(item.id, o.json.error);"],
   // notifications open the request inline (Updates panel) — no route change, no tab switch
   ["          if (nn.req && this.reqById(nn.req)) this.open(nn.req);\n          else this.go('board', { tab: isOps ? 'tasks' : 'tasks' });",
-   "          this.setState({ peekId: nn.req || null, peekMissing: !(nn.req && this.reqById(nn.req)) });"],
+   "          this.setState({ peekId: nn.req || null, peekMissing: !(nn.req && this.reqById(nn.req)) });\n          if (nn.req && this.reqById(nn.req)) this.logView(nn.req);"],
   ["      notifOpen: s.notifOpen, toggleNotif: () => this.setState({ notifOpen: !s.notifOpen }),",
    "      notifOpen: s.notifOpen, toggleNotif: () => this.setState({ notifOpen: !s.notifOpen, peekId: null, peekMissing: false }),"],
   ["go: () => this.setState({ userMenu: false, notifOpen: true }) }", "go: () => this.setState({ userMenu: false, notifOpen: true, peekId: null, peekMissing: false }) }"],
-  ["      notifsEmpty: mineNotifs.length === 0,", "      notifsEmpty: mineNotifs.length === 0, peek: this.peekVals(isOps),"],
+  ["      notifsEmpty: mineNotifs.length === 0,", "      notifsEmpty: mineNotifs.length === 0, peek: this.peekVals(isOps && !this.isOpsMaster(me)),"],
   ['        <div style="flex:1; overflow:auto; padding:12px">\n          <sc-for list="{{ notifs }}" as="n" hint-placeholder-count="3">',
    `        <sc-if value="{{ peek.open }}" hint-placeholder-val="{{ false }}">
           <div style="flex:1; overflow:auto; padding:14px 18px 18px; display:flex; flex-direction:column; gap:12px; animation:riseIn .2s ease">
@@ -441,7 +461,13 @@ export const TEMPLATE_RULES = [
         <sc-if value="{{ peek.closed }}" hint-placeholder-val="{{ true }}">
         <div style="flex:1; overflow:auto; padding:12px">
           <sc-for list="{{ notifs }}" as="n" hint-placeholder-count="3">`],
-  ['          </sc-if>\n        </div>\n      </aside>', '          </sc-if>\n        </div>\n        </sc-if>\n      </aside>']
+  ['          </sc-if>\n        </div>\n      </aside>', '          </sc-if>\n        </div>\n        </sc-if>\n      </aside>'],
+  // Operations see only their own requests — except Master Operations Control, who sees all of them
+  ["    const scoped = s.requests.filter(r => isOps ? r.by === me.key : true);",
+   "    const scoped = s.requests.filter(r => isOps && !this.isOpsMaster(me) ? r.by === me.key : true);"],
+  ["  open(id) { this.go('detail', { reqId: id }); }", "  open(id) { this.go('detail', { reqId: id }); this.logView(id); }"],
+  ['            <button type="button" sc-camel-on-click="{{ detail.post }}" class="btn" style="flex:none; border-radius:12px; background:var(--sf3); border:1px solid var(--line3); color:var(--fgBlue); transition:all .18s ease" style-hover="background:var(--sf3)">Send</button>',
+   '            <button type="button" sc-camel-on-click="{{ detail.post }}" class="btn" style="flex:none; border-radius:12px; background:var(--sf3); border:1px solid var(--line3); color:var(--fgBlue); transition:all .18s ease" style-hover="background:var(--sf3)">Send</button>\n            <sc-if value="{{ detail.canEscalate }}" hint-placeholder-val="{{ false }}">\n              <button type="button" sc-camel-on-click="{{ detail.escalate }}" class="btn" title="Flag for Sven, with the note as the reason" style="flex:none; border-radius:12px; background:var(--chipAmberBg); border:1px solid var(--chipAmberBd); color:var(--fgAmberDeep)"><i class="ph ph-arrow-fat-line-up" style="font-size:15px"></i>Escalate to Sven</button>\n            </sc-if>']
 ];
 
 // Returns { text, hit, total }. All-or-nothing: if any rule does not match exactly once, the input is returned unchanged.

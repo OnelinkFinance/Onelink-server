@@ -481,7 +481,7 @@ function save(users) { const j = JSON.stringify(users, null, 2); fs.writeFileSyn
 const when = iso => { if (!iso) return '—'; const d = new Date(iso); if (isNaN(d)) return String(iso); return d.toLocaleString('en-GB', { timeZone: 'Asia/Dubai', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).replace(',', ' ·'); };
 const onlineKeys = () => { const k = new Set(); for (const v of sessions.values()) if (Date.now() - v.last <= IDLE_MS) k.add(v.user); return k; };
 const pub = (u, on = onlineKeys()) => ({ key: u.key, name: u.name, username: u.username, role: u.role, dept: u.dept, active: u.active, perms: u.perms || [], created: u.created,
-  lastLogin: when(u.lastLogin), lastLoginAt: u.lastLogin || null, online: on.has(u.key), passwordSetAt: u.pwSetAt || null, passwordSet: u.pwSetAt ? when(u.pwSetAt) : 'not recorded yet', // tracked from this version on
+  opsMaster: isOpsMaster(u), lastLogin: when(u.lastLogin), lastLoginAt: u.lastLogin || null, online: on.has(u.key), passwordSetAt: u.pwSetAt || null, passwordSet: u.pwSetAt ? when(u.pwSetAt) : 'not recorded yet', // tracked from this version on
   locked: (u.lockedUntil || 0) > Date.now() });
 const broadcastUsers = () => { const on = onlineKeys(); onEvent({ type: 'accounts', items: load().map(u => pub(u, on)) }); };
 
@@ -507,6 +507,9 @@ function requireAuth(q, s, next) {
   sess.last = Date.now(); q.user = u; q.token = t; next();
 }
 const isMaster = u => u?.role === 'MASTER_ADMIN' || (u?.perms || []).includes('*');
+// Master Operations Control: an Operations user who sees and acts on every Operations request (default: Amina).
+const opsMasterKeys = () => (process.env.OPS_MASTER_KEYS || 'amina').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const isOpsMaster = u => !!u && u.dept === 'OPERATIONS' && !isMaster(u) && (opsMasterKeys().includes(u.key) || (u.perms || []).includes('OPS_MASTER'));
 const requireMaster = (q, s, next) => isMaster(q.user) ? next() : s.status(403).json({ ok: false, reason: 'MASTER_ADMIN_ONLY' });
 const kill = key => { for (const [t, v] of sessions) if (v.user === key) sessions.delete(t); };
 const keyFor = (username, users) => {
@@ -610,13 +613,13 @@ function mount(app) {
   });
 }
 
-return { setBroadcast, load, pub, requireAuth, isMaster, mount };
+return { setBroadcast, load, pub, requireAuth, isMaster, isOpsMaster, mount };
 })();
 
 // ---- store.js ----
 const M_store = await (async () => {
 const { push } = M_cloud;
-const { requireAuth, isMaster, setBroadcast, load: loadUsers, pub } = M_auth;
+const { requireAuth, isMaster, isOpsMaster, setBroadcast, load: loadUsers, pub } = M_auth;
 // Shared, persistent platform data + real-time push (Server-Sent Events).
 // Every signed-in browser reads the same data and receives every change the moment it happens.
 
@@ -659,13 +662,20 @@ try {
 const clients = new Set(); // { res, user }
 const ops = u => u.dept === 'OPERATIONS' && !isMaster(u);
 // What each user may see
+// Operations staff (other than Master Operations Control) are "restricted": they see only what they created.
+const restricted = u => ops(u) && !isOpsMaster(u);
+const ownerOf = id => (id && (db.requests.find(r => r.id === id) || {}).by) || null;
+// Request data — the request, its audit trail, its Zoho check records — belongs to its requestor.
+const ownsRequestData = (u, reqId) => !restricted(u) || (!!reqId && ownerOf(reqId) === u.key);
 function visible(u, col, item) {
   if (isMaster(u)) return true;
-  if (col === 'requests') return !ops(u) || item.by === u.key;
+  if (col === 'requests') return !restricted(u) || item.by === u.key;
   if (col === 'notifications') return item.to === u.key;
-  if (col === 'audit') return u.dept === 'MANAGEMENT';
-  return true; // chat: shared group thread
+  if (col === 'audit') return u.dept === 'MANAGEMENT' || isOpsMaster(u) || (restricted(u) && ownsRequestData(u, item.req));
+  if (col === 'chat' && (item.who === 'Zoho' || item.zoho)) return ownsRequestData(u, item.req); // process data
+  return true; // people's messages: shared group thread
 }
+const NO_ACCESS = 'No access — request not created by you';
 // Operations never see Zoho Analytics balances. What they receive is stripped here, on the server:
 // the request's balance field, amounts in its history lines, and the balance record on Zoho chat items.
 const hideAmounts = t => String(t ?? '')
@@ -673,7 +683,7 @@ const hideAmounts = t => String(t ?? '')
   .replace(/(Zoho (?:Analytics )?balance:?) (?:of )?AED [\d,]+(?:\.\d+)?(?: available)?/gi, '$1')
   .replace(/,? ?AED [\d,]+(?:\.\d+)? in Zoho Analytics/gi, '');
 function redact(u, col, item) {
-  if (!item || !ops(u)) return item;
+  if (!item || !restricted(u)) return item; // Master Operations Control sees balances
   if (col === 'requests') {
     const { zohoBalance, ...r } = item;
     if (Array.isArray(r.timeline)) r.timeline = r.timeline.map(t => ({ ...t, text: hideAmounts(t.text) }));
@@ -731,7 +741,10 @@ setBroadcast(ev => {
 function mayWrite(u, col, item, prev) {
   if (isMaster(u)) return true;
   if (col === 'requests') {
-    if (ops(u)) return item.by === u.key && (!prev || prev.by === u.key) && (!prev || prev.status === item.status || ['NEW', 'ACTION'].includes(item.status) || (prev.status === 'CREDITED' && item.status === 'PAID'));
+    // Operations: new requests in their own name; edits to their own (Master Operations Control: to any),
+    // never a finance decision (approve / credit / decline stay with Sven).
+    if (ops(u)) return (prev ? item.by === prev.by && (prev.by === u.key || isOpsMaster(u)) : item.by === u.key)
+      && (!prev || prev.status === item.status || ['NEW', 'ACTION'].includes(item.status) || (prev.status === 'CREDITED' && item.status === 'PAID'));
     return (u.perms || []).some(p => ['APPROVE_REQUEST', 'DECLINE_REQUEST', 'CREDIT_FUNDS', 'RELEASE_FUNDS', 'PARTIAL_APPROVE_REQUEST'].includes(p)) || u.dept === 'MANAGEMENT' || u.dept === 'FINANCE';
   }
   if (col === 'chat') return !prev && item.who === u.key;
@@ -838,7 +851,10 @@ function mount(app) {
       }
     } else if (typeof item.req === 'string') item.req = resolveRequestId(q.user.key, item.req);
     const prev = db[col].find(x => x.id === item.id) || null;
-    if (!mayWrite(q.user, col, item, prev)) return s.status(403).json({ ok: false, error: 'Not permitted' });
+    if (!mayWrite(q.user, col, item, prev)) {
+      if (col === 'requests' && prev && restricted(q.user) && prev.by !== q.user.key) audit(q.user, 'ACCESS_DENIED', `Tried to change ${prev.id} (${prev.company}), created by ${prev.by}`, prev);
+      return s.status(403).json({ ok: false, error: col === 'requests' && prev && prev.by !== q.user.key ? NO_ACCESS : 'Not permitted' });
+    }
     if (col === 'requests' && !prev) {
       const bad = newRequestProblem(q.user, item);
       if (bad) {
@@ -853,7 +869,9 @@ function mount(app) {
     }
     if (col === 'notifications' && !prev && item.req && refused.has(q.user.key + ':' + item.req)) Object.assign(item, notSubmitted(item, refused.get(q.user.key + ':' + item.req).reason));
     if (col === 'notifications' && !prev) item._at = Date.now();
-    if (col === 'requests' && prev && ops(q.user)) restoreHidden(item, prev);
+    if (col === 'requests' && prev && restricted(q.user)) restoreHidden(item, prev);
+    if (col === 'requests' && !prev) Object.assign(item, { requestorId: item.by, clientId: item.zohoClientId || null, createdAt: new Date().toISOString() }); // tags
+    if (col === 'requests' && prev) for (const k of ['requestorId', 'clientId', 'createdAt']) if (prev[k] !== undefined) item[k] = prev[k]; // tags never change
     // A browser can send two versions of one request back to back (created, then the Zoho result added);
     // if the older lands last it must not erase the Zoho result or its history line.
     if (col === 'requests' && prev && prev.zohoStatus && !item.zohoStatus) {
@@ -868,6 +886,8 @@ function mount(app) {
     }
     upsert(col, item);
     broadcast({ type: 'put', col, item, rev: db.rev, by: q.user.key }, col, item);
+    if (col === 'requests') audit(q.user, !prev ? 'REQUEST_CREATED' : prev.status !== item.status ? 'REQUEST_' + item.status : 'REQUEST_EDITED',
+      !prev ? `${item.company} — ${item.requested} AED` : prev.status !== item.status ? `${prev.status} → ${item.status}` : 'Details updated', item);
     s.json({ ok: true, rev: db.rev, id: item.id, renamed });
   });
 
@@ -882,7 +902,25 @@ function mount(app) {
   });
 
   app.get('/api/sync/health', (_q, s) => s.json({ ok: true, rev: db.rev, online: clients.size }));
+
+  // Opening a request: logged (once a minute per person and request); someone else's → refused and logged.
+  app.post('/api/audit/view', requireAuth, (q, s) => {
+    const id = String(q.body?.req || ''), r = db.requests.find(x => x.id === id);
+    if (!r) return s.status(404).json({ ok: false, error: 'No such request' });
+    if (!visible(q.user, 'requests', r)) { audit(q.user, 'ACCESS_DENIED', `Tried to open ${r.id}, created by ${r.by}`, r); return s.status(403).json({ ok: false, error: NO_ACCESS }); }
+    const k = q.user.key + ':' + id;
+    if (Date.now() - (viewed.get(k) || 0) > 60_000) { viewed.set(k, Date.now()); audit(q.user, 'REQUEST_VIEWED', `${r.id} · ${r.company}`, r); }
+    s.json({ ok: true });
+  });
 }
+
+// Security log, written by the server: every request created, edited, decided, viewed, or refused.
+const AUDIT_DAY = () => new Date().toLocaleString('en-GB', { timeZone: 'Asia/Dubai', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).replace(',', ' ·');
+function audit(u, action, detail, r) {
+  postSystem('audit', { id: 'sa' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex'), at: AUDIT_DAY(), user: u.name, userId: u.key, dept: u.dept,
+    action, detail, req: r ? r.id : '', client: r ? (r.zohoClient || r.person || r.company || '') : '', clientId: r ? r.zohoClientId || '' : '', by: 'server' });
+}
+const viewed = new Map(); // `${user}:${req}` -> last logged
 
 // Server-authored items (funding-check results): stored and pushed live like any user write.
 function postSystem(col, item) {
@@ -893,7 +931,7 @@ function postSystem(col, item) {
 
 const wasRefused = (userKey, id) => !!(id && refused.has(userKey + ':' + id) && !db.requests.some(r => r.id === resolveRequestId(userKey, id) && r.by === userKey));
 
-return { mount, postSystem, resolveRequestId, attachZohoResult, awaitOwnRequest, pendingRequestFor, wasRefused, isOps: ops };
+return { mount, postSystem, resolveRequestId, attachZohoResult, awaitOwnRequest, pendingRequestFor, wasRefused, isOps: restricted };
 })();
 
 // ---- server.js ----
