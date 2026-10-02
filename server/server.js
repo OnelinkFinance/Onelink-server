@@ -117,21 +117,20 @@ async function books(p, params) {
 }
 const contactOut = c => ({ contactId: String(c.contact_id), contactName: c.contact_name, companyName: c.company_name || '', status: c.status });
 
-// Type-ahead: active Books customers whose contact name or company name contains the typed letters.
-// Two narrow searches (search_text would also match emails and notes), merged, prefix matches first.
+// Type-ahead: active Books customers whose client or company name contains the typed letters.
+// Books ignores contact_name_contains / company_name_contains (it then returns every contact A–Z), so the
+// search uses search_text — a real "contains" over name, company, email and notes — and the result is
+// filtered here to name/company matches only. A filter Zoho ignores can never fill the list with everyone.
 const searchCache = new Map(); // term -> { at, list }
 async function booksSearchClients(term) {
   const key = term.toLowerCase(), hit = searchCache.get(key);
   if (hit && Date.now() - hit.at < 60_000) return hit.list;
-  const base = { contact_type: 'customer', filter_by: 'Status.Active', per_page: '25', sort_column: 'contact_name' };
-  const [byName, byCompany] = await Promise.all([
-    books('contacts', { ...base, contact_name_contains: term }),
-    books('contacts', { ...base, company_name_contains: term })
-  ]);
-  const seen = new Map();
-  for (const c of [...(byName?.contacts || []), ...(byCompany?.contacts || [])]) if (!seen.has(c.contact_id)) seen.set(c.contact_id, contactOut(c));
-  const n = norm(term), starts = c => norm(c.contactName).startsWith(n) || norm(c.companyName).startsWith(n) ? 0 : 1;
-  const list = [...seen.values()].sort((a, b) => starts(a) - starts(b) || a.contactName.localeCompare(b.contactName)).slice(0, 20);
+  if (!norm(term)) return [];
+  const j = await books('contacts', { search_text: term, contact_type: 'customer', filter_by: 'Status.Active', per_page: '200', sort_column: 'contact_name' });
+  const n = norm(term), has = c => [c.contact_name, c.company_name, ((c.first_name || '') + ' ' + (c.last_name || ''))].some(v => norm(v).includes(n));
+  const starts = c => norm(c.contactName).startsWith(n) || norm(c.companyName).startsWith(n) ? 0 : 1;
+  const list = (j?.contacts || []).filter(has).map(contactOut)
+    .sort((a, b) => starts(a) - starts(b) || a.contactName.localeCompare(b.contactName)).slice(0, 20);
   searchCache.set(key, { at: Date.now(), list });
   if (searchCache.size > 500) searchCache.delete(searchCache.keys().next().value);
   return list;
