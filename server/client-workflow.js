@@ -85,15 +85,17 @@ const GATE_JS = `  verifyClient() {
     if (!c || g.status === 'ok' || g.status === 'checking' || g.status === 'failed') return;
     clearTimeout(this._zT); this._zSeq = (this._zSeq || 0) + 1;
     this.setState({ gate: Object.assign({}, g, { name: c.contactName, status: 'checking', results: [], notFound: false, searching: false, hintErr: '' }) });
-    fetch(this.zohoApiUrl('/validate-client'), { method: 'POST', mode: 'cors', credentials: 'include', headers: this.zohoHeaders(true), body: JSON.stringify({ contactId: c.contactId }) })
+    fetch(this.zohoApiUrl('/validate-client'), { method: 'POST', mode: 'cors', credentials: 'include', headers: this.zohoHeaders(true), body: JSON.stringify({ contactId: c.contactId }), signal: this.zohoTimeout(30000) })
       .then(r => r.json().then(j => ({ st: r.status, j: j })))
       .then(o => {
         if (o.st === 200 && o.j.found === true) {
           this.logAudit('CLIENT_VALIDATED', o.j.clientName + ' — selected from Zoho Books (' + o.j.clientId + ')', null, o.j.clientName);
-          return this.setState(s => ({
+          this.setState(s => ({
             gate: { name: o.j.clientName, status: 'ok', at: this.now(), clientId: o.j.clientId, matchedIn: o.j.matchedIn, token: o.j.token, balance: o.j.balance || null },
             form: Object.assign({}, s.form || this.blankForm(), (s.form && s.form.company) ? {} : { company: o.j.companyName || '' })
           }));
+          if (o.j.balance && o.j.balance.pending) this.loadBalance(o.j.clientId);
+          return;
         }
         if (o.st === 422 || o.st === 423) {
           this.logAudit('CLIENT_VALIDATION_FAILED', '“' + c.contactName + '” is not an active Zoho Books client — request blocked', null, c.contactName);
@@ -103,11 +105,25 @@ const GATE_JS = `  verifyClient() {
       })
       .catch(err => this.setState({ gate: Object.assign({}, this.gate(), { status: 'error', error: 'Zoho could not be reached (' + err.message + '). Nothing was created — try again when the connection is back.' }) }));
   }
+  zohoTimeout(ms) { return (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? AbortSignal.timeout(ms) : undefined; }
+  /* Balance still loading when the client was confirmed: fetch it on its own; the form stays usable meanwhile. */
+  loadBalance(contactId) {
+    const done = b => { const g = this.gate(); if (g.status === 'ok' && g.clientId === contactId) this.setState({ gate: Object.assign({}, g, { balance: b }) }); };
+    fetch(this.zohoApiUrl('/client-balance') + '?contactId=' + encodeURIComponent(contactId), { mode: 'cors', credentials: 'include', headers: this.zohoHeaders(false), signal: this.zohoTimeout(40000) })
+      .then(r => r.json().then(j => ({ st: r.status, j: j })))
+      .then(o => done(o.st === 200 && o.j.balance ? o.j.balance : { found: false, error: o.j.error || 'HTTP ' + o.st }))
+      .catch(err => done({ found: false, error: err.message }));
+  }
   /* The selected client's Zoho Analytics balance against the amount being typed. */
   balanceInfo() {
     const g = this.gate();
     if (g.status !== 'ok') return {};
     const b = g.balance, amt = Number((this.state.form || this.blankForm()).amount) || 0, out = {};
+    if (b && b.pending) {
+      out.line = 'Reading the balance from Zoho Analytics…'; out.fg = 'var(--mut2)';
+      if (amt > 0) { out.amountLine = 'Checking against the Zoho Analytics balance…'; out.amountFg = 'var(--mut2)'; out.amountIcon = 'ph ph-hourglass'; }
+      return out;
+    }
     if (!b || b.error) {
       out.line = 'Zoho Analytics balance could not be read — it is validated again when the request is sent.'; out.fg = 'var(--fgAmberDeep)';
     } else if (!b.found) {

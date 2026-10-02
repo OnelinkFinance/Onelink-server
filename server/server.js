@@ -80,7 +80,7 @@ async function accessToken() {
   if (!rt) need.push('ZOHO_REFRESH_TOKEN (or a fresh ZOHO_GRANT_CODE)');
   if (need.length) throw Object.assign(new Error('Missing env: ' + need.join(', ')), { code: 'ENV' });
   const q = new URLSearchParams({ refresh_token: rt, client_id: E.ZOHO_CLIENT_ID, client_secret: E.ZOHO_CLIENT_SECRET, grant_type: 'refresh_token' });
-  const res = await fetch(`https://accounts.zoho.${dc()}/oauth/v2/token?${q}`, { method: 'POST' });
+  const res = await fetch(`https://accounts.zoho.${dc()}/oauth/v2/token?${q}`, { method: 'POST', signal: AbortSignal.timeout(15_000) });
   const j = await res.json();
   if (!j.access_token) throw Object.assign(new Error('Zoho OAuth refresh failed: ' + (j.error || res.status)), { code: 'AUTH' });
   token = j.access_token;
@@ -109,7 +109,7 @@ const zaTable = () => E.ZA_BALANCE_TABLE || 'CFD Customer Balances';
 async function books(p, params) {
   const t = await accessToken();
   const q = new URLSearchParams({ organization_id: booksOrg(), ...params });
-  const res = await fetch(`https://www.zohoapis.${dc()}/books/v3/${p}?${q}`, { headers: { Authorization: 'Zoho-oauthtoken ' + t } });
+  const res = await fetch(`https://www.zohoapis.${dc()}/books/v3/${p}?${q}`, { headers: { Authorization: 'Zoho-oauthtoken ' + t }, signal: AbortSignal.timeout(15_000) });
   if (res.status === 404) return null;
   if (res.status === 429) throw Object.assign(new Error('Zoho Books rate limit'), { code: 'RATE' });
   if (!res.ok) throw Object.assign(new Error('Zoho Books ' + res.status), { code: 'BOOKS' });
@@ -187,38 +187,66 @@ function parseCsv(text) {
   return body.map(r => Object.fromEntries((head || []).map((h, i) => [h, r[i]])));
 }
 
-// Live balance for one Books contact, read from Zoho Analytics with a SQL export job
-// (the balance table is a query table, which the synchronous view export does not serve).
-async function analyticsBalance(contactId) {
-  if (!/^\d{1,30}$/.test(String(contactId || ''))) return null;
-  const t = await accessToken(), C = col();
-  const h = { headers: { Authorization: 'Zoho-oauthtoken ' + t, 'ZANALYTICS-ORGID': zaOrg() } };
+// Zoho Analytics balances. The balance table is a query table (the synchronous view export does not serve
+// it), so it is read with a SQL export job — about 3 s. It holds one row per client (~300), so the whole table
+// is read in one job and kept for BALANCE_TTL: a lookup is then instant, and no check uses a balance older
+// than that. Typing in the client field pre-loads it, so it is normally ready by the time a client is picked.
+const BALANCE_TTL = 60_000, JOB_DEADLINE = 25_000;
+const zaErr = (msg, code = 'ANALYTICS') => Object.assign(new Error(msg), { code });
+
+async function analyticsSql(sql) {
+  const t = await accessToken();
+  const h = { headers: { Authorization: 'Zoho-oauthtoken ' + t, 'ZANALYTICS-ORGID': zaOrg() }, signal: AbortSignal.timeout(15_000) };
   const base = `https://analyticsapi.zoho.${dc()}/restapi/v2/bulk/workspaces/${zaWs()}`;
-  const fail = async (res, what) => {
-    if (res.status === 429) throw Object.assign(new Error('Zoho Analytics rate limit'), { code: 'RATE' });
-    throw Object.assign(new Error(`Zoho Analytics ${what} ${res.status} ${(await res.text()).slice(0, 200)}`), { code: 'ANALYTICS' });
+  const check = async (res, what) => {
+    if (res.ok) return res;
+    if (res.status === 429) throw zaErr('Zoho Analytics rate limit', 'RATE');
+    throw zaErr(`Zoho Analytics ${what} ${res.status} ${(await res.text()).slice(0, 200)}`);
   };
-  const sql = `select * from "${zaTable().replace(/"/g, '')}" where "${C.id.replace(/"/g, '')}" = ${contactId}`;
-  const r1 = await fetch(`${base}/data?CONFIG=${encodeURIComponent(JSON.stringify({ sqlQuery: sql, responseFormat: 'csv' }))}`, h);
-  if (!r1.ok) await fail(r1, 'export');
+  const t0 = Date.now();
+  const r1 = await check(await fetch(`${base}/data?CONFIG=${encodeURIComponent(JSON.stringify({ sqlQuery: sql, responseFormat: 'csv' }))}`, h), 'export');
   const jobId = (await r1.json())?.data?.jobId;
-  if (!jobId) throw Object.assign(new Error('Zoho Analytics returned no export job'), { code: 'ANALYTICS' });
-  for (let i = 0, wait = 400; i < 30; i++, wait = Math.min(wait * 1.5, 2000)) {
+  if (!jobId) throw zaErr('Zoho Analytics returned no export job');
+  for (let wait = 300; Date.now() - t0 < JOB_DEADLINE; wait = Math.min(wait * 1.4, 1000)) {
     await new Promise(r => setTimeout(r, wait));
-    const r2 = await fetch(`${base}/exportjobs/${jobId}`, h);
-    if (!r2.ok) await fail(r2, 'job');
+    const r2 = await check(await fetch(`${base}/exportjobs/${jobId}`, h), 'job');
     const code = String((await r2.json())?.data?.jobCode || '');
-    if (code === '1003' || code === '1005') throw Object.assign(new Error('Zoho Analytics export job failed (' + code + ')'), { code: 'ANALYTICS' });
+    if (code === '1003' || code === '1005') throw zaErr('Zoho Analytics export job failed (' + code + ')');
     if (code !== '1004') continue;
-    const r3 = await fetch(`${base}/exportjobs/${jobId}/data`, h);
-    if (!r3.ok) await fail(r3, 'download');
-    const hit = parseCsv(await r3.text()).find(r => String(r[C.id]).replace(/\.0+$/, '') === String(contactId));
-    return hit ? toRecord(hit) : null;
+    const r3 = await check(await fetch(`${base}/exportjobs/${jobId}/data`, h), 'download');
+    const rows = parseCsv(await r3.text());
+    console.log(`Zoho Analytics: ${rows.length} balance rows in ${Date.now() - t0} ms`);
+    return rows;
   }
-  throw Object.assign(new Error('Zoho Analytics export timed out'), { code: 'ANALYTICS' });
+  throw zaErr(`Zoho Analytics export did not finish within ${JOB_DEADLINE / 1000} s`);
 }
 
-return { zohoReady, accessToken, exact, norm, booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, col, toRecord, config: () => ({ booksOrg: booksOrg() + ' (ELITE ONELINK CORPORATE SERVICES L.L.C S.O.C)', analyticsOrg: zaOrg(), workspace: zaWs(), table: zaTable() }) };
+let balances = null, balancesAt = 0, balancesLoading = null;
+function refreshBalances() {
+  if (!balancesLoading) {
+    const C = col();
+    balancesLoading = analyticsSql(`select * from "${zaTable().replace(/"/g, '')}"`)
+      .then(rows => {
+        balances = new Map(rows.map(r => [String(r[C.id]).replace(/\.0+$/, ''), toRecord(r)]));
+        balancesAt = Date.now();
+        return balances;
+      })
+      .finally(() => { balancesLoading = null; });
+  }
+  return balancesLoading;
+}
+// Fire-and-forget pre-load (called while the user is typing a client name).
+function prefetchBalances() { if (Date.now() - balancesAt > BALANCE_TTL) refreshBalances().catch(e => console.error('Zoho Analytics pre-load failed:', e.message)); }
+const balancesFresh = () => !!balances && Date.now() - balancesAt <= BALANCE_TTL;
+
+// Balance row for one Books contact, never older than BALANCE_TTL. null = no balance record in Analytics.
+async function analyticsBalance(contactId) {
+  if (!/^\d{1,30}$/.test(String(contactId || ''))) return null;
+  if (!balancesFresh()) await refreshBalances();
+  return balances.get(String(contactId)) || null;
+}
+
+return { zohoReady, accessToken, exact, norm, booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, prefetchBalances, balancesFresh, col, toRecord, config: () => ({ booksOrg: booksOrg() + ' (ELITE ONELINK CORPORATE SERVICES L.L.C S.O.C)', analyticsOrg: zaOrg(), workspace: zaWs(), table: zaTable() }) };
 })();
 
 // ---- rules.js ----
@@ -703,7 +731,7 @@ return { mount, postSystem };
 })();
 
 // ---- server.js ----
-const { booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, accessToken, zohoReady, config: zohoConfig } = M_zoho;
+const { booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, prefetchBalances, balancesFresh, accessToken, zohoReady, config: zohoConfig } = M_zoho;
 const { decide, MSG } = M_rules;
 const { appendRecord } = M_sheets;
 const gate = M_gate;
@@ -748,7 +776,7 @@ function stamp(d = new Date()) {
 }
 const aed = n => 'AED ' + Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
 
-app.get('/api/health', async (_q, s) => s.json({ ok: true, zoho: await zohoReady, live: zohoConfig(), sheet: !!(E.GOOGLE_SHEET_ID && E.GOOGLE_SERVICE_ACCOUNT_B64), time: new Date().toISOString() }));
+app.get('/api/health', async (_q, s) => s.json({ ok: true, zoho: await zohoReady, live: zohoConfig(), balancesFresh: balancesFresh(), sheet: !!(E.GOOGLE_SHEET_ID && E.GOOGLE_SERVICE_ACCOUNT_B64), time: new Date().toISOString() }));
 
 app.get('/api/zoho/test', async (_q, s) => {
   try { await accessToken(); s.json({ ok: true, oauth: 'refreshed', live: zohoConfig() }); } catch (e) { zohoErr(s, e); }
@@ -758,6 +786,7 @@ app.get('/api/zoho/test', async (_q, s) => {
 app.get('/api/zoho/clients', async (q, s) => {
   const term = typeof q.query.q === 'string' ? q.query.q.trim().slice(0, 100) : '';
   if (term.length < 2) return s.json({ ok: true, clients: [], tooShort: true });
+  prefetchBalances(); // so the balance is ready when a client is picked
   try {
     const clients = await booksSearchClients(term);
     s.json({ ok: true, clients, notFound: !clients.length, message: clients.length ? '' : NOT_FOUND_MSG, source: 'Zoho Books · live' });
@@ -784,8 +813,11 @@ app.post('/api/zoho/validate-client', async (q, s) => {
     await notifySven(`BLOCKED — fund request attempted for Zoho Books contact ${contactId}, which is not an active client.`, { contactId });
     return s.status(422).json({ found: false, locked: true, reason: 'CLIENT_NOT_FOUND', error: NOT_FOUND_MSG });
   }
-  let balance;
-  try { balance = balanceOut(await analyticsBalance(books.contactId)); } catch (e) { balance = { found: false, error: e.message, source: 'Zoho Analytics · not reachable' }; }
+  // The selection never waits long on Analytics: after 5 s the page shows "reading balance" and asks again.
+  const balance = await Promise.race([
+    analyticsBalance(books.contactId).then(balanceOut, e => ({ found: false, error: e.message, source: 'Zoho Analytics · not reachable' })),
+    new Promise(r => setTimeout(() => r({ pending: true, source: 'Zoho Analytics · loading' }), 5000))
+  ]);
   s.json({
     found: true, clientName: books.contactName, companyName: books.companyName, clientId: books.contactId, matchedIn: 'Zoho Books',
     token: gate.issue(books.contactName, books.contactId, 'Zoho Books'), balance
