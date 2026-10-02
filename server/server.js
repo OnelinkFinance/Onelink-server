@@ -94,9 +94,14 @@ const exact = (list, name, ...getters) => list.find(x => getters.some(g => g(x) 
 // Loose normaliser — used ONLY for the relevance check and search ranking, never for identity.
 const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
-// Live sources. Defaults are the verified Elite OneLink org (Books) and the "Elite Onelink" workspace
-// (Analytics), whose CFD Customer Balances table is keyed by the Books contact_id. Env overrides all.
-const booksOrg = () => E.ZOHO_BOOKS_ORG_ID || '898300452';
+// Live sources. Clients come ONLY from ELITE ONELINK CORPORATE SERVICES L.L.C S.O.C (Zoho Books org 898300452).
+// The same Zoho login also sees Onelink Rentals LLC-FZ (886143418) — never used here. The org is fixed in code:
+// a ZOHO_BOOKS_ORG_ID pointing anywhere else is ignored. Analytics: the "Elite Onelink" workspace, whose
+// CFD Customer Balances table is keyed by the Elite Books contact_id.
+const ELITE_BOOKS_ORG = '898300452';
+if (E.ZOHO_BOOKS_ORG_ID && E.ZOHO_BOOKS_ORG_ID !== ELITE_BOOKS_ORG)
+  console.warn(`ZOHO_BOOKS_ORG_ID=${E.ZOHO_BOOKS_ORG_ID} ignored — clients are read only from Elite OneLink (${ELITE_BOOKS_ORG}).`);
+const booksOrg = () => ELITE_BOOKS_ORG;
 const zaOrg = () => E.ZOHO_ORG_ID || '926340534';
 const zaWs = () => E.ZOHO_WORKSPACE_ID || '3241925000000011002';
 const zaTable = () => E.ZA_BALANCE_TABLE || 'CFD Customer Balances';
@@ -214,7 +219,7 @@ async function analyticsBalance(contactId) {
   throw Object.assign(new Error('Zoho Analytics export timed out'), { code: 'ANALYTICS' });
 }
 
-return { zohoReady, accessToken, exact, norm, booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, col, toRecord, config: () => ({ booksOrg: booksOrg(), analyticsOrg: zaOrg(), workspace: zaWs(), table: zaTable() }) };
+return { zohoReady, accessToken, exact, norm, booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, col, toRecord, config: () => ({ booksOrg: booksOrg() + ' (ELITE ONELINK CORPORATE SERVICES L.L.C S.O.C)', analyticsOrg: zaOrg(), workspace: zaWs(), table: zaTable() }) };
 })();
 
 // ---- rules.js ----
