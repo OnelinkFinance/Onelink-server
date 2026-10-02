@@ -678,6 +678,45 @@ function mayWrite(u, col, item, prev) {
   return false;
 }
 
+// Request numbers are picked in the sender's browser ("highest FR number I can see + 1"). Operations users only
+// see their own requests, so their number can already belong to someone else's. The creator ("by") of a request
+// never changes, so a put whose id exists with a different creator is a NEW request: it gets the next free
+// number. The old number is remembered per user for a day, so that browser's follow-up writes (notification,
+// chat, Zoho check, edits) land on the right request until it has renamed it.
+const remaps = new Map(); // `${userKey}:${oldId}` -> { id, at }
+const DAY = 24 * 3600 * 1000;
+const nextRequestId = () => 'FR-' + (db.requests.reduce((a, r) => Math.max(a, Number(String(r.id).replace(/\D/g, '')) || 0), 0) + 1);
+function resolveRequestId(userKey, id) {
+  const r = id && remaps.get(userKey + ':' + id);
+  if (r && Date.now() - r.at > DAY) { remaps.delete(userKey + ':' + id); return id; }
+  return r ? r.id : id;
+}
+
+// Zoho result of the automatic check that runs when a request is sent. The server attaches it to the request
+// itself; if the browser's copy of the request has not arrived yet, it waits here and is attached on arrival.
+const pendingZoho = new Map(); // `${userKey}:${requestId as the browser named it}` -> { fields, tl, at }
+const withZoho = (r, z) => {
+  const n = Object.assign({}, r, z.fields);
+  if (!(n.timeline || []).some(t => t.text === z.tl.text)) n.timeline = (n.timeline || []).concat([z.tl]);
+  return n;
+};
+function attachZohoResult(userKey, requestId, fields, tl) {
+  if (!requestId) return false;
+  const id = resolveRequestId(userKey, requestId), r = db.requests.find(x => x.id === id);
+  if (r && r.by === userKey) { postSystem('requests', withZoho(r, { fields, tl })); return true; }
+  pendingZoho.set(userKey + ':' + requestId, { fields, tl, at: Date.now() });
+  for (const [k, v] of pendingZoho) if (Date.now() - v.at > DAY) pendingZoho.delete(k);
+  return false;
+}
+// Wait briefly for the browser's copy of a just-sent request (it is pushed alongside the check).
+async function awaitOwnRequest(userKey, requestId, ms = 1500) {
+  for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 100))) {
+    const id = resolveRequestId(userKey, requestId);
+    if (db.requests.some(x => x.id === id && x.by === userKey)) return id;
+  }
+  return resolveRequestId(userKey, requestId);
+}
+
 function upsert(col, item) {
   const list = db[col], i = list.findIndex(x => x.id === item.id);
   const prev = i >= 0 ? list[i] : null;
@@ -721,11 +760,38 @@ function mount(app) {
   app.post('/api/sync/put', requireAuth, (q, s) => {
     const { col, item } = q.body || {};
     if (!COLS.includes(col) || !item || typeof item.id !== 'string') return s.status(400).json({ ok: false, error: 'col + item.id required' });
+    let renamed = null;
+    const sentId = item.id; // the number the browser used, before any renumbering
+    if (col === 'requests') {
+      const mapped = resolveRequestId(q.user.key, item.id);
+      if (mapped !== item.id) item.id = mapped;
+      else {
+        const taken = db.requests.find(x => x.id === item.id);
+        if (taken && taken.by !== item.by) {
+          renamed = nextRequestId();
+          remaps.set(q.user.key + ':' + item.id, { id: renamed, at: Date.now() });
+          console.log(`Request number ${item.id} already belongs to ${taken.by}; ${q.user.key}'s new request saved as ${renamed}.`);
+          item.id = renamed;
+        }
+      }
+    } else if (typeof item.req === 'string') item.req = resolveRequestId(q.user.key, item.req);
     const prev = db[col].find(x => x.id === item.id) || null;
     if (!mayWrite(q.user, col, item, prev)) return s.status(403).json({ ok: false, error: 'Not permitted' });
+    // A browser can send two versions of one request back to back (created, then the Zoho result added);
+    // if the older lands last it must not erase the Zoho result or its history line.
+    if (col === 'requests' && prev && prev.zohoStatus && !item.zohoStatus) {
+      for (const k of ['zohoStatus', 'zohoBalance', 'zohoReason', 'zohoValidationId', 'zohoCheckedAt', 'flagged']) if (prev[k] !== undefined) item[k] = prev[k];
+      const have = new Set((item.timeline || []).map(t => t.at + '|' + t.text));
+      const lost = (prev.timeline || []).filter(t => /^Zoho (Analytics balance|balance check)/.test(t.text) && !have.has(t.at + '|' + t.text));
+      if (lost.length) item.timeline = (item.timeline || []).concat(lost);
+    }
+    if (col === 'requests' && item.by === q.user.key) {
+      const k = q.user.key + ':' + sentId, z = pendingZoho.get(k);
+      if (z) { Object.assign(item, withZoho(item, z)); pendingZoho.delete(k); }
+    }
     upsert(col, item);
     broadcast({ type: 'put', col, item, rev: db.rev, by: q.user.key }, col, item);
-    s.json({ ok: true, rev: db.rev });
+    s.json({ ok: true, rev: db.rev, id: item.id, renamed });
   });
 
   app.get('/api/sync/stream', requireAuth, (q, s) => {
@@ -748,7 +814,7 @@ function postSystem(col, item) {
   return item;
 }
 
-return { mount, postSystem };
+return { mount, postSystem, resolveRequestId, attachZohoResult, awaitOwnRequest };
 })();
 
 // ---- server.js ----
@@ -907,9 +973,17 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
   try { rec = await analyticsBalance(books.contactId); } catch (e) { return zohoErr(s, e); }
 
   const d = decide({ req, books, rec });
+  // The browser pushes the new request alongside this check and it may get a new number: wait for it briefly,
+  // so the chat record, Sven's notification and the sheet row all carry the request's final number.
+  const sentId = req.requestId;
+  if (sentId) req.requestId = await store.awaitOwnRequest(q.user.key, sentId);
   const validationId = 'ZV-' + crypto.randomBytes(4).toString('hex').toUpperCase();
   const checkedAt = new Date().toISOString();
   const exported = exportRecord(req, d, q.user, { validationId, checkedAt });
+  const t = stamp();
+  const attached = store.attachZohoResult(q.user.key, sentId, {
+    zohoStatus: d.approvalStatus, zohoBalance: exported.balance, zohoReason: d.reason, zohoValidationId: validationId, zohoCheckedAt: checkedAt, flagged: !d.ok
+  }, { at: t.day + ' · ' + t.at, text: `Zoho Analytics balance ${aed(exported.balance)} — ${d.approvalStatus}${d.ok ? '' : '. ' + d.notes}` });
 
   let sheet;
   try {
@@ -925,7 +999,7 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
     clientId: d.clientId || null,
     availableBalance: d.available ?? 0, allocatedBalance: d.allocated ?? 0, usedBalance: d.used ?? 0,
     remainingAfterRequest: d.remaining ?? 0, requestedAmount: req.requestedAmount,
-    notes: d.notes, flagSven: d.flagSven, svenNotified, svenSummary, sheet, reviewer: REVIEWER, exported,
+    notes: d.notes, flagSven: d.flagSven, svenNotified, svenSummary, sheet, reviewer: REVIEWER, exported, requestId: req.requestId || null, attachedToRequest: attached,
     source: 'Zoho Books + Zoho Analytics', validationId, checkedAt
   });
 });

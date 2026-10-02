@@ -141,13 +141,12 @@ const GATE_JS = `  verifyClient() {
   /* Runs right after a request is sent: live balance check, approval or flag. The server posts the
      result to the group chat, notifies Sven and writes the funding sheet row. */
   autoZohoCheck(req) {
-    const id = req.id;
     this.zohoCall(req).then(out => {
+      const id = (this._idAlias && this._idAlias[req.id]) || req.id; // the server may have given it a new number
       if (!this.reqById(id)) return;
       const j = out.live ? out.json || {} : null;
       if (j && j.approvalStatus) {
-        this.apply(id, { zohoStatus: j.approvalStatus, zohoBalance: Number(j.availableBalance) || 0, zohoReason: j.reason, zohoValidationId: j.validationId || null, zohoCheckedAt: j.checkedAt || null, flagged: !j.ok },
-          'Zoho Analytics balance ' + this.fmt(Number(j.availableBalance) || 0) + ' — ' + j.approvalStatus + (j.ok ? '' : '. ' + (j.notes || '')) + (j.sheet && j.sheet.written ? ' · logged to the funding sheet' : ''), null);
+        // The server attaches the result to the request and pushes it to every screen (Sven's included).
         return this.flash(j.notes || j.approvalStatus, null, j.ok ? 'ph ph-seal-check' : 'ph ph-flag');
       }
       const why = j ? (j.error || 'no result') : this.zohoWhy(out.why, out.status)[0];
@@ -263,7 +262,7 @@ export const TEMPLATE_RULES = [
   ["    return this.normAcct({ key: u.key, name: u.name, username: u.username, dept: u.dept, role: u.role, active: u.active, perms: u.perms || [], created: u.created, lastLogin: u.lastLogin || '—', locked: u.locked, pwHash: 'server' });",
    "    return this.normAcct({ key: u.key, name: u.name, username: u.username, dept: u.dept, role: u.role, active: u.active, perms: u.perms || [], created: u.created, lastLogin: u.lastLogin || '—', locked: u.locked, online: !!u.online, passwordSet: u.passwordSet || '—', pwHash: 'server' });"],
   ["      this._prevAccounts = next.accounts;\n      this.setState(next);\n    });\n  }",
-   "      this._prevAccounts = next.accounts;\n      this.setState(next);\n      if (isM) this.loadLoginLog();\n    });\n  }\n  /* Sign-in history from the server — Master Control shows it straight after a reload, not only new events. */\n  loadLoginLog() {\n    this.api('/api/admin/login-history').then(o => {\n      if (!o.ok || !Array.isArray(o.json)) return;\n      this.setState({ loginLog: o.json.map(x => ({ at: new Date(x.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }), kind: x.kind, who: x.who, detail: x.detail })) });\n    }).catch(() => {});\n  }"],
+   "      this._prevAccounts = next.accounts;\n      this.setState(next);\n      this._rev = Math.max(this._rev || 0, j.rev || 0);\n      if (isM) { this.loadLoginLog(); if (!this._revT) this._revT = setInterval(() => this.revCheck(), 20000); }\n    });\n  }\n  /* Safety net for the Master view: if the server holds changes this screen never received, reload them. */\n  revCheck() {\n    if (!this.state.authed || !this._token) return;\n    this.api('/api/sync/health').then(o => { if (o.ok && o.json.rev > (this._rev || 0)) this.liveLoad(false); }).catch(() => {});\n  }\n  /* Sign-in history from the server — Master Control shows it straight after a reload, not only new events. */\n  loadLoginLog() {\n    this.api('/api/admin/login-history').then(o => {\n      if (!o.ok || !Array.isArray(o.json)) return;\n      this.setState({ loginLog: o.json.map(x => ({ at: new Date(x.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }), kind: x.kind, who: x.who, detail: x.detail })) });\n    }).catch(() => {});\n  }"],
   ["      this.flash(uf.mode === 'add' ? uf.name.trim() + ' can now sign in from any device' : 'Saved on the live server', null, 'ph ph-cloud-check');",
    "      this.flash(uf.mode === 'add' ? uf.name.trim() + ' can now sign in from any device' : 'Saved on the live server', null, 'ph ph-cloud-check');\n      this.liveLoad(false);"],
   ["    if (this.isLive()) return this.api('/api/admin/users/' + key + '/active', { method: 'POST', body: { active: on } }).then(o => this.flash(o.ok ? (this.users()[key].name + (on ? ' reactivated' : ' deactivated — signed out everywhere')) : 'The server refused the change', null, o.ok ? 'ph ph-cloud-check' : 'ph ph-prohibit'));",
@@ -273,7 +272,25 @@ export const TEMPLATE_RULES = [
   ["          lastLogin: a.lastLogin, permCount:",
    "          lastLogin: a.lastLogin, liveLine: a.locked ? 'Locked — wrong passwords' : a.online ? '● Online now' : '', liveFg: a.locked ? 'var(--fgRed)' : 'var(--fgGreen)', pwSet: a.passwordSet || '—', permCount:"],
   ['<span style="width:118px; display:flex; flex-direction:column; gap:1px">\n                      <span style="font-size:11.5px; color:var(--ink3)">{{ ur.permCount }}</span>\n                      <span style="font-size:10.5px; color:var(--mut3)">seen {{ ur.lastLogin }}</span>',
-   '<span style="width:150px; display:flex; flex-direction:column; gap:1px">\n                      <span style="font-size:11.5px; color:var(--ink3)">{{ ur.permCount }}</span>\n                      <span style="font-size:10.5px; color:{{ ur.liveFg }}">{{ ur.liveLine }}</span>\n                      <span style="font-size:10.5px; color:var(--mut3)">last sign-in {{ ur.lastLogin }}</span>\n                      <span style="font-size:10.5px; color:var(--mut3)">password set {{ ur.pwSet }}</span>']
+   '<span style="width:150px; display:flex; flex-direction:column; gap:1px">\n                      <span style="font-size:11.5px; color:var(--ink3)">{{ ur.permCount }}</span>\n                      <span style="font-size:10.5px; color:{{ ur.liveFg }}">{{ ur.liveLine }}</span>\n                      <span style="font-size:10.5px; color:var(--mut3)">last sign-in {{ ur.lastLogin }}</span>\n                      <span style="font-size:10.5px; color:var(--mut3)">password set {{ ur.pwSet }}</span>'],
+  // request numbers: follow the server when it had to give a new request a free number
+  ["        this.api('/api/sync/put', { method: 'POST', body: { col: col, item: item } }).then(o => {",
+   "        this.api('/api/sync/put', { method: 'POST', body: { col: col, item: item } }).then(o => {\n          if (col === 'requests' && o.json && o.json.renamed) this.renameRequest(item.id, o.json.renamed);"],
+  ["  liveEvent(m) {\n",
+   `  /* The server saved a new request under a free number (the one picked here already belonged to someone else). */
+  renameRequest(oldId, newId) {
+    this._idAlias = Object.assign({}, this._idAlias, { [oldId]: newId });
+    // Only this screen's copy is renamed; the server already re-pointed everything else to the new number.
+    this.setState(s => {
+      const has = s.requests.some(r => r.id === newId);
+      const requests = has ? s.requests.filter(r => r.id !== oldId) : s.requests.map(r => r.id === oldId ? Object.assign({}, r, { id: newId }) : r);
+      return { requests: requests, reqId: s.reqId === oldId ? newId : s.reqId };
+    });
+    this.flash('Sent to finance — ' + newId, null, 'ph ph-paper-plane-tilt');
+  }
+  liveEvent(m) {
+    if (m && typeof m.rev === 'number') this._rev = Math.max(this._rev || 0, m.rev);
+`]
 ];
 
 // Returns { text, hit, total }. All-or-nothing: if any rule does not match exactly once, the input is returned unchanged.
