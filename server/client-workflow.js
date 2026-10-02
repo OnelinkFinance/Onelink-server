@@ -5,9 +5,11 @@
 //      Typed names are never accepted; no match shows "Client not found in Zoho Books. Cannot proceed."
 //   2. Picking a client reads its balance from Zoho Analytics straight away, and the amount field
 //      compares against it as the user types.
-//   3. Sending a request runs the live funding check: sufficient balance → "Partially Approved – pending
-//      final confirmation with Sven"; zero/insufficient → flagged for Sven. The server writes the chat
-//      export and the funding sheet row.
+//   3. Send: mandatory fields (company from a dropdown, purpose, amount, "client already paid us?"), then a
+//      server pre-check — the client must not already have a request pending Sven's approval, and its Zoho
+//      Analytics balance must cover the amount. Operations never see the balance, only the outcome.
+//      A request that passes is "Pending Sven Approval"; the server writes the chat export and sheet row.
+//   4. Notifications open the request inline, inside the Updates panel — no page or tab change.
 //
 // Each rule is either [from, to] (exact text, must occur once) or { start, end, to } (replaces the
 // text from `start` up to, not including, `end`). If any rule misses, none are applied — a new export
@@ -15,7 +17,8 @@
 
 const NOT_FOUND = 'Client not found in Zoho Books. Cannot proceed.';
 const INSUFFICIENT = 'Client does not have sufficient balance in Zoho Analytics. Flagging Sven for review.';
-const PROVISIONAL = 'Partially Approved – pending final confirmation with Sven';
+const PROVISIONAL = 'Pending Sven Approval';
+const MANDATORY = 'All mandatory fields must be completed before submitting the request.';
 
 const CLIENT_FIELD_FROM = `              <label>Client name — exactly as it appears in Zoho Books or Zoho Analytics</label>
               <div style="display:flex; gap:8px; flex-wrap:wrap">
@@ -65,7 +68,7 @@ const GATE_JS = `  verifyClient() {
     const term = v.trim(), seq = (this._zSeq || 0) + 1;
     this._zSeq = seq;
     clearTimeout(this._zT);
-    this.setState({ gate: Object.assign({}, g, { name: v, status: 'idle', results: [], notFound: false, searching: term.length >= 2, active: 0, hintErr: '', error: '' }) });
+    this.setState({ gate: Object.assign({}, g, { name: v, status: 'idle', results: [], notFound: false, searching: term.length >= 2, active: 0, hintErr: '', error: '', lockMsg: '', lockRef: '' }) });
     if (term.length < 2) return;
     this._zT = setTimeout(() => {
       fetch(this.zohoApiUrl('/clients') + '?q=' + encodeURIComponent(term), { mode: 'cors', credentials: 'include', headers: this.zohoHeaders(false) })
@@ -91,11 +94,15 @@ const GATE_JS = `  verifyClient() {
         if (o.st === 200 && o.j.found === true) {
           this.logAudit('CLIENT_VALIDATED', o.j.clientName + ' — selected from Zoho Books (' + o.j.clientId + ')', null, o.j.clientName);
           this.setState(s => ({
-            gate: { name: o.j.clientName, status: 'ok', at: this.now(), clientId: o.j.clientId, matchedIn: o.j.matchedIn, token: o.j.token, balance: o.j.balance || null },
-            form: Object.assign({}, s.form || this.blankForm(), (s.form && s.form.company) ? {} : { company: o.j.companyName || '' })
+            gate: { name: o.j.clientName, companyName: o.j.companyName || '', status: 'ok', at: this.now(), clientId: o.j.clientId, matchedIn: o.j.matchedIn, token: o.j.token, balance: o.j.balance || null },
+            form: Object.assign({}, s.form || this.blankForm(), { company: o.j.companyName || o.j.clientName })
           }));
           if (o.j.balance && o.j.balance.pending) this.loadBalance(o.j.clientId);
           return;
+        }
+        if (o.st === 409 && o.j.locked) { // this client already has a request waiting for Sven
+          this.logAudit('REQUEST_BLOCKED', '“' + c.contactName + '” — ' + (o.j.pendingId || 'a request') + ' is still pending Sven’s approval', null, c.contactName);
+          return this.setState({ gate: { name: '', status: 'idle', results: [], hintErr: '', lockMsg: o.j.error, lockRef: o.j.pendingId || '' } });
         }
         if (o.st === 422 || o.st === 423) {
           this.logAudit('CLIENT_VALIDATION_FAILED', '“' + c.contactName + '” is not an active Zoho Books client — request blocked', null, c.contactName);
@@ -119,6 +126,10 @@ const GATE_JS = `  verifyClient() {
     const g = this.gate();
     if (g.status !== 'ok') return {};
     const b = g.balance, amt = Number((this.state.form || this.blankForm()).amount) || 0, out = {};
+    if (b && b.hidden) { // Operations: the balance is checked on the server, never shown
+      out.line = 'The Zoho Analytics balance is validated in the background when you send.'; out.fg = 'var(--mut2)';
+      return out;
+    }
     if (b && b.pending) {
       out.line = 'Reading the balance from Zoho Analytics…'; out.fg = 'var(--mut2)';
       if (amt > 0) { out.amountLine = 'Checking against the Zoho Analytics balance…'; out.amountFg = 'var(--mut2)'; out.amountIcon = 'ph ph-hourglass'; }
@@ -137,6 +148,60 @@ const GATE_JS = `  verifyClient() {
       else { out.amountLine = 'Within the Zoho Analytics balance — will be ${PROVISIONAL}.'; out.amountFg = 'var(--fgGreen)'; out.amountIcon = 'ph ph-seal-check'; }
     }
     return out;
+  }
+  /* Send, step 1: ask the server whether this client is free (no request pending Sven) and whether its Zoho
+     Analytics balance covers the amount. It answers with a one-time pass the new request must carry. */
+  precheck(force) {
+    const g = this.gate(), f = this.state.form || this.blankForm(), amount = Number(f.amount);
+    if (this._prechecking) return;
+    this._prechecking = true;
+    this.setState({ askNoDoc: false });
+    this.flash('Checking the client in Zoho Analytics…', null, 'ph ph-hourglass');
+    fetch(this.zohoApiUrl('/precheck'), { method: 'POST', mode: 'cors', credentials: 'include', headers: this.zohoHeaders(true), body: JSON.stringify({ validationToken: g.token, clientName: g.name, amount: amount }), signal: this.zohoTimeout(40000) })
+      .then(r => r.json().then(j => ({ st: r.status, j: j })))
+      .then(o => {
+        this._prechecking = false;
+        if (o.st === 200 && o.j.ok && o.j.submitToken) { this._pre = { token: g.token, amount: amount, submitToken: o.j.submitToken }; return this.send(force); }
+        const msg = o.j.error || ('The balance check failed (HTTP ' + o.st + '). Nothing was sent.');
+        this.setState(s => ({ errors: Object.assign({}, s.errors, { summary: msg }), shake: s.shake + 1, askNoDoc: false }));
+        this.flash(msg, null, o.j.reason === 'INSUFFICIENT_BALANCE' ? 'ph ph-flag' : 'ph ph-prohibit');
+      })
+      .catch(err => {
+        this._prechecking = false;
+        const msg = 'Zoho could not be reached (' + err.message + '). Nothing was sent — try again.';
+        this.setState(s => ({ errors: Object.assign({}, s.errors, { summary: msg }) }));
+        this.flash(msg, null, 'ph ph-plugs');
+      });
+  }
+  /* The server refused a new request (e.g. another one for this client landed first): take it back off this screen. */
+  rejectRequest(id, error) {
+    this.setState(s => ({ requests: s.requests.filter(r => r.id !== id), route: s.reqId === id ? 'board' : s.route, reqId: s.reqId === id ? null : s.reqId }));
+    this.flash(error || 'The server refused this request — nothing was submitted.', null, 'ph ph-prohibit');
+  }
+  /* A notification opens its request right inside the Updates panel — the page and tab stay where they are. */
+  peekVals(isOps) {
+    const s = this.state, back = () => this.setState({ peekId: null, peekMissing: false });
+    if (!s.peekId && !s.peekMissing) return { open: false, closed: true };
+    const r = s.peekId ? this.reqById(s.peekId) : null;
+    if (!r) return { open: true, closed: false, found: false, missing: true, back: back, missingText: 'This request is not on the platform — it was not submitted, or it has been removed.', full: back };
+    const u = this.users()[r.by], open = ['NEW', 'ACTION'].indexOf(r.status) >= 0;
+    const facts = [
+      { label: 'Purpose', value: r.purpose || '—' },
+      { label: 'Client already paid us?', value: r.paid || '—' },
+      { label: 'Zoho Analytics', value: r.zohoStatus ? r.zohoStatus + (!isOps && typeof r.zohoBalance === 'number' ? ' · balance ' + this.fmt(r.zohoBalance) : '') : 'Not checked yet' },
+      { label: 'Freezone', value: r.zone || '—' },
+      { label: 'Documents', value: (r.docs || []).length ? (r.docs || []).length + ' attached' : 'None attached' },
+      { label: 'Requested on', value: r.date || '—' }
+    ].concat(r.notes ? [{ label: 'Notes', value: r.notes }] : []);
+    return {
+      open: true, closed: false, found: true, missing: false, back: back,
+      id: r.id, status: this.statusMeta(r.status).label, company: r.company, client: (r.person && r.person !== '—') ? r.person : r.company,
+      by: u ? u.name : r.by, amount: this.fmt(r.requested), facts: facts,
+      history: (r.timeline || []).slice(-5).reverse().map(t => ({ at: t.at, text: t.text })),
+      canDecide: !isOps && open && this.canApproveReq(r),
+      approve: () => this.approveFull(r.id), ask: () => this.openModal('info', r.id), decline: () => this.openModal('decline', r.id),
+      full: () => this.open(r.id)
+    };
   }
   /* Runs right after a request is sent: live balance check, approval or flag. The server posts the
      result to the group chat, notifies Sven and writes the funding sheet row. */
@@ -169,10 +234,11 @@ const GATE_VALS = `      gate: (() => {
         unreachable: g.status === 'error' ? g.error : false,
         showList: g.status === 'idle' && list.length > 0,
         suggestions: list.map((c, i) => ({
-          name: c.contactName, sub: (c.companyName && c.companyName !== c.contactName ? c.companyName + ' · ' : '') + 'Zoho Books · ' + c.contactId,
+          name: c.contactName, sub: (c.pendingId ? 'Request Pending Approval · ' + c.pendingId + ' · ' : '') + (c.companyName && c.companyName !== c.contactName ? c.companyName + ' · ' : '') + 'Zoho Books · ' + c.contactId,
           active: i === act, bg: i === act ? 'var(--sf2)' : 'transparent', pick: () => this.pickClient(c)
         })),
-        notFound: nf, notFoundMsg: '${NOT_FOUND}',
+        notFound: nf || !!g.lockMsg, notFoundMsg: g.lockMsg || '${NOT_FOUND}',
+        companyOptions: [g.companyName, g.name].filter((v, i, a) => v && a.indexOf(v) === i),
         title: { idle: 'Who is this request for?', checking: 'Confirming in Zoho Books and reading the Zoho Analytics balance…', ok: 'Client selected from Zoho Books', failed: 'Client not found — workflow locked', error: 'Zoho could not be reached' }[g.status],
         icon: { idle: 'ph ph-magnifying-glass', checking: 'ph ph-circle-notch', ok: 'ph ph-seal-check', failed: 'ph ph-prohibit', error: 'ph ph-plugs' }[g.status],
         iconSpin: g.status === 'checking' || g.searching ? 'spin .9s linear infinite' : 'none',
@@ -181,7 +247,7 @@ const GATE_VALS = `      gate: (() => {
         frame: g.status === 'ok' ? 'var(--fgGreen)' : g.status === 'failed' || nf ? 'var(--fgRed)' : 'var(--line)',
         anim: g.status === 'failed' ? 'none' : 'riseIn .26s ease',
         inputBd: g.hintErr || nf ? 'var(--fgRed)' : 'var(--line)',
-        hint: g.hintErr || (g.searching ? 'Searching Zoho Books…' : typed.length < 2 ? 'Type at least two letters — matching Zoho Books clients appear below. Typed names are not accepted.' : list.length ? list.length + ' Zoho Books match' + (list.length === 1 ? '' : 'es') + ' — pick one to continue.' : ''),
+        hint: g.hintErr || (g.lockRef ? 'Pending request: ' + g.lockRef + ' — pick another client, or wait for Sven’s approval.' : g.searching ? 'Searching Zoho Books…' : typed.length < 2 ? 'Type at least two letters — matching Zoho Books clients appear below. Typed names are not accepted.' : list.length ? list.length + ' Zoho Books match' + (list.length === 1 ? '' : 'es') + ' — pick one to continue.' : ''),
         hintFg: g.hintErr ? 'var(--fgRed)' : 'var(--mut3)',
         btnLabel: g.status === 'checking' ? 'Checking…' : 'Select',
         btnIcon: g.status === 'checking' ? 'ph ph-circle-notch' : 'ph ph-shield-check',
@@ -235,7 +301,7 @@ export const TEMPLATE_RULES = [
       detail.zeroLine = '${INSUFFICIENT} Requested ' + this.fmt(r.requested) + ' · Zoho Analytics balance ' + this.fmt(avail) + '.';
       detail.flagged = !!r.flagged;
       detail.flag = () => this.flagForSven(r.id, 'client does not have sufficient balance in Zoho Analytics');
-      detail.balanceLine = known ? 'Zoho Analytics balance ' + this.fmt(avail) + (r.zohoStatus ? ' · ' + r.zohoStatus : '') : 'Zoho Analytics balance not checked yet';
+      detail.balanceLine = known && !isOps ? 'Zoho Analytics balance ' + this.fmt(avail) + (r.zohoStatus ? ' · ' + r.zohoStatus : '') : r.zohoStatus ? 'Zoho Analytics check · ' + r.zohoStatus : 'Zoho Analytics balance not checked yet';
 ` },
   { start: '    const zeroList = s.requests.filter(', end: '      go: () => this.open(z.r.id)\n    }));',
     to: `    const zeroList = s.requests.filter(x => openStates.indexOf(x.status) >= 0 && typeof x.zohoBalance === 'number' && x.zohoBalance < x.requested)
@@ -290,7 +356,92 @@ export const TEMPLATE_RULES = [
   }
   liveEvent(m) {
     if (m && typeof m.rev === 'number') this._rev = Math.max(this._rev || 0, m.rev);
-`]
+`],
+  // mandatory fields: company from a dropdown (the picked Zoho Books client), purpose, amount, "already paid?"
+  ['            <label>Company name</label>\n            <input class="input" placeholder="Tiger Enterprises FZ-LLC" value="{{ form.company }}" sc-camel-on-change="{{ onForm.company }}" style="border-radius:12px; border-color:{{ err.companyBd }}">',
+   '            <label>Company name * — from Zoho Books</label>\n            <sc-raw-select class="input" value="{{ form.company }}" sc-camel-on-change="{{ onForm.company }}" style="border-radius:12px; border-color:{{ err.companyBd }}">\n              <sc-for list="{{ gate.companyOptions }}" as="co" hint-placeholder-count="1"><option value="{{ co }}">{{ co }}</option></sc-for>\n            </sc-raw-select>'],
+  ['<label>Purpose of payment</label>', '<label>Purpose of payment *</label>'],
+  ['<label>Amount required (AED)</label>', '<label>Amount required (AED) *</label>'],
+  ['            <label>Client already paid us?</label>\n            <sc-raw-select class="input" value="{{ form.paid }}" sc-camel-on-change="{{ onForm.paid }}" style="border-radius:12px">\n              <sc-for list="{{ paidOptions }}" as="p" hint-placeholder-count="4"><option value="{{ p }}">{{ p }}</option></sc-for>\n            </sc-raw-select>',
+   '            <label>Client already paid us? *</label>\n            <sc-raw-select class="input" value="{{ form.paid }}" sc-camel-on-change="{{ onForm.paid }}" style="border-radius:12px; border-color:{{ err.paidBd }}">\n              <option value="">Select…</option>\n              <sc-for list="{{ paidOptions }}" as="p" hint-placeholder-count="4"><option value="{{ p }}">{{ p }}</option></sc-for>\n            </sc-raw-select>\n            <sc-if value="{{ err.paid }}" hint-placeholder-val="{{ false }}">\n              <div style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--fgRed); margin-top:5px"><i class="ph ph-warning-circle" style="font-size:13px"></i>{{ err.paid }}</div>\n            </sc-if>'],
+  // "Already paid?" must be chosen; the date starts at today (the export had 17 Sep 2026 frozen in)
+  ["paid: 'Yes — in full', date: '2026-09-17', notes: '' };", "paid: '', date: new Date().toISOString().slice(0, 10), notes: '' };"],
+  // live "company → status" toast read statusMeta()[0], which is undefined (statusMeta returns an object)
+  ["else if (col === 'requests') this.flash(item.company + ' → ' + this.statusMeta(item.status)[0], null, 'ph ph-arrows-clockwise');",
+   "else if (col === 'requests') this.flash(item.company + ' → ' + this.statusMeta(item.status).label, null, 'ph ph-arrows-clockwise');"],
+  { start: '  validate() {\n    const f = this.state.form || this.blankForm(), e = {};', end: '  send(force) {',
+    to: `  validate() {
+    const f = this.state.form || this.blankForm(), e = {};
+    if (!String(f.company || '').trim()) e.company = 'Pick the company from the Zoho Books list.';
+    if (!f.purpose.trim()) e.purpose = 'Say what the payment is for.';
+    if (!f.amount.toString().trim()) e.amount = 'Enter the amount you need on the card.';
+    else if (!Number(f.amount) || Number(f.amount) <= 0) e.amount = 'Use digits only, for example 12520.';
+    if (!String(f.paid || '').trim()) e.paid = 'Choose whether the client has already paid us.';
+    if (Object.keys(e).length) e.summary = '${MANDATORY}';
+    return e;
+  }
+` },
+  ["        company: s.errors.company || false, purpose: s.errors.purpose || false, amount: s.errors.amount || false,",
+   "        company: s.errors.company || false, purpose: s.errors.purpose || false, amount: s.errors.amount || false, paid: s.errors.paid || false, paidBd: s.errors.paid ? 'var(--danger)' : 'var(--line)',"],
+  // Send: balance pre-check first; the new request carries the server's one-time pass
+  ["      return this.setState({ errors: {}, askNoDoc: true });\n    }\n    const f = this.state.form || this.blankForm(), me = this.me();",
+   "      return this.setState({ errors: {}, askNoDoc: true });\n    }\n    const pre = this._pre, f0 = this.state.form || this.blankForm();\n    if (!pre || pre.token !== g.token || pre.amount !== Number(f0.amount)) return this.precheck(force);\n    this._pre = null;\n    const f = this.state.form || this.blankForm(), me = this.me();"],
+  ["zohoClientId: g.clientId, zohoToken: g.token, purpose: f.purpose.trim(),", "zohoClientId: g.clientId, zohoToken: g.token, zohoSubmitToken: pre.submitToken, purpose: f.purpose.trim(),"],
+  ["          if (col === 'requests' && o.json && o.json.renamed) this.renameRequest(item.id, o.json.renamed);",
+   "          if (col === 'requests' && o.json && o.json.renamed) this.renameRequest(item.id, o.json.renamed);\n          if (col === 'requests' && o.json && o.json.reject) this.rejectRequest(item.id, o.json.error);"],
+  // notifications open the request inline (Updates panel) — no route change, no tab switch
+  ["          if (nn.req && this.reqById(nn.req)) this.open(nn.req);\n          else this.go('board', { tab: isOps ? 'tasks' : 'tasks' });",
+   "          this.setState({ peekId: nn.req || null, peekMissing: !(nn.req && this.reqById(nn.req)) });"],
+  ["      notifOpen: s.notifOpen, toggleNotif: () => this.setState({ notifOpen: !s.notifOpen }),",
+   "      notifOpen: s.notifOpen, toggleNotif: () => this.setState({ notifOpen: !s.notifOpen, peekId: null, peekMissing: false }),"],
+  ["go: () => this.setState({ userMenu: false, notifOpen: true }) }", "go: () => this.setState({ userMenu: false, notifOpen: true, peekId: null, peekMissing: false }) }"],
+  ["      notifsEmpty: mineNotifs.length === 0,", "      notifsEmpty: mineNotifs.length === 0, peek: this.peekVals(isOps),"],
+  ['        <div style="flex:1; overflow:auto; padding:12px">\n          <sc-for list="{{ notifs }}" as="n" hint-placeholder-count="3">',
+   `        <sc-if value="{{ peek.open }}" hint-placeholder-val="{{ false }}">
+          <div style="flex:1; overflow:auto; padding:14px 18px 18px; display:flex; flex-direction:column; gap:12px; animation:riseIn .2s ease">
+            <button type="button" sc-camel-on-click="{{ peek.back }}" class="btn btn-ghost" style="align-self:flex-start; font-size:12px; padding-left:0"><i class="ph ph-arrow-left" style="font-size:14px"></i>All updates</button>
+            <sc-if value="{{ peek.missing }}" hint-placeholder-val="{{ false }}">
+              <div role="alert" style="padding:14px; border-radius:14px; background:var(--chipAmberBg); border:1px solid var(--chipAmberBd); color:var(--fgAmberDeep); font-size:12.5px; line-height:1.5">{{ peek.missingText }}</div>
+            </sc-if>
+            <sc-if value="{{ peek.found }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex; flex-direction:column; gap:3px">
+                <span style="font-size:10.5px; letter-spacing:0.08em; text-transform:uppercase; color:var(--mut3)">{{ peek.id }} · {{ peek.status }}</span>
+                <span style="font-family:var(--font-heading); font-size:18px; letter-spacing:-0.01em; color:var(--ink)">{{ peek.company }}</span>
+                <span style="font-size:12px; color:var(--mut)">{{ peek.client }} · requested by {{ peek.by }}</span>
+              </div>
+              <div style="font-size:24px; letter-spacing:-0.02em; color:var(--ink)">{{ peek.amount }}</div>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px">
+                <sc-for list="{{ peek.facts }}" as="pf" hint-placeholder-count="4">
+                  <div style="padding:9px 11px; border-radius:12px; background:var(--sf2); border:1px solid var(--line2); min-width:0">
+                    <div style="font-size:10px; letter-spacing:0.06em; text-transform:uppercase; color:var(--mut3)">{{ pf.label }}</div>
+                    <div style="font-size:12.5px; color:var(--ink2); margin-top:2px; overflow-wrap:anywhere">{{ pf.value }}</div>
+                  </div>
+                </sc-for>
+              </div>
+              <sc-if value="{{ peek.canDecide }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex; gap:8px; flex-wrap:wrap">
+                  <button type="button" sc-camel-on-click="{{ peek.approve }}" class="btn" style="border-radius:12px; color:#fff; background:linear-gradient(140deg,#3b82f6,#1d4ed8); box-shadow:0 6px 16px rgba(29,99,230,.26)"><i class="ph ph-check-circle" style="font-size:15px"></i>Check and approve</button>
+                  <button type="button" sc-camel-on-click="{{ peek.ask }}" class="btn" style="border-radius:12px; background:var(--sf2); border:1px solid var(--line3); color:var(--ink2)"><i class="ph ph-question" style="font-size:15px"></i>Ask for information</button>
+                  <button type="button" sc-camel-on-click="{{ peek.decline }}" class="btn" style="border-radius:12px; background:var(--sf); border:1px solid var(--chipRedBd); color:var(--fgRed)"><i class="ph ph-prohibit" style="font-size:15px"></i>Not approved</button>
+                </div>
+              </sc-if>
+              <div style="display:flex; flex-direction:column; gap:8px; padding-top:4px; border-top:1px solid var(--line2)">
+                <span style="font-size:10.5px; letter-spacing:0.08em; text-transform:uppercase; color:var(--mut3); margin-top:8px">History</span>
+                <sc-for list="{{ peek.history }}" as="ph" hint-placeholder-count="3">
+                  <div style="display:flex; flex-direction:column; gap:1px">
+                    <span style="font-size:10.5px; color:var(--mut3)">{{ ph.at }}</span>
+                    <span style="font-size:12px; color:var(--ink2); line-height:1.45">{{ ph.text }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <button type="button" sc-camel-on-click="{{ peek.full }}" class="btn btn-ghost" style="align-self:flex-start; font-size:11.5px; padding-left:0; color:var(--mut2)"><i class="ph ph-arrow-square-out" style="font-size:13px"></i>Open the full request page</button>
+            </sc-if>
+          </div>
+        </sc-if>
+        <sc-if value="{{ peek.closed }}" hint-placeholder-val="{{ true }}">
+        <div style="flex:1; overflow:auto; padding:12px">
+          <sc-for list="{{ notifs }}" as="n" hint-placeholder-count="3">`],
+  ['          </sc-if>\n        </div>\n      </aside>', '          </sc-if>\n        </div>\n        </sc-if>\n      </aside>']
 ];
 
 // Returns { text, hit, total }. All-or-nothing: if any rule does not match exactly once, the input is returned unchanged.

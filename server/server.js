@@ -257,14 +257,19 @@ const { norm } = M_zoho;
 // Live data only: the Books contact and the Analytics balance row are passed in by the caller.
 
 const STATUS = {
-  PROVISIONAL: 'Partially Approved – pending final confirmation with Sven',
+  PROVISIONAL: 'Pending Sven Approval',
   FLAGGED: 'Flagged – Sven review',
   NOT: 'Not Approved'
 };
 const MSG = {
   NOT_FOUND: 'Client not found in Zoho Books. Cannot proceed.',
   INSUFFICIENT: 'Client does not have sufficient balance in Zoho Analytics. Flagging Sven for review.',
-  PASSED: 'Partially Approved – pending final confirmation with Sven.'
+  PASSED: 'Pending Sven Approval.',
+  // Operations never see balances, so their message carries no amount.
+  OPS_INSUFFICIENT: 'Client does not have sufficient balance to request funds. Please contact Sven.',
+  LOCKED: 'A request for this client is already pending approval by Sven. No new requests can be submitted until the current one is approved.',
+  MANDATORY: 'All mandatory fields must be completed before submitting the request.',
+  NOT_VALIDATED: "The client's balance was not validated in Zoho Analytics just before sending. Pick the client again and resend."
 };
 
 // Relevance: the purpose must fall in a category the client's ledger covers (when it lists any),
@@ -347,7 +352,7 @@ async function ensure(s, id) {
       { repeatCell: { range: { sheetId, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { textFormat: { bold: true } } }, fields: 'userEnteredFormat.textFormat.bold' } },
       { repeatCell: { range: { sheetId, startRowIndex: 1, startColumnIndex: 2, endColumnIndex: 4 }, cell: { userEnteredFormat: { numberFormat: { type: 'NUMBER', pattern: '#,##0.00' } } }, fields: 'userEnteredFormat.numberFormat' } },
       { repeatCell: { range: { sheetId, startRowIndex: 1, startColumnIndex: 5, endColumnIndex: 6 }, cell: { userEnteredFormat: { numberFormat: { type: 'NUMBER', pattern: '#,##0.00' } } }, fields: 'userEnteredFormat.numberFormat' } },
-      rule('=REGEXMATCH($E2,"^Partially Approved")', '#d9ead3', 0),
+      rule('=REGEXMATCH($E2,"^Pending Sven Approval")', '#d9ead3', 0),
       rule('=REGEXMATCH($E2,"^Flagged")', '#fff2cc', 1),
       rule('=$E2="Not Approved"', '#f4cccc', 2)
     ] } });
@@ -413,7 +418,21 @@ const lock = (sid, name) => sid && locks.set(sid, { name, at: new Date().toISOSt
 const locked = sid => (sid && locks.get(sid)) || null;
 const unlock = sid => sid && locks.delete(sid);
 
-return { issue, verify, lock, locked, unlock };
+// Short-lived signed payload, e.g. "this user's balance pre-check for this client and amount passed".
+function sign(payload, ttlMs) {
+  const body = b64(JSON.stringify({ ...payload, exp: Date.now() + ttlMs }));
+  return body + '.' + b64(crypto.createHmac('sha256', secret()).update(body).digest());
+}
+function unsign(token) {
+  if (!token || typeof token !== 'string' || !token.includes('.')) return null;
+  const [body, sig] = token.split('.');
+  const want = b64(crypto.createHmac('sha256', secret()).update(body).digest());
+  if (sig.length !== want.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(want))) return null;
+  const p = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+  return p.exp < Date.now() ? null : p;
+}
+
+return { issue, verify, lock, locked, unlock, sign, unsign };
 })();
 
 // ---- auth.js ----
@@ -647,13 +666,56 @@ function visible(u, col, item) {
   if (col === 'audit') return u.dept === 'MANAGEMENT';
   return true; // chat: shared group thread
 }
+// Operations never see Zoho Analytics balances. What they receive is stripped here, on the server:
+// the request's balance field, amounts in its history lines, and the balance record on Zoho chat items.
+const hideAmounts = t => String(t ?? '')
+  .replace(/re-validated at AED [\d,]+(?:\.\d+)? available/gi, 're-validated in Zoho Analytics')
+  .replace(/(Zoho (?:Analytics )?balance:?) (?:of )?AED [\d,]+(?:\.\d+)?(?: available)?/gi, '$1')
+  .replace(/,? ?AED [\d,]+(?:\.\d+)? in Zoho Analytics/gi, '');
+function redact(u, col, item) {
+  if (!item || !ops(u)) return item;
+  if (col === 'requests') {
+    const { zohoBalance, ...r } = item;
+    if (Array.isArray(r.timeline)) r.timeline = r.timeline.map(t => ({ ...t, text: hideAmounts(t.text) }));
+    return r;
+  }
+  if (col === 'chat' && item.zoho) { const { zoho, ...c } = item; return { ...c, text: hideAmounts(c.text) }; }
+  return item;
+}
+// An Operations browser only holds the stripped copy: when it saves a request, put the hidden parts back.
+function restoreHidden(item, prev) {
+  if (prev.zohoBalance !== undefined && item.zohoBalance === undefined) item.zohoBalance = prev.zohoBalance;
+  if (Array.isArray(item.timeline) && Array.isArray(prev.timeline))
+    item.timeline = item.timeline.map((t, i) => { const o = prev.timeline[i]; return o && t.at === o.at && t.text === hideAmounts(o.text) ? o : t; });
+}
+
+// One open request per Zoho Books client: open = New or waiting on information. Approving (or declining) unlocks.
+const OPEN = ['NEW', 'ACTION'];
+const pendingRequestFor = contactId => (contactId && db.requests.find(r => String(r.zohoClientId || '') === String(contactId) && OPEN.includes(r.status))) || null;
+
+// Rules for a brand-new request, enforced here whatever the browser does.
+function newRequestProblem(u, item) {
+  const blank = v => !String(v ?? '').trim();
+  if (blank(item.company) || blank(item.purpose) || !(Number(item.requested) > 0) || blank(item.paid) || blank(item.zohoClientId))
+    return { status: 422, reason: 'MANDATORY_FIELDS', error: M_rules.MSG.MANDATORY };
+  const pend = pendingRequestFor(item.zohoClientId);
+  if (pend) return { status: 409, reason: 'REQUEST_PENDING', error: M_rules.MSG.LOCKED, pendingId: pend.id };
+  const pass = M_gate.unsign(item.zohoSubmitToken);
+  if (!pass || pass.u !== u.key || String(pass.c) !== String(item.zohoClientId) || Number(pass.a) !== Number(item.requested))
+    return { status: 422, reason: 'BALANCE_NOT_VALIDATED', error: M_rules.MSG.NOT_VALIDATED };
+  return null;
+}
+// A refused request must not leave a "<name> requested ..." notification pointing at nothing (or at someone else's request).
+const refused = new Map(); // `${userKey}:${requestId}` -> { reason, at }
+const notSubmitted = (n, reason) => ({ ...n, req: null, text: 'Not submitted — ' + n.text.replace(/\.$/, '') + '. ' + reason });
+
 function send(c, ev) { c.res.write(`data: ${JSON.stringify(ev)}\n\n`); }
 function broadcast(ev, col, item) {
   for (const c of clients) {
     if (ev.type === 'login' && !isMaster(c.user)) continue;
     if (ev.type === 'accounts' && !isMaster(c.user)) continue;
     if (col && item && !visible(c.user, col, item)) continue;
-    send(c, ev);
+    send(c, col && item && ev.item ? { ...ev, item: redact(c.user, col, ev.item) } : ev);
   }
 }
 setBroadcast(ev => {
@@ -729,7 +791,7 @@ function upsert(col, item) {
 function mount(app) {
   app.get('/api/sync/snapshot', requireAuth, (q, s) => {
     const u = q.user, out = { rev: db.rev, me: pub(u), empty: db.requests.length === 0 };
-    for (const c of COLS) out[c] = db[c].filter(x => visible(u, c, x));
+    for (const c of COLS) out[c] = db[c].filter(x => visible(u, c, x)).map(x => redact(u, c, x));
     out.accounts = loadUsers().map(u => pub(u));
     s.json(out);
   });
@@ -777,12 +839,27 @@ function mount(app) {
     } else if (typeof item.req === 'string') item.req = resolveRequestId(q.user.key, item.req);
     const prev = db[col].find(x => x.id === item.id) || null;
     if (!mayWrite(q.user, col, item, prev)) return s.status(403).json({ ok: false, error: 'Not permitted' });
+    if (col === 'requests' && !prev) {
+      const bad = newRequestProblem(q.user, item);
+      if (bad) {
+        refused.set(q.user.key + ':' + sentId, { reason: bad.error, at: Date.now() });
+        for (const n of db.notifications) // its notification may already be here
+          if (n.req === sentId && n.to === 'sven' && n.text.startsWith(q.user.name + ' requested') && Date.now() - (n._at || 0) < 120_000) postSystem('notifications', notSubmitted(n, bad.error));
+        console.log(`New request ${sentId} from ${q.user.key} refused: ${bad.reason}`);
+        return s.status(bad.status).json({ ok: false, reject: true, ...bad });
+      }
+      delete item.zohoSubmitToken; // single use, not stored
+      refused.delete(q.user.key + ':' + sentId); // a corrected retry under the same number is a real request
+    }
+    if (col === 'notifications' && !prev && item.req && refused.has(q.user.key + ':' + item.req)) Object.assign(item, notSubmitted(item, refused.get(q.user.key + ':' + item.req).reason));
+    if (col === 'notifications' && !prev) item._at = Date.now();
+    if (col === 'requests' && prev && ops(q.user)) restoreHidden(item, prev);
     // A browser can send two versions of one request back to back (created, then the Zoho result added);
     // if the older lands last it must not erase the Zoho result or its history line.
     if (col === 'requests' && prev && prev.zohoStatus && !item.zohoStatus) {
       for (const k of ['zohoStatus', 'zohoBalance', 'zohoReason', 'zohoValidationId', 'zohoCheckedAt', 'flagged']) if (prev[k] !== undefined) item[k] = prev[k];
       const have = new Set((item.timeline || []).map(t => t.at + '|' + t.text));
-      const lost = (prev.timeline || []).filter(t => /^Zoho (Analytics balance|balance check)/.test(t.text) && !have.has(t.at + '|' + t.text));
+      const lost = (prev.timeline || []).filter(t => /^Zoho (Analytics|balance check)/.test(t.text) && !have.has(t.at + '|' + t.text));
       if (lost.length) item.timeline = (item.timeline || []).concat(lost);
     }
     if (col === 'requests' && item.by === q.user.key) {
@@ -814,12 +891,14 @@ function postSystem(col, item) {
   return item;
 }
 
-return { mount, postSystem, resolveRequestId, attachZohoResult, awaitOwnRequest };
+const wasRefused = (userKey, id) => !!(id && refused.has(userKey + ':' + id) && !db.requests.some(r => r.id === resolveRequestId(userKey, id) && r.by === userKey));
+
+return { mount, postSystem, resolveRequestId, attachZohoResult, awaitOwnRequest, pendingRequestFor, wasRefused, isOps: ops };
 })();
 
 // ---- server.js ----
 const { booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, prefetchBalances, balancesFresh, accessToken, zohoReady, config: zohoConfig } = M_zoho;
-const { decide, MSG } = M_rules;
+const { decide, MSG, STATUS } = M_rules;
 const { appendRecord } = M_sheets;
 const gate = M_gate;
 const auth = M_auth;
@@ -875,7 +954,7 @@ app.get('/api/zoho/clients', async (q, s) => {
   if (term.length < 2) return s.json({ ok: true, clients: [], tooShort: true });
   prefetchBalances(); // so the balance is ready when a client is picked
   try {
-    const clients = await booksSearchClients(term);
+    const clients = (await booksSearchClients(term)).map(c => { const p = store.pendingRequestFor(c.contactId); return p ? { ...c, pendingId: p.id } : c; });
     s.json({ ok: true, clients, notFound: !clients.length, message: clients.length ? '' : NOT_FOUND_MSG, source: 'Zoho Books · live' });
   } catch (e) { zohoErr(s, e); }
 });
@@ -900,6 +979,13 @@ app.post('/api/zoho/validate-client', async (q, s) => {
     await notifySven(`BLOCKED — fund request attempted for Zoho Books contact ${contactId}, which is not an active client.`, { contactId });
     return s.status(422).json({ found: false, locked: true, reason: 'CLIENT_NOT_FOUND', error: NOT_FOUND_MSG });
   }
+  const pend = store.pendingRequestFor(books.contactId);
+  if (pend) return s.status(409).json({ found: true, locked: true, reason: 'REQUEST_PENDING', error: MSG.LOCKED, pendingId: pend.id, clientName: books.contactName });
+  if (store.isOps(q.user)) {
+    prefetchBalances(); // validated in the background on Send — never shown to Operations
+    return s.json({ found: true, clientName: books.contactName, companyName: books.companyName, clientId: books.contactId, matchedIn: 'Zoho Books',
+      token: gate.issue(books.contactName, books.contactId, 'Zoho Books'), balance: { hidden: true } });
+  }
   // The selection never waits long on Analytics: after 5 s the page shows "reading balance" and asks again.
   const balance = await Promise.race([
     analyticsBalance(books.contactId).then(balanceOut, e => ({ found: false, error: e.message, source: 'Zoho Analytics · not reachable' })),
@@ -913,9 +999,37 @@ app.post('/api/zoho/validate-client', async (q, s) => {
 
 // Re-read the selected client's balance (e.g. before sending, if the page sat open).
 app.get('/api/zoho/client-balance', async (q, s) => {
+  if (store.isOps(q.user)) return s.status(403).json({ ok: false, error: 'Balances are not shown to Operations.' });
   const contactId = String(q.query.contactId || '');
   if (!/^\d{1,30}$/.test(contactId)) return s.status(400).json({ ok: false, error: 'contactId required' });
   try { s.json({ ok: true, clientId: contactId, balance: balanceOut(await analyticsBalance(contactId)), checkedAt: new Date().toISOString() }); } catch (e) { zohoErr(s, e); }
+});
+
+// Send, step 1: the client is not locked and its Zoho Analytics balance covers the amount. On success the browser
+// gets a short-lived signed pass for exactly this user, client and amount; the server refuses a new request without it.
+// Operations only learn "sufficient" or not — never the balance.
+app.post('/api/zoho/precheck', async (q, s) => {
+  const b = q.body || {}, amount = Number(b.amount), opsUser = store.isOps(q.user);
+  if (!(amount > 0)) return s.status(422).json({ ok: false, reason: 'MANDATORY_FIELDS', error: MSG.MANDATORY });
+  let v;
+  try { v = gate.verify(b.validationToken, typeof b.clientName === 'string' ? b.clientName : ''); } catch (e) { return zohoErr(s, e); }
+  if (!v.ok) return s.status(403).json({ ok: false, reason: 'INVALID_VALIDATION_TOKEN', why: v.why, error: NOT_FOUND_MSG });
+  const pend = store.pendingRequestFor(v.clientId);
+  if (pend) return s.status(409).json({ ok: false, reason: 'REQUEST_PENDING', error: MSG.LOCKED, pendingId: pend.id });
+  let rec;
+  try { rec = await analyticsBalance(v.clientId); } catch (e) { return zohoErr(s, e); }
+  const available = rec ? rec.available : 0;
+  if (!(available > 0 && available >= amount)) {
+    const t = stamp();
+    store.postSystem('notifications', {
+      id: 'zb' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex'), to: 'sven', at: t.both, read: false, req: null,
+      text: `Blocked — ${q.user.name} tried to request ${aed(amount)} for ${b.clientName}. Zoho Analytics balance ${aed(available)} is not sufficient.`
+    });
+    return s.status(422).json({ ok: false, sufficient: false, reason: 'INSUFFICIENT_BALANCE',
+      error: opsUser ? MSG.OPS_INSUFFICIENT : `${MSG.INSUFFICIENT} Available: ${aed(available)}.`, ...(opsUser ? {} : { availableBalance: available }) });
+  }
+  s.json({ ok: true, sufficient: true, status: STATUS.PROVISIONAL, submitToken: gate.sign({ u: q.user.key, c: v.clientId, a: amount }, 15 * 60 * 1000),
+    ...(opsUser ? {} : { availableBalance: available }) });
 });
 
 // Restart from the beginning — the only way to clear the lock.
@@ -933,12 +1047,13 @@ function exportRecord(req, d, user, ids) {
   };
   const chat = store.postSystem('chat', {
     id: 'z' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex'), day: t.day, at: t.at, who: 'Zoho', kind: 'msg', req: rec.requestId,
-    text: `Zoho check · ${rec.clientName}${rec.requestId ? ' · ' + rec.requestId : ''} — requested ${aed(rec.requested)}, Zoho Analytics balance ${aed(rec.balance)}. ${d.ok ? rec.status + '.' : rec.notes} Reviewer: ${REVIEWER}.`,
+    // The group chat is shared with Operations: the balance stays in the structured record (Sven, sheet), not the text.
+    text: `Zoho check · ${rec.clientName}${rec.requestId ? ' · ' + rec.requestId : ''} — requested ${aed(rec.requested)}. ${d.ok ? rec.status + '.' : rec.notes} Reviewer: ${REVIEWER}.`,
     zoho: rec
   });
   store.postSystem('notifications', {
     id: 'zn' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex'), to: 'sven', at: t.both, read: false, req: rec.requestId,
-    text: (d.ok ? 'Pending your final confirmation — ' : 'Flagged for your review — ') + `${rec.clientName}: ${aed(rec.requested)} requested, ${aed(rec.balance)} in Zoho Analytics. ${rec.notes}`
+    text: (d.ok ? 'Pending your approval — ' : 'Flagged for your review — ') + `${rec.clientName}: ${aed(rec.requested)} requested, ${aed(rec.balance)} in Zoho Analytics. ${rec.notes}`
   });
   return chat.zoho;
 }
@@ -977,13 +1092,14 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
   // so the chat record, Sven's notification and the sheet row all carry the request's final number.
   const sentId = req.requestId;
   if (sentId) req.requestId = await store.awaitOwnRequest(q.user.key, sentId);
+  if (sentId && store.wasRefused(q.user.key, sentId)) return s.status(409).json({ ok: false, reason: 'REQUEST_NOT_SUBMITTED', error: 'The request was not submitted, so it was not checked.' });
   const validationId = 'ZV-' + crypto.randomBytes(4).toString('hex').toUpperCase();
   const checkedAt = new Date().toISOString();
   const exported = exportRecord(req, d, q.user, { validationId, checkedAt });
   const t = stamp();
   const attached = store.attachZohoResult(q.user.key, sentId, {
     zohoStatus: d.approvalStatus, zohoBalance: exported.balance, zohoReason: d.reason, zohoValidationId: validationId, zohoCheckedAt: checkedAt, flagged: !d.ok
-  }, { at: t.day + ' · ' + t.at, text: `Zoho Analytics balance ${aed(exported.balance)} — ${d.approvalStatus}${d.ok ? '' : '. ' + d.notes}` });
+  }, { at: t.day + ' · ' + t.at, text: `Zoho Analytics check — ${d.approvalStatus}${d.ok ? '' : '. ' + d.notes}` });
 
   let sheet;
   try {
@@ -993,7 +1109,7 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
   const svenSummary = { clientName: req.clientName, requestedAmount: req.requestedAmount, zohoAnalyticsBalance: exported.balance, approvalStatus: d.approvalStatus, flagReason: d.ok ? '' : d.notes };
   const svenNotified = await notifySven(`OneLink funding check — ${req.clientName}: ${d.approvalStatus}. Requested ${aed(req.requestedAmount)}, Zoho Analytics balance ${aed(exported.balance)}.${d.ok ? '' : ' ' + d.notes}`, { summary: svenSummary });
 
-  s.json({
+  const out = {
     ok: d.ok, reason: d.reason, approvalStatus: d.approvalStatus, approvedAmount: d.approvedAmount,
     clientMatched: d.clientMatched, booksMatched: d.booksMatched, analyticsMatched: d.analyticsMatched, relevancePassed: d.relevancePassed,
     clientId: d.clientId || null,
@@ -1001,7 +1117,12 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
     remainingAfterRequest: d.remaining ?? 0, requestedAmount: req.requestedAmount,
     notes: d.notes, flagSven: d.flagSven, svenNotified, svenSummary, sheet, reviewer: REVIEWER, exported, requestId: req.requestId || null, attachedToRequest: attached,
     source: 'Zoho Books + Zoho Analytics', validationId, checkedAt
-  });
+  };
+  if (store.isOps(q.user)) { // the result, never the balance
+    for (const k of ['availableBalance', 'allocatedBalance', 'usedBalance', 'remainingAfterRequest', 'svenSummary', 'exported']) delete out[k];
+    if (!d.ok) out.notes = MSG.OPS_INSUFFICIENT;
+  }
+  s.json(out);
 });
 
 // ---- documents: stored in Upstash (survives restarts) + local disk cache ----
