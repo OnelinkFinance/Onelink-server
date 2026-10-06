@@ -2,17 +2,16 @@
 // Run with `npm run start:commissions`. It shares no process, port or deploy with the funding platform.
 //
 // READ-ONLY everywhere:
-//   - sign-in checks your existing OneLink login against the stored accounts (Upstash "onelink:users",
-//     read with GET) and never writes them back; sessions live only in this service's memory.
+//   - sign-in is by email address only (no password): an allowed address opens a session that lives only
+//     in this service's memory. Allowed = COMMISSIONS_ALLOWED_EMAILS (comma list of addresses and/or
+//     @domains), default "@onelink.solutions".
 //   - Zoho: Analytics SELECT exports and Books GETs only; the stored Zoho refresh token is read, never replaced.
 //   - Google: through commissions.js (read-only scopes or the read-only Apps Script bridge).
 //
-// Env: ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, and ZOHO_REFRESH_TOKEN or UPSTASH_REDIS_REST_URL + _TOKEN (the
-// stored token and the user accounts are read from there). Optional: ZOHO_DC, ZOHO_ORG_ID, ZOHO_WORKSPACE_ID,
-// plus the Google settings listed in commissions.js.
+// Env: ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, and ZOHO_REFRESH_TOKEN (or UPSTASH_REDIS_REST_URL + _TOKEN, where
+// the funding platform stores it). Optional: COMMISSIONS_ALLOWED_EMAILS, ZOHO_DC, ZOHO_ORG_ID,
+// ZOHO_WORKSPACE_ID, plus the Google settings listed in commissions.js.
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
 import 'dotenv/config';
 import express from 'express';
 import { mountCommissions } from './commissions.js';
@@ -87,53 +86,32 @@ async function analyticsSql(sql) {
   throw new Error('Zoho Analytics export did not finish within 30 s');
 }
 
-// ---- Sign-in with the existing OneLink accounts (read only) ----
-const IDLE_MS = 30 * 60 * 1000;
-const sessions = new Map();                 // token -> { user, last }
-const fails = new Map();                    // username -> { n, until }
-let usersCache = { at: 0, list: [] };
-async function users() {
-  if (Date.now() - usersCache.at < 60_000) return usersCache.list;
-  let raw = null;
-  try { raw = await kvGet('onelink:users'); } catch (e) { console.error('Accounts not readable from Upstash:', e.message); }
-  if (!raw && E.USERS_FILE && fs.existsSync(path.resolve(E.USERS_FILE))) raw = fs.readFileSync(path.resolve(E.USERS_FILE), 'utf8');
-  usersCache = { at: Date.now(), list: raw ? JSON.parse(raw) : [] };
-  return usersCache.list;
-}
-const check = (pw, stored) => {
-  const [salt, h] = String(stored).split(':');
-  const a = Buffer.from(h || '', 'hex'), b = crypto.scryptSync(pw, salt || '', 64);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-};
+// ---- Sign-in by email address (no password) ----
+const IDLE_MS = 8 * 60 * 60 * 1000;          // a working day
+const sessions = new Map();                 // token -> { email, last }
+const allowList = () => (E.COMMISSIONS_ALLOWED_EMAILS || '@onelink.solutions').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+const allowed = email => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && allowList().some(a => a.startsWith('@') ? email.endsWith(a) : email === a);
 const tokenOf = q => (/^Bearer\s+([A-Za-z0-9_-]{32,})$/.exec(q.headers.authorization || '') || [])[1]
   || (/(?:^|;\s*)ol_cdash=([A-Za-z0-9_-]{32,})/.exec(q.headers.cookie || '') || [])[1];
-async function requireAuth(q, s, next) {
+function requireAuth(q, s, next) {
   const t = tokenOf(q), sess = t && sessions.get(t);
-  if (!sess || Date.now() - sess.last > IDLE_MS) { if (t) sessions.delete(t); return s.status(401).json({ ok: false, reason: 'LOGIN_REQUIRED' }); }
-  const u = (await users()).find(x => x.key === sess.user);
-  if (!u || !u.active) { sessions.delete(t); return s.status(401).json({ ok: false, reason: 'ACCOUNT_INACTIVE' }); }
-  sess.last = Date.now(); q.user = u; next();
+  if (!sess || Date.now() - sess.last > IDLE_MS || !allowed(sess.email)) { if (t) sessions.delete(t); return s.status(401).json({ ok: false, reason: 'LOGIN_REQUIRED' }); }
+  sess.last = Date.now(); q.user = { email: sess.email }; next();
 }
 
 const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '50kb' }));
-app.post('/api/auth/login', async (q, s) => {
-  const id = String(q.body?.username || '').trim().toLowerCase(), pw = String(q.body?.password || '');
-  const f = fails.get(id);
-  if (f && f.until > Date.now()) return s.status(423).json({ ok: false, error: 'Too many wrong passwords. Try again in 15 minutes.' });
-  const u = (await users()).find(x => x.username === id || x.key === id);
-  if (!u || !u.active || !check(pw, u.pw)) {
-    const n = (f?.n || 0) + 1;
-    fails.set(id, n >= 5 ? { n: 0, until: Date.now() + 15 * 60_000 } : { n, until: 0 });
-    return s.status(401).json({ ok: false, error: 'Email or password is not right.' });
-  }
-  fails.delete(id);
+app.post('/api/auth/login', (q, s) => {
+  const email = String(q.body?.email || q.body?.username || '').trim().toLowerCase();
+  if (!allowed(email)) return s.status(403).json({ ok: false, error: 'This email address does not have access to the commission dashboard.' });
   const t = crypto.randomBytes(32).toString('base64url');
-  sessions.set(t, { user: u.key, last: Date.now() });
+  sessions.set(t, { email, last: Date.now() });
+  console.log('Commission dashboard: signed in', email);
   s.append('Set-Cookie', `ol_cdash=${t}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${IDLE_MS / 1000}`);
-  s.json({ ok: true, token: t });
+  s.json({ ok: true, token: t, email });
 });
+app.post('/api/auth/logout', (q, s) => { const t = tokenOf(q); if (t) sessions.delete(t); s.append('Set-Cookie', 'ol_cdash=; Path=/; Max-Age=0'); s.json({ ok: true }); });
 app.get('/', (_q, s) => s.redirect('/commissions'));
 app.get('/health', (_q, s) => s.json({ ok: true, service: 'commission-dashboard', time: new Date().toISOString() }));
 mountCommissions(app, { requireAuth, books, analytics: analyticsSql });

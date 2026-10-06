@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
 <title>Free Zone Commissions</title>
 <style>
 :root {
@@ -107,10 +108,9 @@ small.note { color: var(--muted); display: block; margin-top: 8px; }
 <div class="wrap">
   <section id="login" class="card login hide">
     <h1>Free Zone Commissions</h1>
-    <p class="sub">Sign in with your OneLink account.</p>
+    <p class="sub">Sign in with your work email address.</p>
     <form id="loginForm">
-      <label for="u">Email</label><input id="u" autocomplete="username" required>
-      <label for="p">Password</label><input id="p" type="password" autocomplete="current-password" required>
+      <label for="u">Email</label><input id="u" type="email" autocomplete="email" placeholder="name@onelink.solutions" required>
       <div style="margin-top:14px"><button class="primary" type="submit">Sign in</button></div>
       <div id="loginErr" class="err"></div>
     </form>
@@ -129,6 +129,7 @@ small.note { color: var(--muted); display: block; margin-top: 8px; }
         </select>
         <button id="refresh" class="primary">Refresh</button>
         <a href="https://onelink-funding-backend.onrender.com/" class="sub">OneLink platform</a>
+        <button id="logout" type="button">Sign out</button>
       </div>
       <div class="sub" style="flex-basis:100%;text-align:right">Read-only — reads the sources, never writes to them
       </div>
@@ -194,11 +195,12 @@ small.note { color: var(--muted); display: block; margin-top: 8px; }
   function showLogin() { $('login').classList.remove('hide'); $('app').classList.add('hide'); $('u').focus(); }
   $('loginForm').addEventListener('submit', async e => {
     e.preventDefault(); $('loginErr').textContent = '';
-    const { j } = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username: $('u').value, password: $('p').value }) });
+    const { j } = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: $('u').value }) });
     if (!j.ok) { $('loginErr').textContent = j.error || 'Sign-in failed'; return; }
-    token = j.token; $('p').value = ''; load();
+    token = j.token; load();
   });
   $('refresh').addEventListener('click', () => load(true));
+  $('logout').addEventListener('click', async () => { await api('/api/auth/logout', { method: 'POST' }); token = null; showLogin(); });
   $('month').addEventListener('change', () => load());
   $('span').addEventListener('change', () => load());
 

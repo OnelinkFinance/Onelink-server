@@ -254,14 +254,14 @@ export async function loadDashboard({ books, analytics, month, span = 6, refresh
   return data;
 }
 
-// Finance, management and the Master Admin — commission figures are not for every Operations user.
-const canView = u => u?.role === 'MASTER_ADMIN' || (u?.perms || []).includes('*') || ['FINANCE', 'MANAGEMENT'].includes(u?.dept) || (u?.perms || []).includes('VIEW_COMMISSIONS');
 
-export function mountCommissions(app, { requireAuth, books, analytics }) {
+// Sign-in is the host's job (requireAuth); pages and API also carry noindex so search engines skip them.
+export function mountCommissions(app, { requireAuth = (_q, _s, next) => next(), books, analytics }) {
+  app.use((_q, s, next) => { s.set('X-Robots-Tag', 'noindex, nofollow'); next(); });
   const page = path.join(path.dirname(fileURLToPath(import.meta.url)), 'commissions.html');
   app.get('/commissions', (_q, s) => s.set('Cache-Control', 'no-cache').sendFile(page));
+  app.get('/robots.txt', (_q, s) => s.type('text/plain').end('User-agent: *\nDisallow: /\n'));
   app.get('/api/commissions', requireAuth, async (q, s) => {
-    if (!canView(q.user)) return s.status(403).json({ ok: false, reason: 'FINANCE_ONLY', error: 'The commission dashboard is for Finance, Management and the Master Admin.' });
     const now = dubaiToday().slice(0, 7);
     const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(q.query.month || '') ? q.query.month : now;
     const span = Math.min(12, Math.max(1, Number(q.query.months) || 6));
