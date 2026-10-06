@@ -248,7 +248,7 @@ async function analyticsBalance(contactId) {
   return balances.get(String(contactId)) || null;
 }
 
-return { zohoReady, accessToken, books, exact, norm, booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, prefetchBalances, balancesFresh, col, toRecord, config: () => ({ booksOrg: booksOrg() + ' (ELITE ONELINK CORPORATE SERVICES L.L.C S.O.C)', analyticsOrg: zaOrg(), workspace: zaWs(), table: zaTable() }) };
+return { zohoReady, accessToken, books, analyticsSql, exact, norm, booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, prefetchBalances, balancesFresh, col, toRecord, config: () => ({ booksOrg: booksOrg() + ' (ELITE ONELINK CORPORATE SERVICES L.L.C S.O.C)', analyticsOrg: zaOrg(), workspace: zaWs(), table: zaTable() }) };
 })();
 
 // ---- rules.js ----
@@ -960,7 +960,7 @@ app.use((q, s, next) => {
 auth.mount(app);
 store.mount(app);
 // Free zone commission dashboard (/commissions) — Finance, Management and the Master Admin.
-mountCommissions(app, { requireAuth: auth.requireAuth, books: M_zoho.books });
+mountCommissions(app, { requireAuth: auth.requireAuth, books: M_zoho.books, analytics: M_zoho.analyticsSql });
 // Every Zoho route requires a signed-in session — no guest or anonymous access.
 app.use('/api/zoho', auth.requireAuth);
 

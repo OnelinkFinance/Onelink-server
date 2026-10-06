@@ -149,7 +149,8 @@ function dashboard(over = {}) {
   const clientInvoices = new Map([['INV-000596', { status: 'paid' }], ['INV-000577', { status: 'paid' }], ['INV-000589', { status: 'paid' }], ['INV-000590', { status: 'paid' }], ['INV-000604', { status: 'paid' }], ['INV-000583', { status: 'paid' }]]);
   const zoneInvoices = [
     { zone: 'MEYDAN', number: 'INV-000630', date: '2026-10-03', period: '2026-09', subTotal: 2504, total: 2629.2, balance: 2629.2 },
-    { zone: 'RAKDAO', number: 'INV-RAKDAO-082026', date: '2026-09-02', period: '2026-08', subTotal: 32310.3, total: 33925.82, balance: 0 }
+    { zone: 'RAKDAO', number: 'INV-RAKDAO-082026', date: '2026-09-02', period: '2026-08', subTotal: 32040.3, total: 33642.32, balance: 0, status: 'paid' },
+    { zone: 'RAKICC', number: 'INV-RAKICC-072026', date: '2026-08-18', period: '2026-07', subTotal: 812.5, total: 853.13, balance: 853.13, status: 'draft' }
   ];
   const tracker = { lines: parseTrackerLines(LINES).rows, checklist: parseInvoiceChecklist(CHECKLIST).rows };
   return buildDashboard({ month: '2026-09', months: ['2026-08', '2026-09'], gp, tracker, renewals: parseRenewals(RENEWALS).rows, clientInvoices, zoneInvoices, emails: null, today: '2026-10-06', ...over });
@@ -209,7 +210,8 @@ test('exceptions and collections mirror the tracker', () => {
   const d = dashboard(), kinds = d.exceptions.map(e => e.kind);
   for (const k of ['Commission missed', 'Pending invoice (client)', 'Pending GP (on tracker, not on GP report)', 'On GP report, not on commission tracker',
     'Commission differs: tracker vs GP report', 'Commission not yet invoiced', 'Commission invoice unpaid > 30 days', 'Zoho commission invoice not in tracker',
-    'Paid in Zoho, open on tracker', 'Renewal overdue, not started']) assert.ok(kinds.includes(k), k);
+    'Paid in Zoho, open on tracker', 'Renewal overdue, not started', 'Commission invoice still a draft in Zoho',
+    'Commission invoice amount differs: tracker vs Zoho']) assert.ok(kinds.includes(k), k);
   assert.ok(!d.exceptions.some(e => /Lisenko/.test(e.detail)));                  // tracker says no commission
   assert.equal(d.kpis.toCollect, 3780 + 33925.82 + 5638.5);
   assert.equal(d.kpis.toCollectSource, 'Invoice Checklist');
