@@ -7,7 +7,7 @@ The rules match the code in `commissions-core.js` / `commissions.js`.
 
 The dashboard is its **own website**: a separate Render service started with `npm run start:commissions` (`commissions-server.js`).
 The funding platform (`server.js`) does not load any of it, and a test checks that.
-You sign in with your existing OneLink login. The stored accounts are only read.
+Sign-in is by email address only (allowed addresses: `COMMISSIONS_ALLOWED_EMAILS`, default `@onelink.solutions`). Setup steps: `COMMISSIONS-SETUP.md`.
 
 ## 1. Read-only principle
 
