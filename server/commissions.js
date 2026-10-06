@@ -1,12 +1,18 @@
 // Free zone commission dashboard — loads the live sources and serves /commissions + /api/commissions.
 // Logic lives in commissions-core.js; this file only fetches, caches and reports what each source said.
 //
+// READ-ONLY. Google is reached with *.readonly scopes only and only list/get calls; Zoho Books only with GET
+// (the shared books() helper never sends a method or body). Nothing is ever written back to any source.
+// test/read-only.test.js fails the build if a write call or a non-readonly scope appears in this file.
+//
 // Env (all optional except the service account):
 //   GOOGLE_SERVICE_ACCOUNT_B64  same service account as the approval sheet. Share the GP report shared drive
 //                               and the Renewals sheet with its client_email (Viewer is enough).
 //   GP_REPORT_DRIVE_ID          shared drive holding the monthly GP reports (default: searched in every drive)
 //   GP_REPORT_TAB               tab read from each GP report (default "Summary")
 //   RENEWALS_SHEET_ID / RENEWALS_TAB   default: the "Renewals" sheet, tab "Renewal"
+//   TRACKER_SHEET_ID            default: "Freezone_Commission_Collection_Tracker" (tabs "GP Commission Lines",
+//                               "Invoice Checklist") — the existing finance workbook, used as the baseline
 //   GMAIL_IMPERSONATE           mailbox to read (e.g. finance@onelink.solutions). Needs domain-wide delegation
 //                               of gmail.readonly to the service account. Unset → the email column is skipped.
 //   COMMISSION_RENEWAL_WINDOW_DAYS  renewals due within this many days count as pending (default 60)
@@ -17,6 +23,7 @@ import * as core from './commissions-core.js';
 
 const E = process.env;
 const DEFAULT_RENEWALS = '111d7I-jqSHXAIzA4WFEbXEOOrylJhgPXIITb4JqWox0';
+const DEFAULT_TRACKER = '1E0YrI0wkgpGfgwmzbujIcLxM47ct7hZmPeQOS60-v5w';
 const TTL = 5 * 60_000;
 const short = e => String(e?.errors?.[0]?.message || e?.message || e).slice(0, 300);
 
@@ -167,9 +174,21 @@ export async function loadDashboard({ books, month, span = 6, refresh = false })
     sources.renewals = { ok: true, detail: `${renewals.length} rows`, url: `https://docs.google.com/spreadsheets/d/${id}/edit` };
   } catch (e) { sources.renewals = { ok: false, detail: 'Renewals sheet not readable: ' + short(e) + shareHint() }; }
 
+  let tracker = null;
+  try {
+    const id = E.TRACKER_SHEET_ID || DEFAULT_TRACKER;
+    const [l, c] = await Promise.all([sheetValues(id, "'GP Commission Lines'!A1:J3000"), sheetValues(id, "'Invoice Checklist'!A1:L3000")]);
+    const lines = core.parseTrackerLines(l), checklist = core.parseInvoiceChecklist(c);
+    if (lines.error) throw new Error(lines.error);
+    if (checklist.error) throw new Error(checklist.error);
+    tracker = { lines: lines.rows, checklist: checklist.rows };
+    sources.tracker = { ok: true, detail: `${lines.rows.length} commission lines, ${checklist.rows.length} commission invoices`, url: `https://docs.google.com/spreadsheets/d/${id}/edit` };
+  } catch (e) { sources.tracker = { ok: false, detail: 'Commission tracker not readable: ' + short(e) + shareHint() }; }
+
   let clientInv = null, zoneInv = null;
   try {
-    clientInv = await clientInvoices(books, month, [...new Set((gp[month] || []).filter(g => g.zone).map(g => g.invoice).filter(Boolean))]);
+    const refs = [...(gp[month] || []).filter(g => g.zone).map(g => g.invoice), ...(tracker?.lines || []).filter(l => l.month === month).map(l => l.ref)];
+    clientInv = await clientInvoices(books, month, [...new Set(refs.filter(r => /^INV-\d/.test(r)))]);
     zoneInv = await zoneInvoices(books, months[0], month);
     sources.zoho = { ok: true, detail: `${zoneInv.length} free zone commission invoice${zoneInv.length === 1 ? '' : 's'}; client invoices checked for ${month}` };
   } catch (e) {
@@ -185,7 +204,7 @@ export async function loadDashboard({ books, month, span = 6, refresh = false })
   } catch (e) { sources.gmail = { ok: false, detail: 'Gmail not readable: ' + short(e) }; }
 
   const windowDays = Number(E.COMMISSION_RENEWAL_WINDOW_DAYS) || 60;
-  const data = { ...core.buildDashboard({ month, months, gp, renewals, clientInvoices: clientInv, zoneInvoices: zoneInv, emails, today, windowDays }), sources, generatedAt: new Date().toISOString() };
+  const data = { ...core.buildDashboard({ month, months, gp, tracker, renewals, clientInvoices: clientInv, zoneInvoices: zoneInv, emails, today, windowDays }), sources, generatedAt: new Date().toISOString() };
   cache.set(key, { at: Date.now(), data });
   return data;
 }
