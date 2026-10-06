@@ -3,6 +3,12 @@
 What `/commissions` does, written so it can also be pasted as a Claude Design project description.
 The rules match the code in `commissions-core.js` / `commissions.js`.
 
+## 0. Where it runs
+
+The dashboard is its **own website**: a separate Render service started with `npm run start:commissions` (`commissions-server.js`).
+The funding platform (`server.js`) does not load any of it, and a test checks that.
+You sign in with your existing OneLink login. The stored accounts are only read.
+
 ## 1. Read-only principle
 
 Never modify, overwrite or delete anything in these sources. Only read them.

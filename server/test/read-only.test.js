@@ -24,8 +24,7 @@ test('Zoho Analytics is only queried with SELECT', () => {
   const sql = [...code.matchAll(/analytics\(`([^`]*)`/g)].map(m => m[1].trim());
   assert.ok(sql.length >= 2);
   for (const q of sql) assert.match(q, /^select\s/i, q.slice(0, 60));
-  const s = src('server.js'), start = s.indexOf('async function analyticsSql('), body = s.slice(start, s.indexOf('\n}\n', start));
-  assert.ok(start > 0 && !/method\s*:|body\s*:/.test(body), 'analyticsSql must only GET');
+
 });
 
 test('the Apps Script bridge asks Google only for read-only scopes', () => {
@@ -38,10 +37,20 @@ test('the Apps Script bridge asks Google only for read-only scopes', () => {
   assert.match(gs, /const KEY = 'PASTE-/, 'the committed script must not contain a real key');
 });
 
-test('the Zoho Books helper it uses is GET-only', () => {
-  const s = src('server.js'), start = s.indexOf('async function books('), body = s.slice(start, s.indexOf('\n}\n', start));
-  assert.ok(start > 0);
-  assert.ok(!/method\s*:|body\s*:/.test(body), 'books() must not send a method or body');
+const fn = (file, name) => { const s = src(file), start = s.indexOf(name); assert.ok(start >= 0, name + ' not found'); return s.slice(start, s.indexOf('\n}\n', start)); };
+
+test('the dashboard service only reads Zoho and Upstash', () => {
+  for (const name of ['async function books(', 'async function analyticsSql(', 'async function kvGet('])
+    assert.ok(!/method\s*:|body\s*:/.test(fn('commissions-server.js', name)), name + ' must only GET');
+  const code = src('commissions-server.js').replace(/\/\/.*$/gm, '');
+  assert.ok(!/\/set\/|'SET'|"SET"|writeFile|appendFile/.test(code), 'no writes to Upstash or disk');
+  const raw = src('commissions-server.js');
+  assert.equal((raw.match(/method:/g) || []).length, 1, 'the only non-GET call is the Zoho OAuth token refresh');
+  assert.match(raw, /fetch\(`https:\/\/accounts\.zoho\.\$\{dc\(\)\}\/oauth\/v2\/token\?\$\{q\}`, \{ method: 'POST'/);
+});
+
+test('the funding platform server does not load the dashboard', () => {
+  assert.ok(!/commissions/i.test(src('server.js')), 'server.js must stay independent of the commission dashboard');
 });
 
 test('commissions-core.js does no I/O', () => {
