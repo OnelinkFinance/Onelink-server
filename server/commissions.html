@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Free Zone Commissions</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --raised: #ffffff;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --accent: #2a78d6;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s-other: #a8a69f;
+  --good: #0ca30c; --good-ink: #006300; --warn: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --good-bg: #e7f5e7; --warn-bg: #fff4dc; --serious-bg: #fdeee7; --critical-bg: #fbe9e9; --neutral-bg: #efeeea;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --raised: #222221;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --accent: #3987e5;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s-other: #5c5b57;
+    --good-ink: #0ca30c; --good-bg: #13280f; --warn-bg: #2e2510; --serious-bg: #2e1c14; --critical-bg: #2e1515; --neutral-bg: #262624;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --raised: #222221;
+  --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --accent: #3987e5;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s-other: #5c5b57;
+  --good-ink: #0ca30c; --good-bg: #13280f; --warn-bg: #2e2510; --serious-bg: #2e1c14; --critical-bg: #2e1515; --neutral-bg: #262624;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+a { color: var(--accent); }
+.wrap { max-width: 1280px; margin: 0 auto; padding: 20px 16px 48px; }
+header { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; justify-content: space-between; margin-bottom: 16px; }
+h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 15px; margin: 0 0 10px; }
+.sub { color: var(--ink-2); font-size: 13px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+input, select, button { font: inherit; color: var(--ink); background: var(--raised); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
+button { cursor: pointer; }
+button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+button:disabled { opacity: .6; cursor: progress; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+.sources { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; }
+.src { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--neutral-bg); }
+.src b { display: block; }
+.src .d { color: var(--ink-2); word-break: break-word; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.kpi .l { color: var(--ink-2); font-size: 12px; }
+.kpi .v { font-size: 24px; font-weight: 650; letter-spacing: -0.02em; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.kpi .n { color: var(--muted); font-size: 12px; margin-top: 2px; }
+nav.tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--grid); margin-bottom: 16px; }
+nav.tabs button { border: 0; background: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 12px; color: var(--ink-2); }
+nav.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { color: var(--ink-2); font-weight: 600; font-size: 12px; white-space: nowrap; position: sticky; top: 0; background: var(--surface); }
+td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+tr.total td { font-weight: 650; border-top: 1px solid var(--axis); }
+.muted { color: var(--muted); }
+.pill { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px; font-size: 12px; white-space: nowrap; background: var(--neutral-bg); color: var(--ink); }
+.pill i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+.pill.good { background: var(--good-bg); } .pill.good i { background: var(--good); }
+.pill.warn { background: var(--warn-bg); } .pill.warn i { background: var(--warn); }
+.pill.serious { background: var(--serious-bg); } .pill.serious i { background: var(--serious); }
+.pill.critical { background: var(--critical-bg); } .pill.critical i { background: var(--critical); }
+.pill.neutral i { background: var(--muted); }
+.yes { color: var(--good-ink); } .no { color: var(--critical); }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; align-items: center; }
+.filters .grow { flex: 1 1 180px; }
+.missing { color: var(--ink-2); font-size: 12px; margin: 2px 0 0; padding-left: 16px; }
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--ink-2); margin: 6px 0 4px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.tip { position: absolute; pointer-events: none; background: var(--raised); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12); display: none; min-width: 180px; z-index: 5; }
+.tip .row { display: flex; justify-content: space-between; gap: 12px; }
+.tip .row span:first-child { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
+.tip i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 1100px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+#app, #body, #panes, .card { min-width: 0; }
+.chart { max-width: 760px; }
+td.nw { white-space: nowrap; }
+.empty { color: var(--muted); padding: 18px 4px; }
+.login { max-width: 360px; margin: 10vh auto; }
+.login label { display: block; font-size: 12px; color: var(--ink-2); margin: 10px 0 4px; }
+.login input { width: 100%; }
+.err { color: var(--critical); margin-top: 8px; font-size: 13px; }
+.hide { display: none !important; }
+small.note { color: var(--muted); display: block; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section id="login" class="card login hide">
+    <h1>Free Zone Commissions</h1>
+    <p class="sub">Sign in with your OneLink account.</p>
+    <form id="loginForm">
+      <label for="u">Email</label><input id="u" autocomplete="username" required>
+      <label for="p">Password</label><input id="p" type="password" autocomplete="current-password" required>
+      <div style="margin-top:14px"><button class="primary" type="submit">Sign in</button></div>
+      <div id="loginErr" class="err"></div>
+    </form>
+  </section>
+
+  <section id="app" class="hide">
+    <header>
+      <div>
+        <h1>Free Zone Commissions</h1>
+        <div class="sub">RAK DAO · RAK ICC · Meydan · RAKEZ — GP report, Zoho Books, Renewals sheet and email in one place</div>
+      </div>
+      <div class="controls">
+        <label class="sub" for="month">Month</label><input type="month" id="month">
+        <select id="span" aria-label="History">
+          <option value="3">3 months</option><option value="6" selected>6 months</option><option value="12">12 months</option>
+        </select>
+        <button id="refresh" class="primary">Refresh</button>
+        <a href="/" class="sub">Back to OneLink</a>
+      </div>
+    </header>
+    <div id="error" class="card err hide"></div>
+    <div id="body" class="hide">
+      <div class="card"><div class="sources" id="sources"></div><small class="note" id="stamp"></small></div>
+      <div class="kpis" id="kpis"></div>
+      <nav class="tabs" role="tablist" id="tabs"></nav>
+      <div id="panes"></div>
+    </div>
+    <div id="loading" class="empty">Loading live data…</div>
+  </section>
+</div>
+<div class="tip" id="tip"></div>
+<script>
+(() => {
+  try { const t = localStorage.getItem('onelink.theme'); if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t; } catch (e) {}
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const aed = n => n == null ? '—' : 'AED ' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
+  const aedFull = n => n == null ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthLabel = m => MON[+m.slice(5, 7) - 1] + ' ' + m.slice(0, 4);
+  const fmtDate = d => d ? `${+d.slice(8, 10)} ${MON[+d.slice(5, 7) - 1]} ${d.slice(0, 4)}` : '—';
+  const SERIES = { RAKDAO: 'var(--s1)', RAKICC: 'var(--s2)', MEYDAN: 'var(--s3)', RAKEZ: 'var(--s4)', OTHER: 'var(--s-other)' };
+  const STATUS = {
+    'Completed': 'good', 'Invoiced · paid': 'good', 'In progress': 'warn', 'Invoiced · unpaid': 'warn', 'Partly invoiced': 'serious',
+    'Commission not invoiced': 'serious', 'Not invoiced': 'serious', 'No commission': 'serious', 'Missing invoice': 'critical',
+    'Not started': 'serious', 'Overdue': 'critical', 'Invoiced more than GP': 'warn', 'Check date': 'warn',
+    high: 'critical', medium: 'serious', low: 'warn'
+  };
+  const pill = (t, kind) => `<span class="pill ${kind || STATUS[t] || 'neutral'}"><i></i>${esc(t)}</span>`;
+  const yn = v => v == null ? '<span class="muted">—</span>' : v ? '<span class="yes">✓ Yes</span>' : '<span class="no">✗ No</span>';
+
+  let token = null, data = null, tab = 'overview';
+  const qs = new URLSearchParams(location.search);
+  const now = new Date();
+  $('month').value = qs.get('month') || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  if (qs.get('months')) $('span').value = qs.get('months');
+
+  async function api(url, opts = {}) {
+    const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) };
+    const r = await fetch(url, { credentials: 'same-origin', ...opts, headers });
+    const j = await r.json().catch(() => ({}));
+    return { status: r.status, j };
+  }
+
+  async function load(refresh) {
+    $('refresh').disabled = true; $('loading').classList.remove('hide'); $('error').classList.add('hide');
+    const month = $('month').value, months = $('span').value;
+    history.replaceState(null, '', `?month=${month}&months=${months}`);
+    try {
+      const { status, j } = await api(`/api/commissions?month=${month}&months=${months}${refresh ? '&refresh=1' : ''}`);
+      if (status === 401) return showLogin();
+      $('app').classList.remove('hide'); $('login').classList.add('hide');
+      if (!j.ok) throw new Error(j.error || 'Request failed (' + status + ')');
+      data = j; render();
+    } catch (e) {
+      $('error').textContent = e.message; $('error').classList.remove('hide');
+    } finally { $('refresh').disabled = false; $('loading').classList.add('hide'); }
+  }
+  function showLogin() { $('login').classList.remove('hide'); $('app').classList.add('hide'); $('u').focus(); }
+  $('loginForm').addEventListener('submit', async e => {
+    e.preventDefault(); $('loginErr').textContent = '';
+    const { j } = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username: $('u').value, password: $('p').value }) });
+    if (!j.ok) { $('loginErr').textContent = j.error || 'Sign-in failed'; return; }
+    token = j.token; $('p').value = ''; load();
+  });
+  $('refresh').addEventListener('click', () => load(true));
+  $('month').addEventListener('change', () => load());
+  $('span').addEventListener('change', () => load());
+
+  const zoneName = c => (data.zones.find(z => z.code === c) || {}).name || c || '—';
+
+  function render() {
+    $('body').classList.remove('hide');
+    const S = data.sources, src = (k, label) => {
+      const s = S[k] || {}, kind = s.ok ? (s.warning ? 'warn' : 'good') : s.off ? 'neutral' : 'critical';
+      const sym = s.ok ? (s.warning ? '!' : '✓') : s.off ? '–' : '✗';
+      return `<div class="src"><span class="pill ${kind}" aria-label="${kind}"><i></i>${sym}</span><div><b>${label}</b><span class="d">${esc(s.detail || '')}${s.warning ? ' · ' + esc(s.warning) : ''}${s.url ? ` · <a href="${esc(s.url)}" target="_blank" rel="noopener">open</a>` : ''}</span></div></div>`;
+    };
+    $('sources').innerHTML = src('gp', 'GP reports') + src('zoho', 'Zoho Books') + src('renewals', 'Renewals sheet') + src('gmail', 'Gmail');
+    $('stamp').textContent = `Data as of ${new Date(data.generatedAt).toLocaleString('en-GB', { timeZone: 'Asia/Dubai', dateStyle: 'medium', timeStyle: 'short' })} Dubai${data.cached ? ' (cached — press Refresh for live)' : ''} · today ${fmtDate(data.today)} · renewals due within ${data.windowDays} days count as pending`;
+
+    const k = data.kpis, m = monthLabel(data.month);
+    $('kpis').innerHTML = [
+      ['Commission earned', aed(k.commission), `${m} · GP report`],
+      ['Invoiced to free zones', aed(k.invoiced), k.invoiced == null ? 'Zoho Books not connected' : `${m} · ex VAT`],
+      ['Outstanding from free zones', aed(k.outstanding), k.outstanding == null ? 'Zoho Books not connected' : `${m} invoices · incl. VAT`],
+      ['Free zone deals', String(k.deals), `${k.completed} complete · ${k.pending} pending`],
+      ['Renewals pending', String(k.renewalsDue), `${k.renewalsOverdue} overdue`],
+      ['Exceptions', String(k.exceptions), 'Where commission or work may be missed']
+    ].map(([l, v, n]) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="n">${esc(n)}</div></div>`).join('');
+
+    const tabs = [['overview', 'Commissions by free zone'], ['work', `Work status (${data.work.length})`], ['renewals', `Renewals (${data.renewals.length})`], ['exceptions', `Exceptions (${data.exceptions.length})`], ['invoices', 'Commission invoices'], ...(data.emails ? [['emails', `Emails (${data.emails.length})`]] : [])];
+    if (!tabs.some(t => t[0] === tab)) tab = 'overview';
+    $('tabs').innerHTML = tabs.map(([id, l]) => `<button role="tab" data-tab="${id}" aria-selected="${id === tab}">${l}</button>`).join('');
+    $('tabs').querySelectorAll('button').forEach(b => b.onclick = () => { tab = b.dataset.tab; render(); });
+    $('panes').innerHTML = ({ overview, work, renewals, exceptions, invoices, emails })[tab]();
+    if (tab === 'overview') drawChart();
+    if (tab === 'work') wireWork();
+  }
+
+  // ---- View 1 ----
+  function overview() {
+    const sel = data.summary.find(s => s.month === data.month), zi = data.zoneInvoices != null;
+    const state = c => {
+      if (!zi || c.code === 'OTHER') return '<span class="muted">—</span>';
+      const z = sel.zones[c.code];
+      if (!z.commission && !z.invoiced) return '<span class="muted">nothing due</span>';
+      if (z.commission && !z.invoiced) return pill('Not invoiced');
+      if (Math.abs(z.invoiced - z.commission) <= 1) return pill(z.outstanding > 1 ? 'Invoiced · unpaid' : 'Invoiced · paid');
+      return pill(z.invoiced < z.commission ? 'Partly invoiced' : 'Invoiced more than GP');
+    };
+    const row = (label, z, st, cls = '') => `<tr class="${cls}"><td>${label}</td><td class="r">${z.newCount}</td><td class="r">${aedFull(z.newCommission)}</td><td class="r">${z.renewalCount}</td><td class="r">${aedFull(z.renewalCommission)}</td><td class="r">${z.otherCount ? `${z.otherCount} · ${aedFull(z.otherCommission)}` : '—'}</td><td class="r"><b>${aedFull(z.commission)}</b></td><td class="r">${zi ? aedFull(z.invoiced) : '—'}</td><td class="r">${zi ? aedFull(z.outstanding) : '—'}</td><td>${st}</td></tr>`;
+    const zoneTable = !sel.hasReport ? `<div class="empty">No GP report for ${monthLabel(data.month)} yet.</div>` : `<div class="tablewrap"><table>
+      <thead><tr><th>Free zone</th><th class="r">New</th><th class="r">New commission</th><th class="r">Renewals</th><th class="r">Renewal commission</th><th class="r">Other</th><th class="r">Total commission</th><th class="r">Invoiced (ex VAT)</th><th class="r">Outstanding</th><th>Commission invoice</th></tr></thead>
+      <tbody>${data.zones.map(z => row(`<span class="pill neutral" style="background:none;padding:0"><i style="background:${SERIES[z.code]}"></i>${esc(z.name)}</span>`, sel.zones[z.code], state(z))).join('')}
+      ${row('Total', sel.total, '', 'total')}</tbody></table></div>`;
+    const hist = `<div class="tablewrap"><table><thead><tr><th>Month</th>${data.zones.map(z => `<th class="r">${esc(z.name)}</th>`).join('')}<th class="r">Total</th><th class="r">Invoiced</th><th class="r">Outstanding</th></tr></thead><tbody>
+      ${data.summary.slice().reverse().map(s => `<tr><td class="nw">${monthLabel(s.month)}${s.hasReport ? '' : '<div class="muted">no GP report</div>'}</td>${data.zones.map(z => `<td class="r">${s.hasReport ? aedFull(s.zones[z.code].commission) : '—'}</td>`).join('')}<td class="r"><b>${s.hasReport ? aedFull(s.total.commission) : '—'}</b></td><td class="r">${zi && (s.hasReport || s.total.invoiced) ? aedFull(s.total.invoiced) : '—'}</td><td class="r">${zi && (s.hasReport || s.total.invoiced) ? aedFull(s.total.outstanding) : '—'}</td></tr>`).join('')}
+      </tbody></table></div>`;
+    return `<div class="card"><h2>${monthLabel(data.month)} — commission by free zone and type</h2>${zoneTable}
+      <small class="note">Commission = the GP report's "Free zone Commission" column. Invoiced = Zoho Books invoices to the free zone that bill this month (read from the invoice text, otherwise the month before the invoice date).</small></div>
+      <div class="grid2"><div class="card"><h2>Commission per month</h2><div class="legend">${data.zones.map(z => `<span><i style="background:${SERIES[z.code]}"></i>${esc(z.name)}</span>`).join('')}</div><div class="chart" id="chart"></div></div>
+      <div class="card"><h2>Monthly history (AED)</h2>${hist}</div></div>`;
+  }
+
+  function drawChart() {
+    const el = $('chart'); if (!el) return;
+    const W = 560, H = 260, L = 56, R = 8, T = 8, B = 28;
+    const ms = data.summary, max = Math.max(1, ...ms.map(s => s.total.commission));
+    const step = (() => { const raw = max / 4, p = 10 ** Math.floor(Math.log10(raw)); return [1, 2, 2.5, 5, 10].map(x => x * p).find(x => x >= raw); })();
+    const top = step * Math.ceil(max / step), y = v => T + (H - T - B) * (1 - v / top);
+    const bw = Math.min(46, (W - L - R) / ms.length * 0.6), gap = (W - L - R) / ms.length;
+    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Stacked bars of commission per month by free zone">`;
+    for (let v = 0; v <= top + 1e-9; v += step) svg += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)" stroke-width="1"/><text x="${L - 8}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${v >= 1000 ? (v / 1000) + 'k' : v}</text>`;
+    ms.forEach((s, i) => {
+      const x = L + gap * i + (gap - bw) / 2;
+      let acc = 0;
+      const segs = data.zones.map(z => ({ z, v: s.zones[z.code].commission })).filter(o => o.v > 0);
+      segs.forEach((o, j) => {
+        const y0 = y(acc), y1 = y(acc + o.v); acc += o.v;
+        const h = Math.max(0, y0 - y1 - (j < segs.length - 1 ? 2 : 0)), isTop = j === segs.length - 1;
+        svg += isTop && h > 4
+          ? `<path d="M${x},${y1 + h} V${y1 + 4} Q${x},${y1} ${x + 4},${y1} H${x + bw - 4} Q${x + bw},${y1} ${x + bw},${y1 + 4} V${y1 + h} Z" fill="${SERIES[o.z.code]}"/>`
+          : `<rect x="${x}" y="${y1}" width="${bw}" height="${h}" fill="${SERIES[o.z.code]}"/>`;
+      });
+      svg += `<line x1="${L}" x2="${W - R}" y1="${y(0)}" y2="${y(0)}" stroke="var(--axis)"/>`;
+      svg += `<text x="${x + bw / 2}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--muted)">${MON[+s.month.slice(5, 7) - 1]}</text>`;
+      svg += `<rect data-i="${i}" x="${L + gap * i}" y="${T}" width="${gap}" height="${H - T - B}" fill="transparent"/>`;
+    });
+    el.innerHTML = svg + '</svg>';
+    const tip = $('tip');
+    el.querySelectorAll('rect[data-i]').forEach(r => {
+      r.addEventListener('mousemove', ev => {
+        const s = ms[+r.dataset.i];
+        tip.innerHTML = `<b>${monthLabel(s.month)}</b>${s.hasReport ? '' : ' <span class="muted">· no GP report</span>'}` + data.zones.slice().reverse().map(z => `<div class="row"><span><i style="background:${SERIES[z.code]}"></i>${esc(z.name)}</span><span>${aedFull(s.zones[z.code].commission)}</span></div>`).join('') + `<div class="row" style="border-top:1px solid var(--grid);margin-top:4px;padding-top:4px"><span>Total</span><b>${aedFull(s.total.commission)}</b></div>`;
+        tip.style.display = 'block';
+        const tw = tip.offsetWidth, x = ev.pageX + 14 + tw > window.scrollX + innerWidth ? ev.pageX - tw - 14 : ev.pageX + 14;
+        tip.style.left = x + 'px'; tip.style.top = (ev.pageY - 10) + 'px';
+      });
+      r.addEventListener('mouseleave', () => tip.style.display = 'none');
+    });
+  }
+
+  // ---- View 2 ----
+  let wf = { zone: '', status: '', q: '' };
+  function workRows() {
+    const q = wf.q.toLowerCase();
+    return data.work.filter(w => (!wf.zone || w.zone === wf.zone) && (!wf.status || w.status === wf.status) && (!q || `${w.name} ${w.client} ${w.services} ${w.invoice || ''} ${w.agent}`.toLowerCase().includes(q)));
+  }
+  function work() {
+    const statuses = [...new Set(data.work.map(w => w.status))];
+    const opts = (list, cur) => list.map(([v, l]) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(l)}</option>`).join('');
+    return `<div class="card"><div class="filters">
+      <select id="fz" aria-label="Free zone">${opts([['', 'All free zones'], ...data.zones.filter(z => z.code !== 'OTHER').map(z => [z.code, z.name])], wf.zone)}</select>
+      <select id="fs" aria-label="Status">${opts([['', 'All statuses'], ...statuses.map(s => [s, s])], wf.status)}</select>
+      <input id="fq" class="grow" placeholder="Search client, company, invoice, agent" value="${esc(wf.q)}">
+      <button id="csv">Download CSV</button></div>
+      <div class="tablewrap" id="workTable">${workTable()}</div>
+      <small class="note">One line per free zone deal on the ${monthLabel(data.month)} GP report, plus renewals from the Renewals sheet that are due and not on any GP report yet.</small></div>`;
+  }
+  function workTable() {
+    const rows = workRows();
+    if (!rows.length) return '<div class="empty">Nothing matches.</div>';
+    return `<table><thead><tr><th>Client / company</th><th>Free zone</th><th>Type</th><th>Date</th><th>Email</th><th>GP report</th><th>Zoho invoice</th><th class="r">Commission</th><th>Commission invoiced</th><th>Renewals sheet</th><th>Status</th></tr></thead><tbody>
+      ${rows.map(w => `<tr><td><b>${esc(w.name)}</b>${w.client && w.client !== w.name ? `<div class="muted">${esc(w.client)}</div>` : ''}<div class="muted">${esc(w.services)}${w.agent ? ' · ' + esc(w.agent) : ''}</div></td>
+        <td>${esc(zoneName(w.zone))}</td><td>${esc(w.type)}</td><td class="nw">${fmtDate(w.date)}</td>
+        <td>${yn(w.email)}${(w.emails || []).map(e => `<div class="muted"><a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.subject || '(no subject)')}</a></div>`).join('')}</td>
+        <td>${yn(w.gp)}</td>
+        <td class="nw">${w.invoice ? esc(w.invoice) + (w.invoiceStatus ? `<div class="muted">${esc(w.invoiceStatus)}</div>` : '') : w.gp ? '<span class="no">✗ none</span>' : '<span class="muted">—</span>'}</td>
+        <td class="r">${w.gp ? aedFull(w.commission) + (w.commissionPct != null ? `<div class="muted">${w.commissionPct}% of ${aedFull(w.fee)}</div>` : '') : '—'}</td>
+        <td>${w.commissionInvoiced ? pill(w.commissionInvoiced) : '<span class="muted">—</span>'}</td>
+        <td>${esc(w.renewalStatus || '—')}</td>
+        <td>${pill(w.status)}${w.missing.length ? `<ul class="missing">${w.missing.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</td></tr>`).join('')}
+      </tbody></table>`;
+  }
+  function wireWork() {
+    $('fz').onchange = e => { wf.zone = e.target.value; $('workTable').innerHTML = workTable(); };
+    $('fs').onchange = e => { wf.status = e.target.value; $('workTable').innerHTML = workTable(); };
+    $('fq').oninput = e => { wf.q = e.target.value; $('workTable').innerHTML = workTable(); };
+    $('csv').onclick = () => {
+      const head = ['Client/Company', 'Client', 'Free zone', 'Type', 'Date', 'Services', 'Agent', 'Email found', 'GP report', 'Zoho invoice', 'Invoice status', 'Commission AED', 'Commission %', 'Commission invoiced', 'Renewals sheet', 'Status', 'Missing'];
+      const rows = workRows().map(w => [w.name, w.client, zoneName(w.zone), w.type, w.date, w.services, w.agent, w.email == null ? '' : w.email ? 'Yes' : 'No', w.gp ? 'Yes' : 'No', w.invoice, w.invoiceStatus, w.commission, w.commissionPct, w.commissionInvoiced, w.renewalStatus, w.status, w.missing.join('; ')]);
+      const csv = [head, ...rows].map(r => r.map(v => { const s = String(v ?? ''); return /[",\n]/.test(s) || /^[=+\-@]/.test(s) ? '"' + (/^[=+\-@]/.test(s) ? "'" : '') + s.replace(/"/g, '""') + '"' : s; }).join(',')).join('\n');
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = `free-zone-work-${data.month}.csv`; a.click();
+    };
+  }
+
+  // ---- Renewals ----
+  function renewals() {
+    const c = data.renewalCounts;
+    const chips = ['Overdue', 'Not started', 'In progress', 'Completed', 'Not due', 'Lapsed', 'Closed'].map(s => `${pill(s + ' · ' + (c[s] || 0), STATUS[s] || 'neutral')}`).join(' ');
+    return `<div class="card"><div class="filters">${chips}</div>${!data.renewals.length ? '<div class="empty">No open renewals.</div>' : `<div class="tablewrap"><table>
+      <thead><tr><th>Company</th><th>Free zone</th><th>Expiry</th><th class="r">Days</th><th>Sheet status</th><th>Progress / remarks</th><th>Account manager</th><th>GP report</th><th>Email</th><th>State</th></tr></thead><tbody>
+      ${data.renewals.map(r => `<tr><td><b>${esc(r.company)}</b><div class="muted">row ${r.sheetRow}</div></td><td>${esc(zoneName(r.zone))}</td><td>${fmtDate(r.expiry)}${r.dateAmbiguous ? ' <span class="pill warn"><i></i>check date</span>' : ''}</td>
+        <td class="r">${r.daysLeft == null ? '—' : r.daysLeft}</td><td>${esc(r.status || '—')}</td><td>${esc([r.progress, r.remarks].filter(Boolean).join(' · ') || '—')}</td><td>${esc(r.manager || '—')}</td>
+        <td>${r.gpMonth ? `${monthLabel(r.gpMonth)}${r.gpInvoice ? ' · ' + esc(r.gpInvoice) : ''}` : '<span class="muted">—</span>'}</td><td>${yn(r.email)}</td><td>${pill(r.state)}</td></tr>`).join('')}
+      </tbody></table></div>`}
+      <small class="note">Due = expiry within ${data.windowDays} days or already passed. Completed = a renewal on a GP report within ~5 months of expiry, or "Renewed" in the sheet. In progress = progress note (e.g. "Invoice sent") or a matching email. Rows marked cancelled/expired company are closed. Only RAK DAO, RAK ICC, Meydan and RAKEZ are tracked.</small></div>`;
+  }
+
+  // ---- View 3 ----
+  function exceptions() {
+    if (!data.exceptions.length) return '<div class="card empty">No exceptions — everything reconciles.</div>';
+    return `<div class="card"><div class="tablewrap"><table><thead><tr><th>Severity</th><th>What</th><th>Free zone</th><th>Detail</th><th class="r">AED</th></tr></thead><tbody>
+      ${data.exceptions.map(e => `<tr><td>${pill(e.severity, STATUS[e.severity])}</td><td>${esc(e.kind)}</td><td>${esc(zoneName(e.zone))}</td><td>${esc(e.detail)}</td><td class="r">${e.amount ? aedFull(e.amount) : ''}</td></tr>`).join('')}
+      </tbody></table></div></div>`;
+  }
+
+  function invoices() {
+    if (data.zoneInvoices == null) return `<div class="card empty">${esc(data.sources.zoho?.detail || 'Zoho Books not connected')}</div>`;
+    if (!data.zoneInvoices.length) return '<div class="card empty">No commission invoices to RAK DAO, RAK ICC, Meydan or RAKEZ in this period.</div>';
+    const list = data.zoneInvoices.slice().sort((a, b) => b.date.localeCompare(a.date));
+    return `<div class="card"><div class="tablewrap"><table><thead><tr><th>Invoice</th><th>Free zone</th><th>Date</th><th>Bills month</th><th>Status</th><th class="r">Ex VAT</th><th class="r">Total</th><th class="r">Outstanding</th></tr></thead><tbody>
+      ${list.map(i => `<tr><td>${esc(i.number)}${i.reference ? `<div class="muted">${esc(i.reference)}</div>` : ''}</td><td>${esc(zoneName(i.zone))}</td><td>${fmtDate(i.date)}</td><td>${monthLabel(i.period)}<div class="muted">${esc(i.periodBasis)}</div></td><td>${esc(i.status)}</td><td class="r">${aedFull(i.subTotal)}</td><td class="r">${aedFull(i.total)}</td><td class="r">${aedFull(i.balance)}</td></tr>`).join('')}
+      </tbody></table></div></div>`;
+  }
+
+  function emails() {
+    if (!data.emails.length) return '<div class="card empty">No free zone emails in this period.</div>';
+    return `<div class="card"><div class="tablewrap"><table><thead><tr><th>Date</th><th>From</th><th>Subject</th><th>Free zone</th><th>Type</th><th>Linked to</th></tr></thead><tbody>
+      ${data.emails.map(e => `<tr><td>${fmtDate(e.date)}</td><td>${esc(e.from)}</td><td><a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.subject || '(no subject)')}</a>${e.commission ? ' ' + pill('commission', 'neutral') : ''}</td><td>${esc(zoneName(e.zone))}</td><td>${esc(e.type)}</td><td>${e.companies.length ? esc(e.companies.join(', ')) : '<span class="muted">—</span>'}</td></tr>`).join('')}
+      </tbody></table></div></div>`;
+  }
+
+  load();
+})();
+</script>
+</body>
+</html>
