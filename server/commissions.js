@@ -223,4 +223,17 @@ export function mountCommissions(app, { requireAuth, books }) {
     try { s.json({ ok: true, ...(await loadDashboard({ books, month, span, refresh: q.query.refresh === '1' })) }); }
     catch (e) { console.error('Commission dashboard failed:', e); s.status(500).json({ ok: false, error: short(e) }); }
   });
+  // Once after start: log which sources the dashboard can read (and the service account to share sheets with).
+  setTimeout(() => selfCheck(books).catch(e => console.error('Commission dashboard self-check failed:', short(e))), 8000).unref();
+}
+
+async function selfCheck(books) {
+  let who = 'GOOGLE_SERVICE_ACCOUNT_B64 not set';
+  try { who = creds().client_email; } catch {}
+  console.log('Commission dashboard: Google service account =', who);
+  const check = async (name, fn) => { try { console.log(`Commission dashboard: ${name} OK — ${await fn()}`); } catch (e) { console.log(`Commission dashboard: ${name} NOT readable — ${short(e)}`); } };
+  await check('GP reports', async () => Object.keys(await gpReports()).sort().join(', ') || 'none found');
+  await check('Commission tracker', async () => (await sheetValues(E.TRACKER_SHEET_ID || DEFAULT_TRACKER, "'Invoice Checklist'!A1:A2")).length + ' rows sampled');
+  await check('Renewals sheet', async () => (await sheetValues(E.RENEWALS_SHEET_ID || DEFAULT_RENEWALS, `'${E.RENEWALS_TAB || 'Renewal'}'!A1:A2`)).length + ' rows sampled');
+  await check('Zoho Books invoices', async () => { const j = await books('invoices', { per_page: '1' }); return (j?.invoices ? 'invoice list readable' : 'no invoices returned'); });
 }
