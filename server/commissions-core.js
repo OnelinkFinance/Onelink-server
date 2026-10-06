@@ -467,6 +467,8 @@ export function buildDashboard(input) {
   if (zoneInv) {
     if (input.tracker) for (const z of zoneInv) {
       const c = checklist.get(z.number);
+      if (/draft/i.test(z.status)) add('medium', 'Commission invoice still a draft in Zoho', `${zn(z.zone)} · ${z.number} · ${aed(z.total)} — never sent${c ? `; the tracker counts it as ${c.status}` : ''}`, { zone: z.zone, amount: z.total });
+      if (c && c.status !== 'CANCELLED' && Math.abs((c.amount || 0) - z.total) > TOL) add('low', 'Commission invoice amount differs: tracker vs Zoho', `${zn(z.zone)} · ${z.number} · tracker ${aed(c.amount)} vs Zoho ${aed(z.total)}`, { zone: z.zone, amount: round2((c.amount || 0) - z.total) });
       if (!c) add('low', 'Zoho commission invoice not in tracker', `${zn(z.zone)} · ${z.number} · ${z.date} · ${aed(z.total)} — not on the Invoice Checklist / Register`, { zone: z.zone, amount: z.total });
       else if (c.status === 'RECEIVED' && z.balance > TOL) add('low', 'Paid per tracker, open in Zoho', `${zn(z.zone)} · ${z.number} · Zoho balance ${aed(z.balance)}`, { zone: z.zone, amount: z.balance });
       else if (c.status === 'TO COLLECT' && z.balance <= TOL && z.total > 0) add('low', 'Paid in Zoho, open on tracker', `${zn(z.zone)} · ${z.number} · Zoho shows it paid; the tracker still lists ${aed(c.toCollect)} to collect`, { zone: z.zone, amount: c.toCollect });

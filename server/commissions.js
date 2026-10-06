@@ -1,12 +1,15 @@
 // Free zone commission dashboard — loads the live sources and serves /commissions + /api/commissions.
 // Logic lives in commissions-core.js; this file only fetches, caches and reports what each source said.
 //
-// READ-ONLY. Google is reached with *.readonly scopes only and only list/get calls; Zoho Books only with GET
-// (the shared books() helper never sends a method or body). Nothing is ever written back to any source.
+// READ-ONLY. Google is reached with *.readonly scopes only and only list/get calls (or through the read-only
+// Apps Script bridge in apps-script/); Zoho with SELECT exports from Zoho Analytics and GET from Zoho Books
+// (the shared helpers never send a body). Nothing is ever written back to any source.
 // test/read-only.test.js fails the build if a write call or a non-readonly scope appears in this file.
 //
-// Env (all optional except the service account):
-//   GOOGLE_SERVICE_ACCOUNT_B64  same service account as the approval sheet. Share the GP report shared drive
+// Env — Google needs ONE of these two:
+//   SHEETS_BRIDGE_URL + SHEETS_BRIDGE_KEY   the free route: the read-only Apps Script in apps-script/, deployed
+//                               as a web app by an account that can open the sheets (no Google Cloud, no billing)
+//   GOOGLE_SERVICE_ACCOUNT_B64  a Google Cloud service account. Share the GP report shared drive, the tracker
 //                               and the Renewals sheet with its client_email (Viewer is enough).
 //   GP_REPORT_DRIVE_ID          shared drive holding the monthly GP reports (default: searched in every drive)
 //   GP_REPORT_TAB               tab read from each GP report (default "Summary")
@@ -34,7 +37,18 @@ function creds() {
 }
 const jwt = (scopes, subject) => { const c = creds(); return new google.auth.JWT({ email: c.client_email, key: c.private_key, scopes, subject }); };
 const ro = () => jwt(['https://www.googleapis.com/auth/drive.readonly', 'https://www.googleapis.com/auth/spreadsheets.readonly']);
-const shareHint = () => { try { return ` — share it with ${creds().client_email}`; } catch { return ''; } };
+const shareHint = () => { if (bridge()) return ''; try { return ` — share it with ${creds().client_email}`; } catch { return ' — set SHEETS_BRIDGE_URL + SHEETS_BRIDGE_KEY (free Apps Script route) or GOOGLE_SERVICE_ACCOUNT_B64'; } };
+
+// The free route: the read-only Apps Script web app (apps-script/Code.gs). GET only.
+const bridge = () => !!(E.SHEETS_BRIDGE_URL && E.SHEETS_BRIDGE_KEY);
+async function bridgeGet(params) {
+  const u = new URL(E.SHEETS_BRIDGE_URL);
+  for (const [k, v] of Object.entries({ ...params, key: E.SHEETS_BRIDGE_KEY })) u.searchParams.set(k, v);
+  const r = await fetch(u, { redirect: 'follow', signal: AbortSignal.timeout(45_000) });
+  const j = await r.json().catch(() => null);
+  if (!j || !j.ok) throw new Error('Sheets bridge: ' + (j?.error || 'HTTP ' + r.status));
+  return j;
+}
 
 // Small parallel map so 100 Gmail / Books lookups don't fire at once.
 async function pool(items, n, fn) {
@@ -47,14 +61,19 @@ async function pool(items, n, fn) {
 let reportList = { at: 0, files: null };
 async function gpReports() {
   if (reportList.files && Date.now() - reportList.at < TTL) return reportList.files;
-  const drive = google.drive({ version: 'v3', auth: ro() });
-  const r = await drive.files.list({
-    q: "mimeType='application/vnd.google-apps.spreadsheet' and name contains 'GP Report' and trashed=false",
-    fields: 'files(id,name,modifiedTime,webViewLink)', pageSize: 200, supportsAllDrives: true, includeItemsFromAllDrives: true,
-    ...(E.GP_REPORT_DRIVE_ID ? { corpora: 'drive', driveId: E.GP_REPORT_DRIVE_ID } : { corpora: 'allDrives' })
-  });
+  let files;
+  if (bridge()) files = (await bridgeGet({ action: 'reports' })).files || [];
+  else {
+    const drive = google.drive({ version: 'v3', auth: ro() });
+    const r = await drive.files.list({
+      q: "mimeType='application/vnd.google-apps.spreadsheet' and name contains 'GP Report' and trashed=false",
+      fields: 'files(id,name,modifiedTime,webViewLink)', pageSize: 200, supportsAllDrives: true, includeItemsFromAllDrives: true,
+      ...(E.GP_REPORT_DRIVE_ID ? { corpora: 'drive', driveId: E.GP_REPORT_DRIVE_ID } : { corpora: 'allDrives' })
+    });
+    files = r.data.files || [];
+  }
   const byMonth = {};
-  for (const f of r.data.files || []) {
+  for (const f of files) {
     const m = core.gpReportMonth(f.name);
     if (m && (!byMonth[m] || f.modifiedTime > byMonth[m].modifiedTime)) byMonth[m] = f;
   }
@@ -62,12 +81,36 @@ async function gpReports() {
   return byMonth;
 }
 async function sheetValues(spreadsheetId, range) {
+  if (bridge()) return (await bridgeGet({ action: 'values', id: spreadsheetId, range })).values || [];
   const sheets = google.sheets({ version: 'v4', auth: ro() });
   const r = await sheets.spreadsheets.values.get({ spreadsheetId, range, valueRenderOption: 'UNFORMATTED_VALUE', dateTimeRenderOption: 'SERIAL_NUMBER' });
   return r.data.values || [];
 }
 
-// ---- Zoho Books ----
+// ---- Zoho invoices through Zoho Analytics (the synced "Invoices" table; SELECT only) ----
+const sqlStr = v => "'" + String(v).replace(/'/g, "''") + "'";
+const money2 = v => Number(String(v ?? '').replace(/[^0-9.-]/g, '')) || 0;
+const zStatus = s => /^closed$/i.test(s) ? 'paid' : String(s || '').toLowerCase();
+async function zoneInvoicesAnalytics(analytics, from, to) {
+  const ids = core.TRACKED.map(z => sqlStr(z.booksCustomerId)).join(',');
+  const rows = await analytics(`select "Invoice ID", "Invoice Number", "Invoice Date", "Invoice Status", "Customer ID", "Purchase Order#", round("Sub Total (BCY)", 2) as sub_total, round("Total (BCY)", 2) as total, round("Balance (BCY)", 2) as balance from "Invoices" where "Customer ID" in (${ids}) and "Invoice Date" >= ${sqlStr(from + '-01')} and "Invoice Date" <= ${sqlStr(core.addDays(core.monthEnd(to), 75))}`);
+  return rows.filter(r => !/void/i.test(r['Invoice Status'])).map(r => {
+    const zone = core.TRACKED.find(z => z.booksCustomerId === String(r['Customer ID']))?.code;
+    const date = core.parseSheetDate(r['Invoice Date']).date;
+    const p = core.invoicePeriod({ invoice_number: r['Invoice Number'], reference_number: r['Purchase Order#'], date });
+    return { zone, id: r['Invoice ID'], number: String(r['Invoice Number']).toUpperCase(), date, status: zStatus(r['Invoice Status']), period: p.month, periodBasis: p.basis,
+      subTotal: money2(r.sub_total), total: money2(r.total), balance: money2(r.balance), reference: r['Purchase Order#'] || '' };
+  }).filter(i => i.zone && i.period >= from && i.period <= to);
+}
+async function clientInvoicesAnalytics(analytics, wanted) {
+  const map = new Map(wanted.map(n => [n, null]));
+  if (!wanted.length) return map;
+  const rows = await analytics(`select "Invoice Number", "Invoice Status", "Invoice Date", round("Total (BCY)", 2) as total, round("Balance (BCY)", 2) as balance from "Invoices" where "Invoice Number" in (${wanted.map(sqlStr).join(',')})`);
+  for (const r of rows) map.set(String(r['Invoice Number']).toUpperCase(), { status: zStatus(r['Invoice Status']), total: money2(r.total), balance: money2(r.balance), date: core.parseSheetDate(r['Invoice Date']).date });
+  return map;
+}
+
+// ---- Zoho Books (fallback when Analytics is not available) ----
 const invDetail = new Map(); // invoice_id -> { modified, inv }
 async function listInvoices(books, params) {
   const out = [];
@@ -138,7 +181,7 @@ const dubaiToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Duba
 const cache = new Map(); // key -> { at, data }
 const gpCache = new Map(); // fileId -> { modified, parsed }
 
-export async function loadDashboard({ books, month, span = 6, refresh = false }) {
+export async function loadDashboard({ books, analytics, month, span = 6, refresh = false }) {
   const key = `${month}|${span}`, hit = cache.get(key);
   if (!refresh && hit && Date.now() - hit.at < TTL) return { ...hit.data, cached: true };
   if (refresh) reportList.at = 0;
@@ -188,9 +231,11 @@ export async function loadDashboard({ books, month, span = 6, refresh = false })
   let clientInv = null, zoneInv = null;
   try {
     const refs = [...(gp[month] || []).filter(g => g.zone).map(g => g.invoice), ...(tracker?.lines || []).filter(l => l.month === month).map(l => l.ref)];
-    clientInv = await clientInvoices(books, month, [...new Set(refs.filter(r => /^INV-\d/.test(r)))]);
-    zoneInv = await zoneInvoices(books, months[0], month);
-    sources.zoho = { ok: true, detail: `${zoneInv.length} free zone commission invoice${zoneInv.length === 1 ? '' : 's'}; client invoices checked for ${month}` };
+    const wanted = [...new Set(refs.filter(r => /^INV-\d/.test(r)))];
+    let via = 'Zoho Analytics';
+    try { clientInv = await clientInvoicesAnalytics(analytics, wanted); zoneInv = await zoneInvoicesAnalytics(analytics, months[0], month); }
+    catch (e) { console.error('Commission dashboard: Analytics invoices failed, trying Zoho Books —', short(e)); via = 'Zoho Books'; clientInv = await clientInvoices(books, month, wanted); zoneInv = await zoneInvoices(books, months[0], month); }
+    sources.zoho = { ok: true, detail: `${zoneInv.length} free zone commission invoice${zoneInv.length === 1 ? '' : 's'}; client invoices checked for ${month} (${via})` };
   } catch (e) {
     sources.zoho = { ok: false, detail: 'Zoho Books invoices not readable: ' + short(e) + (/401|403|57/.test(String(e.message)) ? ' — the Zoho refresh token needs the ZohoBooks.invoices.READ scope' : '') };
     clientInv = null; zoneInv = null;
@@ -212,7 +257,7 @@ export async function loadDashboard({ books, month, span = 6, refresh = false })
 // Finance, management and the Master Admin — commission figures are not for every Operations user.
 const canView = u => u?.role === 'MASTER_ADMIN' || (u?.perms || []).includes('*') || ['FINANCE', 'MANAGEMENT'].includes(u?.dept) || (u?.perms || []).includes('VIEW_COMMISSIONS');
 
-export function mountCommissions(app, { requireAuth, books }) {
+export function mountCommissions(app, { requireAuth, books, analytics }) {
   const page = path.join(path.dirname(fileURLToPath(import.meta.url)), 'commissions.html');
   app.get('/commissions', (_q, s) => s.set('Cache-Control', 'no-cache').sendFile(page));
   app.get('/api/commissions', requireAuth, async (q, s) => {
@@ -220,20 +265,20 @@ export function mountCommissions(app, { requireAuth, books }) {
     const now = dubaiToday().slice(0, 7);
     const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(q.query.month || '') ? q.query.month : now;
     const span = Math.min(12, Math.max(1, Number(q.query.months) || 6));
-    try { s.json({ ok: true, ...(await loadDashboard({ books, month, span, refresh: q.query.refresh === '1' })) }); }
+    try { s.json({ ok: true, ...(await loadDashboard({ books, analytics, month, span, refresh: q.query.refresh === '1' })) }); }
     catch (e) { console.error('Commission dashboard failed:', e); s.status(500).json({ ok: false, error: short(e) }); }
   });
   // Once after start: log which sources the dashboard can read (and the service account to share sheets with).
-  setTimeout(() => selfCheck(books).catch(e => console.error('Commission dashboard self-check failed:', short(e))), 8000).unref();
+  setTimeout(() => selfCheck(books, analytics).catch(e => console.error('Commission dashboard self-check failed:', short(e))), 8000).unref();
 }
 
-async function selfCheck(books) {
+async function selfCheck(books, analytics) {
   let who = 'GOOGLE_SERVICE_ACCOUNT_B64 not set';
   try { who = creds().client_email; } catch {}
-  console.log('Commission dashboard: Google service account =', who);
+  console.log('Commission dashboard: Google via', bridge() ? 'Apps Script bridge (' + new URL(E.SHEETS_BRIDGE_URL).host + ')' : 'service account = ' + who);
   const check = async (name, fn) => { try { console.log(`Commission dashboard: ${name} OK — ${await fn()}`); } catch (e) { console.log(`Commission dashboard: ${name} NOT readable — ${short(e)}`); } };
   await check('GP reports', async () => Object.keys(await gpReports()).sort().join(', ') || 'none found');
   await check('Commission tracker', async () => (await sheetValues(E.TRACKER_SHEET_ID || DEFAULT_TRACKER, "'Invoice Checklist'!A1:A2")).length + ' rows sampled');
   await check('Renewals sheet', async () => (await sheetValues(E.RENEWALS_SHEET_ID || DEFAULT_RENEWALS, `'${E.RENEWALS_TAB || 'Renewal'}'!A1:A2`)).length + ' rows sampled');
-  await check('Zoho Books invoices', async () => { const j = await books('invoices', { per_page: '1' }); return (j?.invoices ? 'invoice list readable' : 'no invoices returned'); });
+  await check('Zoho invoices (Analytics)', async () => (await zoneInvoicesAnalytics(analytics, core.addMonths(dubaiToday().slice(0, 7), -3), dubaiToday().slice(0, 7))).length + ' free zone commission invoices in the last 3 months');
 }
