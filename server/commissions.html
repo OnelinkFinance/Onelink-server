@@ -53,16 +53,17 @@ button:disabled { opacity: .6; cursor: progress; }
 .src { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--neutral-bg); }
 .src b { display: block; }
 .src .d { color: var(--ink-2); word-break: break-word; }
-.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
 .kpi .l { color: var(--ink-2); font-size: 12px; }
-.kpi .v { font-size: 24px; font-weight: 650; letter-spacing: -0.02em; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.kpi .v { white-space: nowrap; font-size: 21px; font-weight: 650; letter-spacing: -0.02em; margin-top: 2px; font-variant-numeric: tabular-nums; }
 .kpi .n { color: var(--muted); font-size: 12px; margin-top: 2px; }
 nav.tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--grid); margin-bottom: 16px; }
 nav.tabs button { border: 0; background: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 12px; color: var(--ink-2); }
 nav.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
 .tablewrap { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
+td:first-child { min-width: 160px; }
 th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
 th { color: var(--ink-2); font-weight: 600; font-size: 12px; white-space: nowrap; position: sticky; top: 0; background: var(--surface); }
 td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -89,7 +90,7 @@ tr.total td { font-weight: 650; border-top: 1px solid var(--axis); }
 .tip .row span:first-child { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
 .tip i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 .grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
-@media (max-width: 1100px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 1600px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
 #app, #body, #panes, .card { min-width: 0; }
 .chart { max-width: 760px; }
 td.nw { white-space: nowrap; }
@@ -129,6 +130,8 @@ small.note { color: var(--muted); display: block; margin-top: 8px; }
         <button id="refresh" class="primary">Refresh</button>
         <a href="/" class="sub">Back to OneLink</a>
       </div>
+      <div class="sub" style="flex-basis:100%;text-align:right">Read-only — reads the sources, never writes to them
+      </div>
     </header>
     <div id="error" class="card err hide"></div>
     <div id="body" class="hide">
@@ -153,9 +156,9 @@ small.note { color: var(--muted); display: block; margin-top: 8px; }
   const fmtDate = d => d ? `${+d.slice(8, 10)} ${MON[+d.slice(5, 7) - 1]} ${d.slice(0, 4)}` : '—';
   const SERIES = { RAKDAO: 'var(--s1)', RAKICC: 'var(--s2)', MEYDAN: 'var(--s3)', RAKEZ: 'var(--s4)', OTHER: 'var(--s-other)' };
   const STATUS = {
-    'Completed': 'good', 'Invoiced · paid': 'good', 'In progress': 'warn', 'Invoiced · unpaid': 'warn', 'Partly invoiced': 'serious',
-    'Commission not invoiced': 'serious', 'Not invoiced': 'serious', 'No commission': 'serious', 'Missing invoice': 'critical',
-    'Not started': 'serious', 'Overdue': 'critical', 'Invoiced more than GP': 'warn', 'Check date': 'warn',
+    'Completed': 'good', 'Finalized': 'good', 'RECEIVED': 'good', 'Invoiced': 'good', 'In progress': 'warn', 'Under review': 'warn', 'Awaiting payment': 'warn', 'TO COLLECT': 'warn',
+    'Pending commission invoice': 'serious', 'Uninvoiced': 'serious', 'Not on tracker': 'serious', 'Pending GP': 'serious', 'CANCELLED': 'neutral', 'No commission': 'neutral',
+    'Pending invoice': 'critical', 'Commission missed': 'critical', 'Missed': 'critical', 'Renewal not started': 'serious', 'Not started': 'serious', 'Overdue': 'critical', 'Check date': 'warn',
     high: 'critical', medium: 'serious', low: 'warn'
   };
   const pill = (t, kind) => `<span class="pill ${kind || STATUS[t] || 'neutral'}"><i></i>${esc(t)}</span>`;
@@ -208,14 +211,15 @@ small.note { color: var(--muted); display: block; margin-top: 8px; }
       const sym = s.ok ? (s.warning ? '!' : '✓') : s.off ? '–' : '✗';
       return `<div class="src"><span class="pill ${kind}" aria-label="${kind}"><i></i>${sym}</span><div><b>${label}</b><span class="d">${esc(s.detail || '')}${s.warning ? ' · ' + esc(s.warning) : ''}${s.url ? ` · <a href="${esc(s.url)}" target="_blank" rel="noopener">open</a>` : ''}</span></div></div>`;
     };
-    $('sources').innerHTML = src('gp', 'GP reports') + src('zoho', 'Zoho Books') + src('renewals', 'Renewals sheet') + src('gmail', 'Gmail');
+    $('sources').innerHTML = src('tracker', 'Commission tracker') + src('gp', 'GP reports') + src('zoho', 'Zoho Books') + src('renewals', 'Renewals sheet') + src('gmail', 'Gmail');
     $('stamp').textContent = `Data as of ${new Date(data.generatedAt).toLocaleString('en-GB', { timeZone: 'Asia/Dubai', dateStyle: 'medium', timeStyle: 'short' })} Dubai${data.cached ? ' (cached — press Refresh for live)' : ''} · today ${fmtDate(data.today)} · renewals due within ${data.windowDays} days count as pending`;
 
     const k = data.kpis, m = monthLabel(data.month);
     $('kpis').innerHTML = [
-      ['Commission earned', aed(k.commission), `${m} · GP report`],
-      ['Invoiced to free zones', aed(k.invoiced), k.invoiced == null ? 'Zoho Books not connected' : `${m} · ex VAT`],
-      ['Outstanding from free zones', aed(k.outstanding), k.outstanding == null ? 'Zoho Books not connected' : `${m} invoices · incl. VAT`],
+      ['Commission earned', aed(k.commission), `${m} · ${data.baseline || 'no data'}`],
+      ['Not yet invoiced', aed(k.uninvoiced), `${m} · ${aed(k.uninvoicedAll)} across ${data.months.length} months`],
+      ['Commission missed', aed(k.missed), `${m} · marked Missed on the tracker`],
+      ['Still to collect', aed(k.toCollect), k.toCollect == null ? 'Tracker and Zoho not connected' : `${k.toCollectCount} invoice${k.toCollectCount === 1 ? '' : 's'} · ${k.toCollectSource}`],
       ['Free zone deals', String(k.deals), `${k.completed} complete · ${k.pending} pending`],
       ['Renewals pending', String(k.renewalsDue), `${k.renewalsOverdue} overdue`],
       ['Exceptions', String(k.exceptions), 'Where commission or work may be missed']
@@ -233,24 +237,19 @@ small.note { color: var(--muted); display: block; margin-top: 8px; }
   // ---- View 1 ----
   function overview() {
     const sel = data.summary.find(s => s.month === data.month), zi = data.zoneInvoices != null;
-    const state = c => {
-      if (!zi || c.code === 'OTHER') return '<span class="muted">—</span>';
-      const z = sel.zones[c.code];
-      if (!z.commission && !z.invoiced) return '<span class="muted">nothing due</span>';
-      if (z.commission && !z.invoiced) return pill('Not invoiced');
-      if (Math.abs(z.invoiced - z.commission) <= 1) return pill(z.outstanding > 1 ? 'Invoiced · unpaid' : 'Invoiced · paid');
-      return pill(z.invoiced < z.commission ? 'Partly invoiced' : 'Invoiced more than GP');
-    };
-    const row = (label, z, st, cls = '') => `<tr class="${cls}"><td>${label}</td><td class="r">${z.newCount}</td><td class="r">${aedFull(z.newCommission)}</td><td class="r">${z.renewalCount}</td><td class="r">${aedFull(z.renewalCommission)}</td><td class="r">${z.otherCount ? `${z.otherCount} · ${aedFull(z.otherCommission)}` : '—'}</td><td class="r"><b>${aedFull(z.commission)}</b></td><td class="r">${zi ? aedFull(z.invoiced) : '—'}</td><td class="r">${zi ? aedFull(z.outstanding) : '—'}</td><td>${st}</td></tr>`;
-    const zoneTable = !sel.hasReport ? `<div class="empty">No GP report for ${monthLabel(data.month)} yet.</div>` : `<div class="tablewrap"><table>
-      <thead><tr><th>Free zone</th><th class="r">New</th><th class="r">New commission</th><th class="r">Renewals</th><th class="r">Renewal commission</th><th class="r">Other</th><th class="r">Total commission</th><th class="r">Invoiced (ex VAT)</th><th class="r">Outstanding</th><th>Commission invoice</th></tr></thead>
-      <tbody>${data.zones.map(z => row(`<span class="pill neutral" style="background:none;padding:0"><i style="background:${SERIES[z.code]}"></i>${esc(z.name)}</span>`, sel.zones[z.code], state(z))).join('')}
-      ${row('Total', sel.total, '', 'total')}</tbody></table></div>`;
-    const hist = `<div class="tablewrap"><table><thead><tr><th>Month</th>${data.zones.map(z => `<th class="r">${esc(z.name)}</th>`).join('')}<th class="r">Total</th><th class="r">Invoiced</th><th class="r">Outstanding</th></tr></thead><tbody>
-      ${data.summary.slice().reverse().map(s => `<tr><td class="nw">${monthLabel(s.month)}${s.hasReport ? '' : '<div class="muted">no GP report</div>'}</td>${data.zones.map(z => `<td class="r">${s.hasReport ? aedFull(s.zones[z.code].commission) : '—'}</td>`).join('')}<td class="r"><b>${s.hasReport ? aedFull(s.total.commission) : '—'}</b></td><td class="r">${zi && (s.hasReport || s.total.invoiced) ? aedFull(s.total.invoiced) : '—'}</td><td class="r">${zi && (s.hasReport || s.total.invoiced) ? aedFull(s.total.outstanding) : '—'}</td></tr>`).join('')}
+    const row = (label, z, cls = '') => `<tr class="${cls}"><td>${label}</td><td class="r">${z.count}</td><td class="r">${z.newCount} · ${aedFull(z.newCommission)}</td><td class="r">${z.renewalCount} · ${aedFull(z.renewalCommission)}</td>
+      <td class="r">${aedFull(z.fees)}</td><td class="r"><b>${aedFull(z.commission)}</b></td><td class="r">${aedFull(z.invoicedLines)}</td><td class="r">${aedFull(z.uninvoiced)}</td><td class="r">${aedFull(z.missed)}</td>
+      <td class="r">${sel.hasReport ? aedFull(z.gpCommission) : '—'}</td>${zi ? `<td class="r">${aedFull(z.invoiced)}</td>` : ''}</tr>`;
+    const zoneTable = !sel.total.count ? `<div class="empty">No commission tracker lines or GP report for ${monthLabel(data.month)} yet.</div>` : `<div class="tablewrap"><table>
+      <thead><tr><th>Free zone</th><th class="r">Transactions</th><th class="r">New · commission</th><th class="r">Renewals · commission</th><th class="r">Gross fees</th><th class="r">Total commission</th><th class="r">Invoiced</th><th class="r">Not yet invoiced</th><th class="r">Missed</th><th class="r">GP report (check)</th>${zi ? '<th class="r">Zoho invoiced</th>' : ''}</tr></thead>
+      <tbody>${data.zones.map(z => row(`<span class="pill neutral" style="background:none;padding:0"><i style="background:${SERIES[z.code]}"></i>${esc(z.name)}</span>`, sel.zones[z.code])).join('')}
+      ${row('Total', sel.total, 'total')}</tbody></table></div>`;
+    const hist = `<div class="tablewrap"><table><thead><tr><th>Month</th><th>Status</th>${data.zones.map(z => `<th class="r">${esc(z.name)}</th>`).join('')}<th class="r">Total</th><th class="r">Not yet invoiced</th><th class="r">Missed</th></tr></thead><tbody>
+      ${data.summary.slice().reverse().map(s => `<tr><td class="nw">${monthLabel(s.month)}<div class="muted">${esc(s.baseline || 'no data')}</div></td><td>${s.state === 'No data' ? '<span class="muted">—</span>' : pill(s.state)}${s.state === 'Under review' ? `<div class="muted">${s.open} open${s.reconciled ? '' : ' · GP ≠ tracker'}</div>` : ''}</td>
+        ${data.zones.map(z => `<td class="r">${s.total.count ? aedFull(s.zones[z.code].commission) : '—'}</td>`).join('')}<td class="r"><b>${s.total.count ? aedFull(s.total.commission) : '—'}</b></td><td class="r">${s.total.count ? aedFull(s.total.uninvoiced) : '—'}</td><td class="r">${s.total.count ? aedFull(s.total.missed) : '—'}</td></tr>`).join('')}
       </tbody></table></div>`;
-    return `<div class="card"><h2>${monthLabel(data.month)} — commission by free zone and type</h2>${zoneTable}
-      <small class="note">Commission = the GP report's "Free zone Commission" column. Invoiced = Zoho Books invoices to the free zone that bill this month (read from the invoice text, otherwise the month before the invoice date).</small></div>
+    return `<div class="card"><h2>${monthLabel(data.month)} — commission by free zone and type ${sel.state !== 'No data' ? pill(sel.state) : ''}</h2>${zoneTable}
+      <small class="note">Baseline: ${esc(sel.baseline || '—')}. Commission, Invoiced, Not yet invoiced and Missed come from the commission tracker's GP Commission Lines (ex VAT) where it covers the month (from ${data.trackerFrom ? monthLabel(data.trackerFrom) : '—'}), otherwise from the GP report. "GP report (check)" is the GP report's Free zone Commission for the same deals, to reconcile against. Gross fees = fee paid to the free zone on the GP report. Finalized = every commission line invoiced or confirmed, and tracker = GP report.</small></div>
       <div class="grid2"><div class="card"><h2>Commission per month</h2><div class="legend">${data.zones.map(z => `<span><i style="background:${SERIES[z.code]}"></i>${esc(z.name)}</span>`).join('')}</div><div class="chart" id="chart"></div></div>
       <div class="card"><h2>Monthly history (AED)</h2>${hist}</div></div>`;
   }
@@ -284,7 +283,7 @@ small.note { color: var(--muted); display: block; margin-top: 8px; }
     el.querySelectorAll('rect[data-i]').forEach(r => {
       r.addEventListener('mousemove', ev => {
         const s = ms[+r.dataset.i];
-        tip.innerHTML = `<b>${monthLabel(s.month)}</b>${s.hasReport ? '' : ' <span class="muted">· no GP report</span>'}` + data.zones.slice().reverse().map(z => `<div class="row"><span><i style="background:${SERIES[z.code]}"></i>${esc(z.name)}</span><span>${aedFull(s.zones[z.code].commission)}</span></div>`).join('') + `<div class="row" style="border-top:1px solid var(--grid);margin-top:4px;padding-top:4px"><span>Total</span><b>${aedFull(s.total.commission)}</b></div>`;
+        tip.innerHTML = `<b>${monthLabel(s.month)}</b> <span class="muted">· ${esc(s.baseline || 'no data')}</span>` + data.zones.slice().reverse().map(z => `<div class="row"><span><i style="background:${SERIES[z.code]}"></i>${esc(z.name)}</span><span>${aedFull(s.zones[z.code].commission)}</span></div>`).join('') + `<div class="row" style="border-top:1px solid var(--grid);margin-top:4px;padding-top:4px"><span>Total</span><b>${aedFull(s.total.commission)}</b></div>`;
         tip.style.display = 'block';
         const tw = tip.offsetWidth, x = ev.pageX + 14 + tw > window.scrollX + innerWidth ? ev.pageX - tw - 14 : ev.pageX + 14;
         tip.style.left = x + 'px'; tip.style.top = (ev.pageY - 10) + 'px';
@@ -308,21 +307,24 @@ small.note { color: var(--muted); display: block; margin-top: 8px; }
       <input id="fq" class="grow" placeholder="Search client, company, invoice, agent" value="${esc(wf.q)}">
       <button id="csv">Download CSV</button></div>
       <div class="tablewrap" id="workTable">${workTable()}</div>
-      <small class="note">One line per free zone deal on the ${monthLabel(data.month)} GP report, plus renewals from the Renewals sheet that are due and not on any GP report yet.</small></div>`;
+      <small class="note">One line per free zone deal in ${monthLabel(data.month)}: each commission tracker line joined to its GP report row (by client invoice no., else company + free zone + date within 7 days), GP report deals the tracker does not have, and renewals from the Renewals sheet that are due with no GP or tracker entry. Row numbers point back to the source sheets.</small></div>`;
   }
   function workTable() {
     const rows = workRows();
     if (!rows.length) return '<div class="empty">Nothing matches.</div>';
-    return `<table><thead><tr><th>Client / company</th><th>Free zone</th><th>Type</th><th>Date</th><th>Email</th><th>GP report</th><th>Zoho invoice</th><th class="r">Commission</th><th>Commission invoiced</th><th>Renewals sheet</th><th>Status</th></tr></thead><tbody>
+    const srcRows = w => [w.trackerRow && `Tracker row ${w.trackerRow}`, w.gpRow && `GP row ${w.gpRow}`, w.renewalSheetRow && `Renewals row ${w.renewalSheetRow}`].filter(Boolean).join('<br>') || '—';
+    return `<table><thead><tr><th>Client / company</th><th>Status</th><th>Free zone</th><th>Type</th><th>Date</th><th>Source rows</th><th>GP report</th><th>Tracker</th><th>Client invoice</th><th class="r">Fee · commission</th><th>Commission invoice</th><th>Renewals sheet</th><th>Email</th></tr></thead><tbody>
       ${rows.map(w => `<tr><td><b>${esc(w.name)}</b>${w.client && w.client !== w.name ? `<div class="muted">${esc(w.client)}</div>` : ''}<div class="muted">${esc(w.services)}${w.agent ? ' · ' + esc(w.agent) : ''}</div></td>
+        <td style="min-width:200px">${pill(w.status)}${w.missing.length ? `<ul class="missing">${w.missing.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</td>
         <td>${esc(zoneName(w.zone))}</td><td>${esc(w.type)}</td><td class="nw">${fmtDate(w.date)}</td>
-        <td>${yn(w.email)}${(w.emails || []).map(e => `<div class="muted"><a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.subject || '(no subject)')}</a></div>`).join('')}</td>
-        <td>${yn(w.gp)}</td>
-        <td class="nw">${w.invoice ? esc(w.invoice) + (w.invoiceStatus ? `<div class="muted">${esc(w.invoiceStatus)}</div>` : '') : w.gp ? '<span class="no">✗ none</span>' : '<span class="muted">—</span>'}</td>
-        <td class="r">${w.gp ? aedFull(w.commission) + (w.commissionPct != null ? `<div class="muted">${w.commissionPct}% of ${aedFull(w.fee)}</div>` : '') : '—'}</td>
-        <td>${w.commissionInvoiced ? pill(w.commissionInvoiced) : '<span class="muted">—</span>'}</td>
+        <td class="nw muted">${srcRows(w)}</td>
+        <td>${w.source === 'Renewals sheet' ? yn(false) : yn(w.gp)}</td>
+        <td>${w.trackerStatus ? pill(w.trackerStatus) : w.source === 'Renewals sheet' ? yn(false) : yn(w.onTracker)}</td>
+        <td class="nw">${w.invoice ? esc(w.invoice) + (w.invoiceStatus ? `<div class="muted">${esc(w.invoiceStatus)}</div>` : '') : w.source === 'Renewals sheet' ? '<span class="muted">—</span>' : '<span class="no">✗ none</span>'}</td>
+        <td class="r">${w.source === 'Renewals sheet' ? '—' : `${w.fee ? `<div class="muted">${aedFull(w.fee)}</div>` : ''}<b>${aedFull(w.commission)}</b>${w.commissionPct != null ? `<div class="muted">${w.commissionPct}%</div>` : ''}`}</td>
+        <td class="nw">${w.commissionInvoice ? esc(w.commissionInvoice) : ''}${w.commissionInvoiceStatus ? `<div>${pill(w.commissionInvoiceStatus)}</div>` : w.commissionInvoice ? '' : '<span class="muted">—</span>'}</td>
         <td>${esc(w.renewalStatus || '—')}</td>
-        <td>${pill(w.status)}${w.missing.length ? `<ul class="missing">${w.missing.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</td></tr>`).join('')}
+        <td style="min-width:140px">${yn(w.email)}${(w.emails || []).map(e => `<div class="muted"><a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.subject || '(no subject)')}</a></div>`).join('')}</td></tr>`).join('')}
       </tbody></table>`;
   }
   function wireWork() {
@@ -330,10 +332,10 @@ small.note { color: var(--muted); display: block; margin-top: 8px; }
     $('fs').onchange = e => { wf.status = e.target.value; $('workTable').innerHTML = workTable(); };
     $('fq').oninput = e => { wf.q = e.target.value; $('workTable').innerHTML = workTable(); };
     $('csv').onclick = () => {
-      const head = ['Client/Company', 'Client', 'Free zone', 'Type', 'Date', 'Services', 'Agent', 'Email found', 'GP report', 'Zoho invoice', 'Invoice status', 'Commission AED', 'Commission %', 'Commission invoiced', 'Renewals sheet', 'Status', 'Missing'];
-      const rows = workRows().map(w => [w.name, w.client, zoneName(w.zone), w.type, w.date, w.services, w.agent, w.email == null ? '' : w.email ? 'Yes' : 'No', w.gp ? 'Yes' : 'No', w.invoice, w.invoiceStatus, w.commission, w.commissionPct, w.commissionInvoiced, w.renewalStatus, w.status, w.missing.join('; ')]);
+      const head = ['Date', 'Client/Company', 'Client', 'Free zone', 'Type', 'Services', 'Agent', 'Source', 'Tracker row', 'GP report row', 'Renewals row', 'Tracker status', 'Client invoice', 'Client invoice status', 'Gross fee AED', 'Commission AED', 'Commission %', 'Commission invoice', 'Commission invoice status', 'Renewals sheet', 'Email found', 'Status', 'Missing'];
+      const rows = workRows().map(w => [w.date, w.name, w.client, zoneName(w.zone), w.type, w.services, w.agent, w.source, w.trackerRow, w.gpRow, w.renewalSheetRow, w.trackerStatus, w.invoice, w.invoiceStatus, w.fee, w.commission, w.commissionPct, w.commissionInvoice, w.commissionInvoiceStatus, w.renewalStatus, w.email == null ? '' : w.email ? 'Yes' : 'No', w.status, w.missing.join('; ')]);
       const csv = [head, ...rows].map(r => r.map(v => { const s = String(v ?? ''); return /[",\n]/.test(s) || /^[=+\-@]/.test(s) ? '"' + (/^[=+\-@]/.test(s) ? "'" : '') + s.replace(/"/g, '""') + '"' : s; }).join(',')).join('\n');
-      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = `free-zone-work-${data.month}.csv`; a.click();
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = `free-zone-transactions-${data.month}.csv`; a.click();
     };
   }
 
@@ -359,12 +361,15 @@ small.note { color: var(--muted); display: block; margin-top: 8px; }
   }
 
   function invoices() {
-    if (data.zoneInvoices == null) return `<div class="card empty">${esc(data.sources.zoho?.detail || 'Zoho Books not connected')}</div>`;
-    if (!data.zoneInvoices.length) return '<div class="card empty">No commission invoices to RAK DAO, RAK ICC, Meydan or RAKEZ in this period.</div>';
-    const list = data.zoneInvoices.slice().sort((a, b) => b.date.localeCompare(a.date));
-    return `<div class="card"><div class="tablewrap"><table><thead><tr><th>Invoice</th><th>Free zone</th><th>Date</th><th>Bills month</th><th>Status</th><th class="r">Ex VAT</th><th class="r">Total</th><th class="r">Outstanding</th></tr></thead><tbody>
-      ${list.map(i => `<tr><td>${esc(i.number)}${i.reference ? `<div class="muted">${esc(i.reference)}</div>` : ''}</td><td>${esc(zoneName(i.zone))}</td><td>${fmtDate(i.date)}</td><td>${monthLabel(i.period)}<div class="muted">${esc(i.periodBasis)}</div></td><td>${esc(i.status)}</td><td class="r">${aedFull(i.subTotal)}</td><td class="r">${aedFull(i.total)}</td><td class="r">${aedFull(i.balance)}</td></tr>`).join('')}
-      </tbody></table></div></div>`;
+    const list = data.commissionInvoices || [];
+    if (!list.length) return `<div class="card empty">${esc(data.sources.tracker?.ok ? 'No commission invoices.' : (data.sources.tracker?.detail || 'Commission tracker not connected'))}</div>`;
+    const zi = data.zoneInvoices != null;
+    return `<div class="card"><div class="tablewrap"><table><thead><tr><th>Invoice</th><th>Free zone</th><th>Date</th><th class="r">Amount (incl. VAT)</th><th>Tracker status</th><th>Received on</th><th class="r">Still to collect</th><th class="r">Days outstanding</th>${zi ? '<th>Zoho Books</th><th>Bills month</th>' : ''}<th>Notes</th></tr></thead><tbody>
+      ${list.map(i => `<tr><td class="nw">${esc(i.number)}${i.sheetRow ? `<div class="muted">Checklist row ${i.sheetRow}</div>` : ''}</td><td>${esc(zoneName(i.zone))}</td><td class="nw">${fmtDate(i.date)}</td><td class="r">${aedFull(i.amount)}</td>
+        <td>${i.inTracker ? pill(i.status) : pill('Not on tracker')}</td><td class="nw">${fmtDate(i.receivedOn)}</td><td class="r">${i.toCollect ? aedFull(i.toCollect) : '—'}</td><td class="r">${i.daysOutstanding ?? '—'}</td>
+        ${zi ? `<td class="nw">${i.zoho ? `${esc(i.zoho.status)}<div class="muted">balance ${aedFull(i.zoho.balance)}</div>` : (i.date && i.date < data.months[0] + '-01' ? '<span class="muted">before period — not checked</span>' : '<span class="no">✗ not found</span>')}</td><td class="nw">${i.zoho ? `${monthLabel(i.zoho.period)}<div class="muted">${esc(i.zoho.periodBasis)}</div>` : '—'}</td>` : ''}
+        <td style="min-width:180px">${esc(i.notes || '')}</td></tr>`).join('')}
+      </tbody></table></div><small class="note">Every commission invoice from the tracker's Invoice Checklist (RECEIVED / TO COLLECT / CANCELLED, exactly as the sheet computes them)${zi ? ', checked against Zoho Books by invoice number. Zoho invoices to the four free zones that are missing from the tracker are listed too' : ''}. Amounts include 5% VAT; commission lines are ex VAT.</small></div>`;
   }
 
   function emails() {

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseGpReport, parseRenewals, parseSheetDate, gpReportMonth, detectZone, detectType, sameCompany, companyKey,
-  invoicePeriod, classifyEmail, buildDashboard, addMonths, monthEnd
+  invoicePeriod, classifyEmail, buildDashboard, addMonths, monthEnd, parseTrackerLines, parseInvoiceChecklist, normRef
 } from '../commissions-core.js';
 
 // Header rows and data rows as the September 2026 GP report "Summary" tab returns them (UNFORMATTED_VALUE).
@@ -47,6 +47,8 @@ test('dates: serials, en_US text, dotted day-first, ambiguous text', () => {
   assert.deepEqual(parseSheetDate('11/03/2027', { textDayFirst: true }), { date: '2027-03-11', ambiguous: true });
   assert.equal(parseSheetDate('20.22.2025').date, null);
   assert.equal(parseSheetDate('-').date, null);
+  assert.equal(parseSheetDate('04 May 2026').date, '2026-05-04');
+  assert.equal(parseSheetDate('1 Sep 2026').date, '2026-09-01');
   assert.equal(addMonths('2026-01', -1), '2025-12');
   assert.equal(monthEnd('2026-02'), '2026-02-28');
 });
@@ -67,6 +69,10 @@ test('zones, types and company identity', () => {
   assert.equal(detectType('License Renewal | 1 YEAR | RAK DAO'), 'Renewal');
   assert.equal(detectType('RAK DAO | 1BL + 1V'), 'New');
   assert.equal(detectType('License Amendment'), 'Other');
+  assert.equal(detectType('RAK DAO - 1 Visa'), 'New');
+  assert.equal(detectType('RAKEZ -0 VISA'), 'New');
+  assert.equal(detectType('Dependent Visa'), 'Other');
+  assert.equal(detectType('Visa Renewal'), 'Renewal');
   assert.ok(sameCompany('ADA ENTERPRISE L.L.C - FZ', 'ADA Enterprise LLC FZ'));
   assert.ok(sameCompany('Grid Systems', 'Grid Systems LTD'));
   assert.ok(sameCompany('NEXT IT SOLUTIONS LLC-FZ', 'NEXT IT SOLUTION '));
@@ -92,6 +98,7 @@ test('commission invoice period: from text, else month before', () => {
   assert.deepEqual(invoicePeriod({ date: '2026-09-07', line_items: [{ description: 'Referral commission - August 2026' }] }), { month: '2026-08', basis: 'invoice text' });
   assert.equal(invoicePeriod({ date: '2026-01-05', reference_number: 'Dec commission' }).month, '2025-12');
   assert.equal(invoicePeriod({ date: '2026-09-07' }).month, '2026-08');
+  assert.deepEqual(invoicePeriod({ date: '2026-09-02', invoice_number: 'INV-RAKDAO-082026' }), { month: '2026-08', basis: 'invoice number' });
 });
 
 test('emails link to zone by sender and to company by name', () => {
@@ -99,68 +106,121 @@ test('emails link to zone by sender and to company by name', () => {
   assert.equal(e.zone, 'RAKEZ'); assert.equal(e.type, 'Renewal'); assert.deepEqual(e.companies, ['Hocevar Ventures FZ-LLC']);
 });
 
+// "GP Commission Lines" and "Invoice Checklist" from Freezone_Commission_Collection_Tracker, as the sheet shows them.
+const LINES = [[], [], [], [], ['Date', 'Free zone', 'INV ref', 'Client name', 'Company name', 'Package / service', 'Free zone commission to invoice (AED)', 'Status', 'Notes', 'Flag'],
+  ['20 Aug 2026', 'RAKEZ', 'INV-000549', 'Arman Dossymbekov', 'Nova Oil LLC FZ', 'License Renewal - 1 Year | RAKEZ', '8,103.00', 'Uninvoiced'],          // row 6
+  ['11 Aug 2026', 'Meydan', 'INV-000535', 'Alan Bonner', 'First Principle Strategy Partners', 'Meydan - Company Formation - 1 Visa', '2,870.00', 'Invoiced', 'INV-MEYDAN-082026'],
+  ['14 Aug 2026', 'RAK DAO', 'INV-000545', 'VIDAL MACHADO RAFAEL JORGE', 'Play Solana LTD', 'RAK DAO - Renewal', '5,517.30', 'Invoiced', 'INV-RAKDAO-082026'],
+  ['12 Aug 2026', 'RAK DAO', 'INV-000539', 'Harrison', '', '1 Visa Package - RAK DAO', '', 'No commission', 'As per Innovation agreement we net off the expense'],
+  ['1 Sep 2026', 'Meydan', 'INV-000577', 'Amresh', 'Redacted Group LLC FZ', 'Meydan | License Renewal', '2,504.00', 'Invoiced', 'INV-000630'],          // row 10
+  ['8 Sep 2026', 'RAKEZ', 'INV-000589', 'Maj', 'Hocevar Ventures FZ-LLC', 'License Renewal | 1 YEAR | RAKEZ', '3,603.00', 'Uninvoiced'],
+  ['9 Sep 2026', 'RAK DAO', 'INV-000590', 'Grid Systems LTD', 'Grid Systems LTD', 'License Renewal | 1 YEAR | RAK DAO', '6,000.00', 'Uninvoiced'],
+  ['14 Sep 2026', 'RAK DAO', 'INV-000604', 'Yevgeni Lisenko', '', 'Business Setup | RAK-DAO', '', 'No commission', 'As per Innovation agreement we net off the expense'],
+  ['28 Sep 2026', 'RAK DAO', '', 'DUCA ELENA SELASIG PROCREDIT S R L', 'SELASIG PROCREDIT S R L', '0 Visa Package | RAK DAO', '2,970.00', 'Uninvoiced'],
+  ['20 Sep 2026', 'Meydan', 'INV-000699', 'Ghost Client', 'Ghost Trading L.L.C - FZ', 'Meydan- Renewal', '2,870.00', 'Missed', 'TO CHECK'],              // row 15: not on GP
+  ['12 May 2026', 'RAK DAO', 'INV-000387', 'Travel and tourism agency', 'Travel and tourism agency', 'RAK Dao-1 Visa', '(10,147.50)']
+];
+const CHECKLIST = [['INVOICE CHECKLIST'], ['One line per invoice'], [],
+  ['Date', 'Free Zone', 'Invoice / Doc No', 'Amount (AED)', 'Status', 'Received on', 'Days taken', 'Still to collect (AED)', 'Days outstanding', '1', '0', 'Notes'],
+  ['03 Apr 2026', 'RAKEZ', 'INV-000327', '3,780.00', 'TO COLLECT', '', '', '3,780.00', '186', '43', '1'],
+  ['02 Sep 2026', 'RAK DAO', 'INV-RAKDAO-082026', '33,925.82', 'TO COLLECT', '', '', '33,925.82', '34', '71', '5'],
+  ['07 Sep 2026', 'Meydan', 'INV-MEYDAN-082026', '5,638.50', 'TO COLLECT', '', '', '5,638.50', '29', '72', '6'],
+  ['11 Aug 2026', 'Meydan', 'INV-000534', '3,013.50', 'RECEIVED', '17 Aug 2026', '6', '', '', '67', '0'],
+  ['', '', '', '', '', '', '', '', '', '', '0']
+];
+
+test('tracker tabs parse as the sheet shows them', () => {
+  const { rows } = parseTrackerLines(LINES);
+  assert.equal(rows.length, 11);
+  assert.deepEqual([rows[0].sheetRow, rows[0].date, rows[0].zone, rows[0].ref, rows[0].commission, rows[0].status], [6, '2026-08-20', 'RAKEZ', 'INV-000549', 8103, 'Uninvoiced']);
+  assert.equal(rows[1].commissionInvoice, 'INV-MEYDAN-082026');
+  assert.equal(rows[3].commission, null);
+  assert.equal(rows[10].commission, -10147.5);
+  assert.equal(normRef('INV -000360'), 'INV-000360');
+  assert.equal(normRef('NV-000467'), 'INV-000467');
+  const c = parseInvoiceChecklist(CHECKLIST).rows;
+  assert.equal(c.length, 4);
+  assert.deepEqual([c[1].number, c[1].status, c[1].toCollect, c[1].daysOutstanding], ['INV-RAKDAO-082026', 'TO COLLECT', 33925.82, 34]);
+});
+
 function dashboard(over = {}) {
-  const gp = { '2026-09': parseGpReport(SEPT, '2026-09').rows };
-  const clientInvoices = new Map([['INV-000577', { status: 'paid' }], ['INV-000589', { status: 'paid' }], ['INV-000590', { status: 'paid' }], ['INV-000604', { status: 'paid' }], ['INV-000583', { status: 'paid' }]]);
+  const kenenia = row({ n: 21, date: '09/10/2026', inv: 'INV-000596', client: 'Veysel Kavun', company: 'Kenenia LTD', services: 'License Renewal | RAK DAO', renewal: true, fz: 'RAK DAO', fee: 22099, commission: 6629.7 });
+  const gp = { '2026-09': parseGpReport([...SEPT, kenenia], '2026-09').rows };
+  const clientInvoices = new Map([['INV-000596', { status: 'paid' }], ['INV-000577', { status: 'paid' }], ['INV-000589', { status: 'paid' }], ['INV-000590', { status: 'paid' }], ['INV-000604', { status: 'paid' }], ['INV-000583', { status: 'paid' }]]);
   const zoneInvoices = [
     { zone: 'MEYDAN', number: 'INV-000630', date: '2026-10-03', period: '2026-09', subTotal: 2504, total: 2629.2, balance: 2629.2 },
-    { zone: 'RAKDAO', number: 'INV-000631', date: '2026-10-03', period: '2026-09', subTotal: 6090, total: 6394.5, balance: 0 },
-    { zone: 'RAKICC', number: 'INV-000500', date: '2026-08-01', period: '2026-07', subTotal: 900, total: 945, balance: 945 }
+    { zone: 'RAKDAO', number: 'INV-RAKDAO-082026', date: '2026-09-02', period: '2026-08', subTotal: 32310.3, total: 33925.82, balance: 0 }
   ];
-  return buildDashboard({ month: '2026-09', months: ['2026-08', '2026-09'], gp, renewals: parseRenewals(RENEWALS).rows, clientInvoices, zoneInvoices, emails: null, today: '2026-10-06', ...over });
+  const tracker = { lines: parseTrackerLines(LINES).rows, checklist: parseInvoiceChecklist(CHECKLIST).rows };
+  return buildDashboard({ month: '2026-09', months: ['2026-08', '2026-09'], gp, tracker, renewals: parseRenewals(RENEWALS).rows, clientInvoices, zoneInvoices, emails: null, today: '2026-10-06', ...over });
 }
 
-test('monthly summary by free zone reconciles with the GP report', () => {
+test('transactions: tracker line joined to its GP report row; baseline is the tracker', () => {
+  const d = dashboard(), by = n => d.work.find(w => w.name === n);
+  assert.equal(by('Grid Systems LTD').source, 'Tracker + GP report');
+  assert.equal(by('Grid Systems LTD').commission, 6000);                         // tracker figure, not the GP 6,090
+  assert.ok(by('Grid Systems LTD').missing.some(x => /tracker 6000 vs GP report 6090/.test(x)));
+  assert.equal(by('SELASIG PROCREDIT S R L').source, 'Tracker + GP report');    // no INV ref → joined by name + zone + date
+  assert.equal(by('Kenenia LTD').source, 'GP report only');
+  assert.equal(by('Ghost Trading L.L.C - FZ').source, 'Tracker only');
+  assert.equal(by('Masters of Shilajit Official DWC-LLC'), undefined);         // Dubai South not tracked
+});
+
+test('statuses follow the spec: Completed / Pending invoice / Pending GP / Pending commission invoice / missed', () => {
+  const d = dashboard(), st = n => d.work.find(w => w.name === n)?.status;
+  assert.equal(st('Redacted Group LLC FZ'), 'Awaiting payment');                // INV-000630: not on the checklist, open in Zoho
+  assert.equal(st('Hocevar Ventures FZ-LLC'), 'Pending commission invoice');
+  assert.equal(st('SELASIG PROCREDIT S R L'), 'Pending invoice');               // no client invoice no.
+  assert.equal(st('Ghost Trading L.L.C - FZ'), 'Commission missed');
+  assert.ok(d.work.find(w => w.name === 'Ghost Trading L.L.C - FZ').missing.includes('Not on the 2026-09 GP report'));
+  assert.equal(st('Yevgeni Lisenko'), 'No commission');                         // tracker: net off per Innovation agreement — not an exception
+  assert.equal(st('Kenenia LTD'), 'Pending commission invoice');                // GP only; no RAK DAO Sept invoice in Zoho
+  assert.ok(d.work.find(w => w.name === 'Kenenia LTD').missing.some(x => /^Not on the commission tracker/.test(x)));
+  assert.equal(st('Lince LTD'), 'Overdue');
+  assert.equal(st('Shopzen FZ-LLC'), 'Renewal not started');
+  const aug = dashboard({ month: '2026-08' }), sa = n => aug.work.find(w => w.name === n)?.status;
+  assert.equal(sa('First Principle Strategy Partners'), 'Awaiting payment');     // INV-MEYDAN-082026 TO COLLECT
+  assert.equal(sa('Nova Oil LLC FZ'), 'Pending commission invoice');
+  assert.equal(sa('Play Solana LTD'), 'Awaiting payment');
+});
+
+test('monthly summary: tracker baseline, GP cross-check, Finalized vs Under review', () => {
   const d = dashboard(), s = d.summary.find(x => x.month === '2026-09');
-  assert.equal(s.zones.MEYDAN.renewalCommission, 2504);
-  assert.equal(s.zones.RAKDAO.commission, 6090 + 2970);
-  assert.equal(s.zones.RAKDAO.newCount, 2);                  // Lisenko (0 commission) + Duca
-  assert.equal(s.zones.RAKEZ.commission, 3603);
-  assert.equal(s.zones.OTHER.commission, 5020);              // Dubai South
-  assert.equal(s.total.commission, 2504 + 6090 + 2970 + 3603 + 5020);
-  assert.equal(s.zones.MEYDAN.invoiced, 2504);
+  assert.equal(s.baseline, 'Commission tracker');
+  assert.equal(s.state, 'Under review');
+  assert.equal(s.zones.MEYDAN.commission, 2504 + 2870);                         // Redacted + Ghost (missed)
+  assert.equal(s.zones.MEYDAN.missed, 2870);
+  assert.equal(s.zones.RAKEZ.uninvoiced, 3603);
+  assert.equal(s.zones.RAKDAO.renewalCount, 2);
+  assert.equal(s.zones.OTHER.commission, 5020);
   assert.equal(d.summary.find(x => x.month === '2026-08').hasReport, false);
 });
 
-test('work status: completed, missing invoice, no commission, commission not invoiced', () => {
-  const d = dashboard(), by = n => d.work.find(w => w.name === n);
-  assert.equal(by('Redacted Group LLC FZ').status, 'Completed');
-  assert.equal(by('Redacted Group LLC FZ').commissionInvoiced, 'Invoiced · unpaid');
-  assert.equal(by('DUCA ELENA SELASIG PROCREDIT S R L').status, 'Missing invoice');
-  assert.equal(by('Yevgeni Lisenko').status, 'No commission');
-  assert.equal(by('Hocevar Ventures FZ-LLC').status, 'Commission not invoiced');   // RAKEZ September not billed
-  assert.equal(by('Grid Systems LTD').status, 'Commission not invoiced');          // RAK DAO billed 6,090 of 9,060
-  assert.equal(by('Grid Systems LTD').commissionInvoiced, 'Partly invoiced');
-  assert.equal(by('Masters of Shilajit Official DWC-LLC'), undefined);             // Dubai South not tracked
-  assert.equal(by('Famous Fox Federation LTD'), undefined);                         // no free zone
-});
-
-test('renewals: GP match completes, overdue, in progress, closed, untracked', () => {
+test('renewals link to tracker/GP renewals', () => {
   const d = dashboard(), st = n => d.renewals.find(r => r.company === n)?.state;
   assert.equal(st('Hocevar Ventures FZ-LLC'), 'Completed');
   assert.equal(st('Lince LTD'), 'Overdue');
   assert.equal(st('Shopzen FZ-LLC'), 'Not started');
   assert.equal(st('Relentless Enterprise L.L.C-FZ'), 'In progress');
-  assert.equal(st('Block Media Marketing - FZCO'), undefined);
   assert.equal(d.renewalCounts.Closed, 1);
-  assert.equal(d.renewalCounts['Not due'], 1);                 // ScaleUp (text date 16/03/2027)
-  assert.equal(st('Navision - FZCO'), undefined);               // Renewed → Completed, not listed (not this month)
-  assert.equal(d.renewalCounts.Completed, 2);
-  const w = d.work.filter(x => x.source === 'Renewals sheet').map(x => [x.name, x.status]);
-  assert.deepEqual(w.sort(), [['Lince LTD', 'Overdue'], ['Relentless Enterprise L.L.C-FZ', 'In progress'], ['Shopzen FZ-LLC', 'Not started']]);
 });
 
-test('exceptions cover the leaks', () => {
-  const kinds = dashboard().exceptions.map(e => e.kind);
-  for (const k of ['GP deal without Zoho invoice', 'Free zone deal with no commission', 'Commission not invoiced', 'Commission amount mismatch', 'Commission invoice unpaid > 30 days', 'Renewal overdue, not started', 'Renewal due ≤ 30 days, not started'])
-    assert.ok(kinds.includes(k), k);
-  assert.equal(dashboard().exceptions[0].severity, 'high');
+test('exceptions and collections mirror the tracker', () => {
+  const d = dashboard(), kinds = d.exceptions.map(e => e.kind);
+  for (const k of ['Commission missed', 'Pending invoice (client)', 'Pending GP (on tracker, not on GP report)', 'On GP report, not on commission tracker',
+    'Commission differs: tracker vs GP report', 'Commission not yet invoiced', 'Commission invoice unpaid > 30 days', 'Zoho commission invoice not in tracker',
+    'Paid in Zoho, open on tracker', 'Renewal overdue, not started']) assert.ok(kinds.includes(k), k);
+  assert.ok(!d.exceptions.some(e => /Lisenko/.test(e.detail)));                  // tracker says no commission
+  assert.equal(d.kpis.toCollect, 3780 + 33925.82 + 5638.5);
+  assert.equal(d.kpis.toCollectSource, 'Invoice Checklist');
+  assert.equal(d.commissionInvoices.find(c => c.number === 'INV-RAKDAO-082026').zoho.balance, 0);
 });
 
-test('without Zoho or Gmail the dashboard still builds from the sheets', () => {
-  const d = dashboard({ clientInvoices: null, zoneInvoices: null });
-  assert.equal(d.kpis.invoiced, null);
+test('without the tracker, Zoho or Gmail the dashboard still builds from the GP report', () => {
+  const d = dashboard({ tracker: null, clientInvoices: null, zoneInvoices: null });
+  assert.equal(d.kpis.toCollect, null);
+  assert.equal(d.summary.find(x => x.month === '2026-09').baseline, 'GP report');
   assert.equal(d.work.find(w => w.name === 'Redacted Group LLC FZ').status, 'Completed');
-  assert.equal(d.work.find(w => w.name === 'DUCA ELENA SELASIG PROCREDIT S R L').status, 'Missing invoice');
-  assert.ok(!d.exceptions.some(e => e.kind === 'Commission not invoiced'));
+  assert.equal(d.work.find(w => w.name === 'DUCA ELENA SELASIG PROCREDIT S R L').status, 'Pending invoice');
+  assert.equal(d.work.find(w => w.name === 'Yevgeni Lisenko').status, 'No commission');
 });
