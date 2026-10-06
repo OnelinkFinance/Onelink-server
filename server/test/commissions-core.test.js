@@ -226,3 +226,23 @@ test('without the tracker, Zoho or Gmail the dashboard still builds from the GP 
   assert.equal(d.work.find(w => w.name === 'DUCA ELENA SELASIG PROCREDIT S R L').status, 'Pending invoice');
   assert.equal(d.work.find(w => w.name === 'Yevgeni Lisenko').status, 'No commission');
 });
+
+test('every figure can be traced: cells, join reason, checks, references', () => {
+  const d = dashboard(), w = n => d.work.find(x => x.name === n);
+  const grid = w('Grid Systems LTD');
+  assert.equal(grid.joinedBy, 'Same client invoice no. INV-000590 on both');
+  assert.equal(grid.line.sheetRow, 12);
+  assert.ok(grid.line.cells.some(c => c.col === 'G' && c.label.startsWith('Free zone commission') && c.value === '6,000.00'));
+  assert.equal(grid.gpRecord.commissionColumn, 'P');
+  assert.equal(grid.gpRecord.feeColumn, 'Z');                                      // RAK DAO fee column
+  assert.ok(grid.checks.some(c => /equals the GP report/.test(c.rule) && c.ok === false));
+  assert.match(grid.decidedBy, /Pending commission invoice/);
+  assert.match(w('SELASIG PROCREDIT S R L').joinedBy, /^Same company\/client/);
+  const ren = d.work.find(x => x.source === 'Renewals sheet' && x.name === 'Lince LTD');
+  assert.match(ren.decidedBy, /^Expired \d+ days ago/);
+  const ex = d.exceptions.find(e => e.kind === 'Commission missed');
+  assert.deepEqual([ex.ref.kind, ex.ref.trackerRow], ['deal', 15]);
+  assert.equal(d.exceptions.find(e => e.kind === 'Renewal overdue, not started').ref.kind, 'renewal');
+  assert.ok(d.workAll.length >= d.work.length && d.workAll.some(x => x.month === '2026-08'));
+  assert.deepEqual(d.rules.statusOrder.slice(0, 2), ['Commission missed', 'Pending invoice']);
+});
