@@ -194,6 +194,7 @@ try {
 
   await step('Sven: chase invoice with a file from the request page', async () => {
     await palette(svenUI.page, 'View pending approvals');
+    await svenUI.page.getByRole('button', { name: /To credit/ }).first().click(); // Alpha is approved now
     await svenUI.page.getByText('Alpha Trading LLC').first().click();
     await svenUI.page.getByRole('button', { name: 'Chase invoice' }).first().click();
     const f = path.join(tmp, 'INV-1234 receipt.pdf'); fs.writeFileSync(f, '%PDF-1.4 test');

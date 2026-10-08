@@ -199,7 +199,7 @@ const GATE_JS = `  verifyClient() {
       { label: 'Freezone', value: r.zone || '—' },
       { label: 'Documents', value: (r.docs || []).length ? (r.docs || []).length + ' attached' : 'None attached' },
       { label: 'Requested on', value: r.date || '—' },
-      { label: 'Financial checks', value: this.finSummary(r.finance) }
+      { label: r.financeLatest ? 'Financial checks · latest re-check' : 'Financial checks', value: this.finSummary(r.financeLatest || r.finance) }
     ].concat(r.escalation ? [{ label: 'Escalation', value: this.escSummary(r) }] : [])
       .concat(r.voided ? [{ label: 'Voided', value: (r.voided.byName || this.nameOf(r.voided.by)) + (r.voided.reason ? ' — ' + r.voided.reason : '') }] : [])
       .concat(r.notes ? [{ label: 'Notes', value: r.notes }] : []);
@@ -337,9 +337,9 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     const d = (r && r.escalation && r.escalation.decision) || {};
     return this.mgmtName(d.byName || this.nameOf(d.by), d.title || this.acctTitle(d.by));
   }
-  /* The server refuses to roll a request back into the escalation flow, so no Undo is offered for one
-     that was overridden by management or whose status before the change was an escalation status. */
-  undoable(r) { return !!r && !this.overridden(r) && ['ESCALATED', 'MGMT_INFO', 'MGMT_APPROVED'].indexOf(r.status) < 0; }
+  /* The server refuses to roll a request back into the escalation flow, so no Undo is offered when the
+     status before the change (r is the copy from before) was an escalation status. */
+  undoable(r) { return !!r && ['ESCALATED', 'MGMT_INFO', 'MGMT_APPROVED'].indexOf(r.status) < 0; }
   /* Voided while still with management (escalated, or waiting on an answer for management). */
   voidedBeforeDecision(r) {
     const d = r && r.escalation && r.escalation.decision;
@@ -355,16 +355,24 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     this._sync = Object.assign({}, this._sync, { requests: next });
     this.setState(Object.assign({ requests: next }, extra || {}));
   }
-  /* One modal action → one endpoint. Busy while in flight; the server's error stays in the modal. */
+  /* One modal action → one endpoint. Busy while in flight; the server's error stays in the modal. The modal's
+     kind and request are captured first: if another modal is open when the answer arrives, it is left alone and
+     the result is reported with a flash instead. */
   modalCall(path, body, okText, icon) {
     const m = this.state.modal;
     if (!m || m.busy) return Promise.resolve(null);
-    const fail = t => { this.setState(s => (s.modal && s.modal.kind === m.kind ? { modal: Object.assign({}, s.modal, { busy: false, error: t }) } : {})); return null; };
+    const kind = m.kind, mid = m.id;
+    const same = x => !!x && x.kind === kind && x.id === mid;
+    const fail = t => {
+      if (same(this.state.modal)) this.setState(s => (same(s.modal) ? { modal: Object.assign({}, s.modal, { busy: false, error: t }) } : {}));
+      else this.flash(t, null, 'ph ph-warning');
+      return null;
+    };
     this.setState({ modal: Object.assign({}, m, { busy: true, error: '' }) });
     return this.api(path, { method: 'POST', body: body }).then(o => {
       if (o.status === 401) { this.endSession('Your live session ended. Sign in again.'); return null; }
       if (!o.ok || o.json.ok === false) return fail(o.json.error || 'The server refused this (HTTP ' + o.status + '). Nothing was changed.');
-      this.mergeReq(o.json.item, { modal: null });
+      this.mergeReq(o.json.item, same(this.state.modal) ? { modal: null } : null);
       this.flash(okText, null, icon);
       return o.json;
     }).catch(() => fail('The live server could not be reached. Nothing was changed.'));
@@ -437,8 +445,8 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
   }
 
   /* ── B. request page: financial validation, escalation, void, chase ── */
-  finVals(fin, restricted) {
-    if (!fin) return { checks: [] };
+  finVals(fin, restricted, latest) {
+    if (!fin) return { checks: [], sub: '', chip: '', checkLine: [] };
     const checks = (fin.checks || []).map(c => {
       const ok = !!c.ok, detail = !restricted && c.detail ? String(c.detail) : '';
       const items = (c.items || []).map(it => ({ label: it.label || '', text: it.text || '', icon: it.ok ? 'ph ph-check' : 'ph ph-x', fg: it.ok ? 'var(--fgGreen)' : 'var(--fgRed)' }));
@@ -451,12 +459,14 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     });
     const n = checks.length, bad = checks.filter(c => c.bad).length;
     return {
-      sub: [fin.atText, fin.id].filter(Boolean).join(' · '),
+      sub: (latest ? ['Latest re-check'] : []).concat([fin.atText, fin.id]).filter(Boolean).join(' · '),
       source: fin.source || 'Zoho Books + Zoho Analytics',
       chip: !n ? 'No checks recorded' : bad ? bad + ' of ' + n + ' checks failed' : n === 3 ? 'All three checks passed' : 'All ' + n + ' checks passed',
       chipIcon: bad || !n ? 'ph ph-warning-octagon' : 'ph ph-seal-check',
       chipFg: bad || !n ? 'var(--fgRedDeep)' : 'var(--fgGreen)', chipBg: bad || !n ? 'var(--chipRedBg)' : 'var(--chipGreenBg)', chipBd: bad || !n ? 'var(--chipRedBd)' : 'var(--chipGreenBd)',
-      checks: checks
+      checks: checks,
+      // compact one-liners (the submission-time result under a later re-check)
+      checkLine: checks.map(c => ({ icon: c.icon, fg: c.fg, text: c.label + (c.message ? ' — ' + c.message : '') }))
     };
   }
   escVals(r, me) {
@@ -494,7 +504,9 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       voidLine: locked ? 'Voided' + (who ? ' by ' + who : '') + (vd.atText ? ' on ' + vd.atText : '') + (vd.reason ? ' — ' + vd.reason : '') : '',
       canChase: !locked, chase: () => this.openModal('chase', r.id),
       canVoid: !locked && (this.isSven(me) || this.isMgmt(me)), voidGo: () => this.openModal('void', r.id),
-      hasFin: !!r.finance, fin: this.finVals(r.finance, restricted),
+      // finance's latest re-check is the main result; the submission-time checks stay below it, compact
+      hasFin: !!(r.financeLatest || r.finance), fin: this.finVals(r.financeLatest || r.finance, restricted, !!r.financeLatest),
+      hasFinAt: !!(r.financeLatest && r.finance), finAt: this.finVals(r.financeLatest ? r.finance : null, restricted),
       hasEsc: !!r.escalation, esc: this.escVals(r, me)
     };
     // a voided request is locked: no uploads, notes, decisions, overrides, Zoho checks or chases
@@ -709,8 +721,9 @@ const CREDIT_NOW_JS = `  creditNow(id, validated) {
 `;
 
 // Sven's decisions in the modal (Not approved / Approve a lower amount / Ask for information). Management never
-// gets these — they decide escalations through their own endpoint. A lower amount on a management-approved
-// request skips the Zoho balance gate, like the final approval does.
+// gets these — they decide escalations through their own endpoint. A lower amount runs the live server check first
+// and is capped at what can still be approved (net balance); on a management-approved request it skips that gate,
+// like the final approval does.
 const DECIDE_JS = `    if (m.kind === 'decline') {
       if (this.isMgmt(me) || !this.can('DECLINE_REQUEST')) return this.deny('Declining a request needs the DECLINE_REQUEST permission.');
       if (!v) return err('A reason is required.');
@@ -724,15 +737,35 @@ const DECIDE_JS = `    if (m.kind === 'decline') {
       if (this.isMgmt(me) || !this.can('PARTIAL_APPROVE_REQUEST')) return this.deny('Partial approval needs the PARTIAL_APPROVE_REQUEST permission.');
       if (!amt || amt <= 0) return err('Enter an amount.');
       if (amt > r.requested) return err('Cannot approve more than the requested ' + this.fmt(r.requested) + '.');
+      const done = (id, live) => {
+        const cur = this.reqById(id) || r;
+        this.apply(id, { status: 'APPROVED', approved: amt }, me.name + ' approved ' + this.fmt(amt) + ' of ' + this.fmt(cur.requested) + (live ? ' — live Zoho balance ' + this.fmt(live.available) + ' available' + (live.validationId ? ' · ' + live.validationId : '') : '') + (ovr ? ' — management override by ' + by : ''),
+          { to: cur.by, text: this.fmt(amt) + ' of ' + this.fmt(cur.requested) + ' approved for ' + cur.company + '.' });
+        this.logAudit('REQUEST_PARTIALLY_APPROVED', cur.company + ' — ' + this.fmt(amt) + ' of ' + this.fmt(cur.requested) + (live && live.validationId ? ' · validation ' + live.validationId : '') + (ovr ? ' · management override by ' + by : ''), cur.id, cur.company);
+        this.flash('Approved ' + this.fmt(amt));
+      };
       // management approved the escalation: no Zoho balance needed and no balance cap
-      if (!ovr) {
-        if (typeof r.zohoBalance !== 'number') return err('Run the Zoho check first — no approval without a balance validated in Zoho Analytics.');
-        if (amt > (Number(r.zohoBalance) || 0)) return err('The validated Zoho balance for this client is ' + this.fmt(Number(r.zohoBalance) || 0) + ' — approval cannot exceed it.');
-      }
-      this.apply(m.id, { status: 'APPROVED', approved: amt }, me.name + ' approved ' + this.fmt(amt) + ' of ' + this.fmt(r.requested) + (ovr ? ' — management override by ' + by : ''),
-        { to: r.by, text: this.fmt(amt) + ' of ' + this.fmt(r.requested) + ' approved for ' + r.company + '.' });
-      this.logAudit('REQUEST_PARTIALLY_APPROVED', r.company + ' — ' + this.fmt(amt) + ' of ' + this.fmt(r.requested) + (ovr ? ' · management override by ' + by : ''), r.id, r.company);
-      return this.flash('Approved ' + this.fmt(amt));
+      if (ovr) return done(m.id, null);
+      // otherwise the live server check decides: the amount is capped at what can still be approved for the
+      // client (the CFD balance net of amounts already approved or credited)
+      const kind = m.kind, mid = m.id, st0 = r.status;
+      const same = x => !!x && x.kind === kind && x.id === mid;
+      const refuse = t => {
+        if (same(this.state.modal)) this.setState(s => (same(s.modal) ? { modal: Object.assign({}, s.modal, { busy: false, busyText: '', error: t }) } : {}));
+        else this.flash(t, null, 'ph ph-warning');
+      };
+      this.setState({ modal: Object.assign({}, m, { busy: true, busyText: 'Checking the live balance…', error: '' }) });
+      return Promise.resolve().then(() => this.zohoCall(r)).then(out => {
+        const j = out && out.live && out.json ? out.json : null, avail = j ? Number(j.availableBalance) : NaN;
+        const said = j && (j.notes || j.error);
+        if (!j || j.availableBalance === undefined || j.availableBalance === null || !isFinite(avail) || j.clientMatched === false || j.relevancePassed === false || (j.ok === false && j.error))
+          return refuse(said || ('The live Zoho check could not complete (' + (j ? 'no balance in the answer' : this.zohoWhy(out && out.why, out && out.status)[0]) + ') — nothing was approved.'));
+        if (amt > avail) return refuse((said ? said + ' — ' : '') + 'Approval cannot exceed what can still be approved for this client: ' + this.fmt(Math.max(0, avail)) + '.');
+        const now = this.reqById(mid);
+        if (!now || now.status !== st0) return refuse(mid + ' changed while the balance was checked — nothing was approved.');
+        if (!same(this.state.modal)) return this.flash('Not approved — the dialog was closed before the balance check finished.', null, 'ph ph-warning');
+        done(mid, { available: avail, validationId: j.validationId || '' });
+      }).catch(() => refuse('The live Zoho check could not complete — nothing was approved.'));
     }
     if (m.kind === 'info') {
       if (this.isMgmt(me) || !(this.can('DECLINE_REQUEST') || this.can('APPROVE_REQUEST'))) return this.deny('Asking for information needs the DECLINE_REQUEST or APPROVE_REQUEST permission.');
@@ -759,7 +792,7 @@ const SEC_DEF_JS = `    const secDef = isOps
           await: [['Approved — waiting on the card top-up', ['APPROVED'], 'var(--fgBlue)']],
           done: [['Paid and closed', ['PAID'], 'var(--mut)'], ['Voided', ['VOID'], 'var(--mut)']] }
       : { tasks: mgmtMe
-            ? [['Your decision — escalated to management', ['ESCALATED'], 'var(--fgAmberDeep)'], ['Management needs info — waiting on operations', ['MGMT_INFO'], 'var(--fgAmber)'], ['Management approved — with Sven', ['MGMT_APPROVED'], 'var(--fgGreen)'], ['Decide now', ['NEW'], 'var(--fgPurple)'], ['Waiting on operations', ['ACTION'], 'var(--fgAmber)']]
+            ? [['Your decision — escalated to management', ['ESCALATED'], 'var(--fgAmberDeep)'], ['Management needs info — waiting on operations', ['MGMT_INFO'], 'var(--fgAmber)'], ['Management approved — with Sven', ['MGMT_APPROVED'], 'var(--fgGreen)'], ['With Sven', ['NEW'], 'var(--fgPurple)'], ['Waiting on operations', ['ACTION'], 'var(--fgAmber)']]
             : [['Final approval — management approved', ['MGMT_APPROVED'], 'var(--fgGreen)'], ['Decide now', ['NEW'], 'var(--fgPurple)'], ['Awaiting management decision', ['ESCALATED'], 'var(--fgAmberDeep)'], ['Waiting on operations', ['ACTION', 'MGMT_INFO'], 'var(--fgAmber)']],
           pending: [['Approved — top up the card', ['APPROVED'], 'var(--fgBlue)']],
           await: [['Credited — invoice outstanding', ['CREDITED'], 'var(--fgGreen)']],
@@ -793,7 +826,7 @@ const ACTION_FOR_JS = `    const actionFor = r => {
         ? { label: 'Validate and credit', go: () => this.creditNow(r.id), primary: true }
         : { note: 'Awaiting the credit' };
       if (r.status === 'CREDITED') return { label: 'Chase invoice', go: () => this.openModal('chase', r.id) };
-      if (r.status === 'ACTION') return { label: 'Ask again', go: () => this.remind(r.id) };
+      if (r.status === 'ACTION') return mgmtMe ? { note: 'Waiting on operations' } : { label: 'Ask again', go: () => this.remind(r.id) };
       return { note: 'Closed' };
     };
 
@@ -828,10 +861,11 @@ const MODAL_VALS_TO = `        hasError: !!m.error, error: m.error,
         })),
         noFiles: !(m.files || []).length,
         confirmDisabled: !!m.busy || (m.files || []).some(d => d.status === 'uploading'),
-        confirmText: m.busy ? 'Sending…' : (m.files || []).some(d => d.status === 'uploading') ? 'Uploading…' : m.confirmLabel,
+        confirmText: m.busy ? (m.busyText || 'Sending…') : (m.files || []).some(d => d.status === 'uploading') ? 'Uploading…' : m.confirmLabel,
         confirmBg: m.danger ? 'linear-gradient(140deg,#ef4444,#b91c1c)' : 'linear-gradient(140deg,#3b82f6,#1d4ed8)',
         confirmSh: m.danger ? '0 6px 16px rgba(220,38,38,.24)' : '0 6px 16px rgba(29,99,230,.26)',
-        cancel: () => this.setState({ modal: null }), confirm: () => this.confirmModal()
+        cancelDisabled: !!m.busy, cancelOpacity: m.busy ? '.5' : '1',
+        cancel: () => { if (!(this.state.modal && this.state.modal.busy)) this.setState({ modal: null }); }, confirm: () => this.confirmModal()
       } : { open: false, fields: [], files: [] },`;
 
 // ── markup ──────────────────────────────────────────────
@@ -944,6 +978,21 @@ const DETAIL_CARDS = `
                 </div>
               </sc-for>
             </div>
+            <sc-if value="{{ detail.hasFinAt }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex; flex-direction:column; gap:5px; margin-top:12px; padding:11px 14px; border-radius:14px; background:var(--sf2); border:1px solid var(--line2)">
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap">
+                  <span style="${LABEL}">At submission</span>
+                  <span style="font-size:11px; color:var(--mut3)">{{ detail.finAt.sub }}</span>
+                  <span style="margin-left:auto; font-size:11px; color:{{ detail.finAt.chipFg }}">{{ detail.finAt.chip }}</span>
+                </div>
+                <sc-for list="{{ detail.finAt.checkLine }}" as="fa" hint-placeholder-count="3">
+                  <div style="display:flex; align-items:flex-start; gap:7px; font-size:11.5px; line-height:1.45; color:var(--mut)">
+                    <i class="{{ fa.icon }}" style="font-size:13px; color:{{ fa.fg }}; flex:none; margin-top:1px"></i>
+                    <span style="overflow-wrap:anywhere">{{ fa.text }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
             <div style="font-size:11px; color:var(--mut3); margin-top:10px">Source: {{ detail.fin.source }}</div>
           </section>
         </sc-if>
@@ -1058,6 +1107,9 @@ const MODAL_FILES = `        <sc-if value="{{ modal.hasFiles }}" hint-placeholde
         </sc-if>
 `;
 
+// Cancel is disabled while a call is in flight (the answer would otherwise land on a closed or different modal)
+const MODAL_CANCEL_FROM = `          <button type="button" sc-camel-on-click="{{ modal.cancel }}" class="btn" style="border-radius:12px; background:var(--sf); border:1px solid var(--line3); color:var(--ink2)" style-hover="background:var(--sf2)">Cancel</button>`;
+const MODAL_CANCEL_TO = `          <button type="button" sc-camel-on-click="{{ modal.cancel }}" disabled="{{ modal.cancelDisabled }}" class="btn" style="border-radius:12px; background:var(--sf); border:1px solid var(--line3); color:var(--ink2); opacity:{{ modal.cancelOpacity }}" style-hover="background:var(--sf2)">Cancel</button>`;
 const MODAL_CONFIRM_FROM = `          <button type="button" sc-camel-on-click="{{ modal.confirm }}" class="btn" style="border-radius:12px; padding:9px 18px; color:#fff; background:linear-gradient(140deg,#3b82f6,#1d4ed8); box-shadow:0 6px 16px rgba(29,99,230,.26)">{{ modal.confirmLabel }}</button>`;
 const MODAL_CONFIRM_TO = `          <button type="button" sc-camel-on-click="{{ modal.confirm }}" disabled="{{ modal.confirmDisabled }}" class="btn" style="border-radius:12px; padding:9px 18px; color:#fff; background:{{ modal.confirmBg }}; box-shadow:{{ modal.confirmSh }}">{{ modal.confirmText }}</button>`;
 
@@ -1222,7 +1274,7 @@ export const TEMPLATE_RULES = [
    '<span style="width:150px; display:flex; flex-direction:column; gap:1px">\n                      <span style="font-size:11.5px; color:var(--ink3)">{{ ur.permCount }}</span>\n                      <span style="font-size:10.5px; color:{{ ur.liveFg }}">{{ ur.liveLine }}</span>\n                      <span style="font-size:10.5px; color:var(--mut3)">last sign-in {{ ur.lastLogin }}</span>\n                      <span style="font-size:10.5px; color:var(--mut3)">password set {{ ur.pwSet }}</span>'],
   // request numbers: follow the server when it had to give a new request a free number
   ["        this.api('/api/sync/put', { method: 'POST', body: { col: col, item: item } }).then(o => {",
-   "        this.api('/api/sync/put', { method: 'POST', body: { col: col, item: item } }).then(o => {\n          if (col === 'requests' && o.json && o.json.renamed) this.renameRequest(item.id, o.json.renamed);"],
+   "        this.api('/api/sync/put', { method: 'POST', body: { col: col, item: item } }).then(o => {\n          if (col === 'requests' && o.ok && o.json && o.json.ok !== false) this.dropSubmitToken(item);\n          if (col === 'requests' && o.json && o.json.renamed) this.renameRequest(item.id, o.json.renamed);"],
   ["  liveEvent(m) {\n",
    `  /* The server saved a new request under a free number (the one picked here already belonged to someone else). */
   renameRequest(oldId, newId) {
@@ -1234,6 +1286,14 @@ export const TEMPLATE_RULES = [
       return { requests: requests, reqId: s.reqId === oldId ? newId : s.reqId };
     });
     this.flash('Sent to finance — ' + newId, null, 'ph ph-paper-plane-tilt');
+  }
+  /* The one-time submit pass is spent once the server stored the new request: take it off this screen's copy in
+     place (the object livePush sent, and the one in state.requests), so a later edit never re-sends an expired pass. */
+  dropSubmitToken(item) {
+    if (!item || item.zohoSubmitToken === undefined) return;
+    const cur = (this.state.requests || []).filter(x => x.id === item.id)[0];
+    delete item.zohoSubmitToken;
+    if (cur && cur !== item) delete cur.zohoSubmitToken;
   }
   liveEvent(m) {
     if (m && typeof m.rev === 'number') this._rev = Math.max(this._rev || 0, m.rev);
@@ -1343,9 +1403,10 @@ ${PEEK_MORE}              <div style="display:flex; flex-direction:column; gap:8
   { start: '  creditNow(id, validated) {', end: '  markPaid(id) {', to: CREDIT_NOW_JS },
   ["    this.flash('Approved ' + this.fmt(amt) + ' — the available balance', () => this.undoTo(before));",
    "    this.flash('Approved ' + this.fmt(amt) + ' — the available balance', this.undoable(r) ? () => this.undoTo(before) : null);"],
-  // 5c. a refused sync write shows the server's reason, then the screen goes back to the server's copy
+  // 5c. a refused sync write (any non-ok answer for a request: 403, 409, 503, 400 …) shows the server's reason,
+  //     then the screen goes back to the server's copy
   ["          if (o.status === 403) this.flash('The server refused that change — not permitted for your account', null, 'ph ph-prohibit');",
-   "          if (o.status === 403) { this.flash((o.json && o.json.error) || 'The server refused that change — not permitted for your account', null, 'ph ph-prohibit'); this.liveLoad(false); }"],
+   "          if (col === 'requests' && !o.ok && o.status !== 401 && !(o.json && (o.json.renamed || o.json.reject))) { this.flash((o.json && o.json.error) || 'The server refused that change — not permitted for your account', null, 'ph ph-prohibit'); this.liveLoad(false); }\n          else if (o.status === 403) { this.flash((o.json && o.json.error) || 'The server refused that change — not permitted for your account', null, 'ph ph-prohibit'); this.liveLoad(false); }"],
   // 6. the automatic check after Send also evaluates the "client already paid us?" answer
   ["      company: r.company, purpose: r.purpose, requestedAmount: r.requested, zone: r.zone, validationToken:",
    "      company: r.company, purpose: r.purpose, requestedAmount: r.requested, zone: r.zone, paid: r.paid, validationToken:"],
@@ -1369,7 +1430,7 @@ ${PEEK_MORE}              <div style="display:flex; flex-direction:column; gap:8
 
   // B. request page view model
   ["    let detail = { tiles: [], fields: [], docs: [], timeline: [], decisions: [], st: this.statusMeta('NEW') };",
-   "    let detail = { tiles: [], fields: [], docs: [], timeline: [], decisions: [], st: this.statusMeta('NEW'), fin: { checks: [] }, esc: { failed: [], log: [] } };"],
+   "    let detail = { tiles: [], fields: [], docs: [], timeline: [], decisions: [], st: this.statusMeta('NEW'), fin: { checks: [] }, finAt: { checkLine: [] }, esc: { failed: [], log: [] } };"],
   [NEXT_TEXT_FROM, NEXT_TEXT_TO],
   ["      if (!isOps && (r.status === 'NEW' || r.status === 'ACTION')) {",
    "      if (!isOps && !mgmtMe && (r.status === 'NEW' || r.status === 'ACTION' || r.status === 'MGMT_APPROVED')) {"],
@@ -1407,9 +1468,26 @@ ${PEEK_MORE}              <div style="display:flex; flex-direction:column; gap:8
   ['          <div style="display:flex; gap:9px; margin-top:4px">\n            <input class="input" placeholder="Add a note for the other side"',
    '          <sc-if value="{{ detail.editable }}" hint-placeholder-val="{{ true }}">\n          <div style="display:flex; gap:9px; margin-top:4px">\n            <input class="input" placeholder="Add a note for the other side"'],
   ['Escalate to Sven</button>\n            </sc-if>\n          </div>\n        </section>', 'Escalate to Sven</button>\n            </sc-if>\n          </div>\n          </sc-if>\n        </section>'],
+  // Operations cannot take a closed request back (the server refuses PAID → CREDITED for them): no Undo
+  ["    this.flash('Closed ' + r.company, () => this.undoTo(before));",
+   "    this.flash('Closed ' + r.company, me.role === 'ops' ? null : () => this.undoTo(before));"],
+  // management: Sven decides NEW requests; management decides escalations only
+  ["        NEW: isOps ? 'Sent to Sven. Nothing for you to do yet.' : uAll[r.by].name + ' is waiting on your decision.',",
+   "        NEW: isOps ? 'Sent to Sven. Nothing for you to do yet.' : mgmtMe ? 'With Sven for approval.' : uAll[r.by].name + ' is waiting on your decision.',"],
+  ["        APPROVED: isOps ? 'Approved. Sven still has to put the money on the card.' : 'Approved — top up the card so ' + uAll[r.by].name + ' can pay.',",
+   "        APPROVED: isOps ? 'Approved. Sven still has to put the money on the card.' : mgmtMe ? 'Approved — Sven tops up the card.' : 'Approved — top up the card so ' + uAll[r.by].name + ' can pay.',"],
+  ["      if (r.status === 'NEW') acc.undecided += r.requested;",
+   "      if (mgmtMe ? r.status === 'ESCALATED' : r.status === 'NEW') acc.undecided += r.requested;"],
+  ["    const myTasks = inTab('tasks').length;",
+   "    const myTasks = mgmtMe ? inTab('tasks').filter(r => r.status === 'ESCALATED').length : inTab('tasks').length;\n    const mgmtWaitOps = mgmtMe ? inTab('tasks').filter(r => r.status === 'MGMT_INFO').length : 0;"],
+  ["sub: isOps ? 'Money on the card to spend, questions from finance, and anything that came back unapproved.' : 'New requests to decide on and anything waiting on operations.',",
+   "sub: isOps ? 'Money on the card to spend, questions from finance, and anything that came back unapproved.' : mgmtMe ? 'Escalations waiting on your decision' + (mgmtWaitOps ? ' · ' + mgmtWaitOps + ' waiting on operations for the information you asked for.' : '.') : 'New requests to decide on and anything waiting on operations.',"],
+  ["        : (myTasks ? myTasks + (myTasks === 1 ? ' request is' : ' requests are') + ' waiting on your decision — '",
+   "        : mgmtMe ? (myTasks ? myTasks + (myTasks === 1 ? ' escalation is' : ' escalations are') + ' waiting on your decision — ' + this.fmt(totals.undecided) + ' in total.' : 'No escalation is waiting on your decision.') + (mgmtWaitOps ? ' ' + mgmtWaitOps + (mgmtWaitOps === 1 ? ' is' : ' are') + ' waiting on operations.' : '')\n        : (myTasks ? myTasks + (myTasks === 1 ? ' request is' : ' requests are') + ' waiting on your decision — '"],
   // global modal: chase files, busy / danger confirm
   ['        </sc-for>\n        <sc-if value="{{ modal.hasError }}"', '        </sc-for>\n' + MODAL_FILES + '        <sc-if value="{{ modal.hasError }}"'],
   [MODAL_CONFIRM_FROM, MODAL_CONFIRM_TO],
+  [MODAL_CANCEL_FROM, MODAL_CANCEL_TO],
   // Master Control: the reset pane, after Security
   ['            </sc-if>\n          </div>\n        </div>\n      </div>\n    </sc-if>\n\n</main>', '            </sc-if>\n' + RESET_PANE + '          </div>\n        </div>\n      </div>\n    </sc-if>\n\n</main>']
 ];

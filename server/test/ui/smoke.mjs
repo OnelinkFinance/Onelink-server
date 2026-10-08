@@ -294,7 +294,10 @@ const seen = new Map();
   c.creditNow('FR-900');
   assert.equal(ran, 0);
   assert.equal(c.reqById('FR-900').status, 'CREDITED');
-  assert.equal(c.lastUndo, null, 'no Undo after crediting an overridden request');
+  assert.equal(typeof c.lastUndo, 'function', 'credit after a management approval keeps its Undo (status before was APPROVED)');
+  // undoable() looks only at the status before the change
+  for (const st of ['MGMT_APPROVED', 'ESCALATED', 'MGMT_INFO']) assert.equal(c.undoable(Object.assign({}, r, { status: st })), false, st);
+  for (const st of ['NEW', 'ACTION', 'APPROVED', 'CREDITED']) assert.equal(c.undoable(Object.assign({}, r, { status: st })), true, st + ' (overridden escalation)');
   // without an override the gate still runs
   const plain = Object.assign({}, r, { id: 'FR-902', status: 'NEW', escalation: null });
   c.setState({ requests: [plain].concat(c.state.requests) });
@@ -406,15 +409,58 @@ const seen = new Map();
   assert.equal(c.reqById('FR-900').status, 'APPROVED');
   assert.equal(c.reqById('FR-900').approved, 5000);
   assert.match(c.reqById('FR-900').timeline.at(-1).text, /approved .* — management override by Mr\. Adnan \(CFO\)$/);
+  // no override: the live server check decides, capped at the net balance (what can still be approved)
+  let zc = 0, zReply = null;
+  c.zohoCall = rr => { zc++; assert.equal(rr.id, 'FR-920'); return Promise.resolve(zReply); };
+  zReply = { offline: true, why: 'TIMEOUT', ms: 8000 };
   partial('FR-920', '5000');
-  assert.match(c.state.modal.error, /^Run the Zoho check first/);
+  assert.equal(c.state.modal.busy, true, 'busy while the live check runs');
+  let mv = c.renderVals().modal;
+  assert.equal(mv.confirmText, 'Checking the live balance…');
+  assert.equal(mv.confirmDisabled, true);
+  assert.equal(mv.cancelDisabled, true, 'Cancel disabled while busy');
+  mv.cancel();
+  assert.ok(c.state.modal, 'Cancel ignored while busy');
+  c.confirmModal(); // double click ignored
+  await tick(); await tick(); await tick();
+  assert.equal(zc, 1);
+  assert.match(c.state.modal.error, /^The live Zoho check could not complete \(Timed out/);
+  assert.equal(c.state.modal.busy, false);
   assert.equal(c.reqById('FR-920').status, 'NEW');
-  c.setState({ requests: c.state.requests.map(x => x.id === 'FR-920' ? Object.assign({}, x, { zohoBalance: 3000 }) : x), modal: null });
-  partial('FR-920', '5000');
-  assert.match(c.state.modal.error, /^The validated Zoho balance for this client is/);
-  partial('FR-920', '2500');
+  zReply = { live: true, status: 200, json: { ok: false, reason: 'INSUFFICIENT_BALANCE', availableBalance: 3000, notes: 'Client does not have sufficient balance for the full amount.', validationId: 'ZV-1' } };
+  partial('FR-920', '5000'); await tick(); await tick(); await tick();
+  assert.equal(c.state.modal.error, 'Client does not have sufficient balance for the full amount. — Approval cannot exceed what can still be approved for this client: ' + c.fmt(3000) + '.');
+  assert.equal(c.reqById('FR-920').status, 'NEW');
+  zReply = { live: true, status: 422, json: { ok: false, clientMatched: false, reason: 'CLIENT_NOT_FOUND', error: 'Client not found in Zoho Books. Cannot proceed.', notes: 'Client not found in Zoho Books. Cannot proceed.' } };
+  partial('FR-920', '2500'); await tick(); await tick(); await tick();
+  assert.equal(c.state.modal.error, 'Client not found in Zoho Books. Cannot proceed.', 'server notes are the error');
+  zReply = { live: true, status: 409, json: { ok: false, reason: 'REQUEST_VOID', error: 'This request has been voided.' } };
+  partial('FR-920', '2500'); await tick(); await tick(); await tick();
+  assert.equal(c.state.modal.error, 'This request has been voided.');
+  assert.equal(c.reqById('FR-920').status, 'NEW');
+  // the old local zohoBalance no longer decides: the live net balance does
+  c.setState({ requests: c.state.requests.map(x => x.id === 'FR-920' ? Object.assign({}, x, { zohoBalance: 99999 }) : x) });
+  zReply = { live: true, status: 200, json: { ok: false, reason: 'INSUFFICIENT_BALANCE', availableBalance: 3000, notes: 'Short.', validationId: 'ZV-2' } };
+  partial('FR-920', '4000'); await tick(); await tick(); await tick();
+  assert.match(c.state.modal.error, /cannot exceed/);
+  partial('FR-920', '2500'); await tick(); await tick(); await tick();
+  assert.equal(c.state.modal, null);
   assert.equal(c.reqById('FR-920').status, 'APPROVED');
+  assert.equal(c.reqById('FR-920').approved, 2500);
+  assert.match(c.reqById('FR-920').timeline.at(-1).text, /approved .*2,500 of .* — live Zoho balance AED 3,000 available · ZV-2$/);
   assert.ok(!/override/.test(c.reqById('FR-920').timeline.at(-1).text));
+  // the dialog replaced while the check runs: nothing approved, result reported with a flash
+  const p2 = escReq('NEW', { id: 'FR-921', escalation: null });
+  c.setState({ requests: [p2].concat(c.state.requests) });
+  c.zohoCall = () => Promise.resolve({ live: true, status: 200, json: { ok: true, availableBalance: 50000, validationId: 'ZV-3' } });
+  partial('FR-921', '1000');
+  c.setState({ modal: null }); c.openModal('chase', 'FR-921');
+  await tick(); await tick(); await tick();
+  assert.equal(c.reqById('FR-921').status, 'NEW');
+  assert.equal(c.state.modal.kind, 'chase');
+  assert.match(c.lastFlash, /^Not approved — the dialog was closed/);
+  c.setState({ modal: null });
+  assert.equal(zc, 6, 'override path never calls the live check');
 }
 
 // ── scenario 9: CREDITED board action opens the chase modal; refused sync shows the server's reason and reloads; paid in the Zoho payload ──
@@ -440,7 +486,177 @@ const seen = new Map();
   c.livePush(); await tick(); await tick();
   assert.equal(c.lastFlash, 'Only Sven can change the status of this request.');
   assert.equal(loads, 1);
+  // any other refusal of a request write (409, 503, 400) also shows the reason and reloads once
+  const bump = (status, json) => {
+    replies['/api/sync/put'] = { ok: false, status: status, json: json };
+    c.setState({ requests: c.state.requests.map(x => x.id === 'FR-900' ? Object.assign({}, x, { notes: 'n' + status }) : x) });
+    c.livePush();
+    return tick().then(tick);
+  };
+  await bump(409, { ok: false, reason: 'REQUEST_PENDING', error: 'FR-1 is already open for this client — FR-900 cannot be re-opened.' });
+  assert.equal(c.lastFlash, 'FR-1 is already open for this client — FR-900 cannot be re-opened.');
+  assert.equal(loads, 2);
+  await bump(503, {});
+  assert.equal(c.lastFlash, 'The server refused that change — not permitted for your account');
+  assert.equal(loads, 3);
+  await bump(400, { ok: false, error: 'Bad request' });
+  assert.equal(c.lastFlash, 'Bad request');
+  assert.equal(loads, 4);
+  // a rejected NEW request is handled by rejectRequest (no reload); 401 ends the session (no reload)
+  const nr0 = escReq('NEW', { id: 'FR-931', escalation: null, finance: null });
+  replies['/api/sync/put'] = { ok: false, status: 409, json: { ok: false, reject: true, error: 'Another request for this client landed first.' } };
+  c.setState({ requests: [nr0].concat(c.state.requests) });
+  c.livePush(); await tick(); await tick();
+  assert.equal(c.lastFlash, 'Another request for this client landed first.');
+  assert.equal(c.reqById('FR-931'), undefined);
+  assert.equal(loads, 4);
+  let ended = 0; c.endSession = () => { ended++; };
+  await bump(401, { ok: false, error: 'Sign in' });
+  assert.equal(ended, 1);
+  assert.equal(loads, 4);
+  // after the server stored a NEW request, its one-time submit pass is dropped in place (sent object and state copy)
+  let sentPass = null;
+  replies['/api/sync/put'] = b => { if (b.item.id === 'FR-930') sentPass = b.item.zohoSubmitToken; return { ok: true, status: 200, json: { ok: true, rev: 9, id: b.item.id } }; };
+  const nr = Object.assign(escReq('NEW', { id: 'FR-930', escalation: null, finance: null }), { zohoSubmitToken: 'pass-1' });
+  c.setState({ requests: [nr].concat(c.state.requests) });
+  c.livePush();
+  const sentItem = calls.filter(x => x.path === '/api/sync/put').at(-1).body.item;
+  assert.equal(sentItem, nr, 'livePush sends the state object itself');
+  const edited = Object.assign({}, nr, { notes: 'edited while the first write was in flight' }); // copies the pass
+  c.setState({ requests: c.state.requests.map(x => x.id === 'FR-930' ? edited : x) });
+  await tick(); await tick();
+  assert.equal(sentPass, 'pass-1');
+  assert.equal('zohoSubmitToken' in nr, false, 'removed from the object livePush sent');
+  assert.equal('zohoSubmitToken' in c.reqById('FR-930'), false, 'removed from the state copy');
+  sentPass = 'unset';
+  c.livePush(); await tick(); await tick();
+  assert.equal(sentPass, undefined, 'the later edit does not re-send the expired pass');
   delete replies['/api/sync/put'];
+}
+
+// ── scenario 10: finance's latest re-check is the main result; submission-time checks stay below (restricted: stripped) ──
+{
+  const latest = Object.assign(finance(true), { id: 'FV-9Z9Z9Z9Z', atText: '08 Oct · 09:00' });
+  latest.checks[0].detail = 'AED 20,000 available against AED 12,520';
+  const r = escReq('NEW', { escalation: null, finance: finance(false), financeLatest: latest });
+  const c = make('sven');
+  c.setState({ requests: [r].concat(c.state.requests), reqId: 'FR-900', route: 'detail', peekId: 'FR-900' });
+  let vm = c.renderVals();
+  resolveAll(markupOf(tpl), vm, seen);
+  assert.equal(vm.detail.hasFin, true);
+  assert.equal(vm.detail.fin.sub, 'Latest re-check · 08 Oct · 09:00 · FV-9Z9Z9Z9Z');
+  assert.equal(vm.detail.fin.chip, 'All three checks passed');
+  assert.equal(vm.detail.fin.checks[0].detail, 'AED 20,000 available against AED 12,520');
+  assert.equal(vm.detail.hasFinAt, true);
+  assert.equal(vm.detail.finAt.sub, '07 Oct · 14:05 · FV-1A2B3C4D');
+  assert.equal(vm.detail.finAt.chip, '1 of 3 checks failed');
+  assert.equal(vm.detail.finAt.checkLine.length, 3);
+  assert.equal(vm.detail.finAt.checkLine[0].text, 'Customer Fund Disbursement account — Client does not have sufficient balance');
+  assert.ok(vm.peek.facts.some(f => f.label === 'Financial checks · latest re-check' && f.value === 'All 3 passed'));
+  assert.ok(!vm.peek.facts.some(f => f.label === 'Financial checks'));
+  // only the submission-time result: shown as before, no "At submission" block
+  c.setState({ requests: c.state.requests.map(x => x.id === 'FR-900' ? Object.assign({}, x, { financeLatest: undefined }) : x) });
+  vm = c.renderVals();
+  assert.equal(vm.detail.fin.sub, '07 Oct · 14:05 · FV-1A2B3C4D');
+  assert.equal(vm.detail.hasFinAt, false);
+  assert.ok(vm.peek.facts.some(f => f.label === 'Financial checks' && f.value === '1 of 3 failed'));
+  // restricted Operations: never the detail text (the server strips amounts too)
+  const m = make('maram');
+  m.setState({ requests: [Object.assign({}, r, { by: 'maram' })].concat(m.state.requests), reqId: 'FR-900', route: 'detail', peekId: 'FR-900' });
+  vm = m.renderVals();
+  assert.equal(vm.detail.fin.sub, 'Latest re-check · 08 Oct · 09:00 · FV-9Z9Z9Z9Z');
+  assert.equal(vm.detail.fin.checks[0].hasDetail, false);
+  assert.equal(vm.detail.finAt.checks[0].hasDetail, false);
+  assert.ok(!JSON.stringify(vm.detail.finAt.checkLine).includes('AED'));
+}
+
+// ── scenario 11: Undo after "Paid — close": Sven yes, Operations no (the server refuses PAID → CREDITED for them) ──
+{
+  for (const [who, undo] of [['sven', 'function'], ['maram', 'object']]) {
+    const c = make(who);
+    c.setState({ requests: [escReq('CREDITED', { by: 'maram', escalation: null, credited: 12520 })].concat(c.state.requests) });
+    c.markPaid('FR-900');
+    assert.equal(c.reqById('FR-900').status, 'PAID');
+    assert.equal(typeof c.lastUndo, undo, who);
+  }
+}
+
+// ── scenario 12: modalCall race — the answer only updates the modal it was sent from ──
+{
+  const setup = () => {
+    const c = make('adnan');
+    c.setState({ requests: [escReq('ESCALATED'), escReq('ESCALATED', { id: 'FR-905' })].concat(c.state.requests), reqId: 'FR-900', route: 'detail' });
+    c._sync = { requests: c.state.requests };
+    let release;
+    replies['/api/requests/FR-900/escalation'] = () => new Promise(res => { release = res; });
+    c.openModal('mgmtApprove', 'FR-900');
+    c.setState({ modal: Object.assign({}, c.state.modal, { value: 'Approved after the call' }) });
+    c.confirmModal();
+    return { c, release: o => release(o) };
+  };
+  // failure while a different kind is open: flash, the other modal is untouched
+  let { c, release } = setup();
+  let mv = c.renderVals().modal;
+  assert.equal(mv.cancelDisabled, true);
+  mv.cancel();
+  assert.equal(c.state.modal.kind, 'mgmtApprove', 'Cancel disabled while busy');
+  c.setState({ modal: null }); c.openModal('chase', 'FR-900');
+  release({ ok: false, status: 409, json: { ok: false, error: 'Already decided by Mr. Ahmed (General Manager)' } });
+  await tick(); await tick();
+  assert.equal(c.state.modal.kind, 'chase');
+  assert.equal(c.state.modal.error, '');
+  assert.equal(c.lastFlash, 'Already decided by Mr. Ahmed (General Manager)');
+  // success while the same kind is open for another request: item merged, that modal stays open, flash
+  ({ c, release } = setup());
+  c.setState({ modal: null }); c.openModal('mgmtApprove', 'FR-905');
+  const item = Object.assign(escReq('MGMT_APPROVED'), { escalation: Object.assign(escReq('MGMT_APPROVED').escalation, { decision: { action: 'APPROVE', by: 'adnan', byName: 'Adnan', title: 'CFO', note: 'ok' } }) });
+  release({ ok: true, status: 200, json: { ok: true, item: item } });
+  await tick(); await tick();
+  assert.equal(c.state.modal.kind, 'mgmtApprove');
+  assert.equal(c.state.modal.id, 'FR-905');
+  assert.equal(c.state.modal.busy, false);
+  assert.equal(c.reqById('FR-900').status, 'MGMT_APPROVED');
+  assert.equal(c.lastFlash, 'Approved by management — Sven makes the final approval');
+  // the same modal still open: error stays in it
+  ({ c, release } = setup());
+  release({ ok: false, status: 400, json: { ok: false, error: 'Note too short' } });
+  await tick(); await tick();
+  assert.equal(c.state.modal.error, 'Note too short');
+  assert.equal(c.state.modal.busy, false);
+  assert.equal(c.renderVals().modal.cancelDisabled, false);
+  delete replies['/api/requests/FR-900/escalation'];
+}
+
+// ── scenario 13: management wording — Sven decides NEW; management's tasks are escalations ──
+{
+  const c = make('adnan');
+  const extra = [escReq('ESCALATED'), escReq('ESCALATED', { id: 'FR-906', requested: 1000 }), escReq('MGMT_INFO', { id: 'FR-907' })];
+  c.setState({ requests: extra.concat(c.state.requests), route: 'board', tab: 'tasks' });
+  let vm = c.renderVals();
+  resolveAll(markupOf(tpl), vm, seen);
+  const titles = vm.sections.map(sc => sc.title);
+  assert.ok(titles.includes('With Sven'), titles.join(' | '));
+  assert.ok(!titles.includes('Decide now'));
+  const rows = vm.sections.flatMap(sc => sc.rows);
+  assert.ok(!rows.some(x => x.actLabel === 'Ask again'), 'no Ask again for management');
+  const act = rows.find(x => c.reqById(x.num) && c.reqById(x.num).status === 'ACTION');
+  assert.equal(act.actNote, 'Waiting on operations');
+  assert.equal(vm.homeCards[0].title, '2 things need you');
+  assert.match(vm.homeCards[0].sub, /^Escalations waiting on your decision · 1 waiting on operations/);
+  assert.equal(vm.homeStats[0].label, 'waiting on your decision');
+  assert.equal(vm.homeStats[0].value, c.short(13520));
+  assert.equal(vm.homeSub, '2 escalations are waiting on your decision — ' + c.fmt(13520) + ' in total. 1 is waiting on operations.');
+  const firstNew = c.state.requests.find(x => x.status === 'NEW'), firstApp = c.state.requests.find(x => x.status === 'APPROVED');
+  c.setState({ route: 'detail', reqId: firstNew.id });
+  assert.equal(c.renderVals().detail.nextText, 'With Sven for approval.');
+  c.setState({ reqId: firstApp.id });
+  assert.equal(c.renderVals().detail.nextText, 'Approved — Sven tops up the card.');
+  // Sven keeps his wording and counts
+  const s = make('sven');
+  s.setState({ route: 'board', tab: 'tasks' });
+  vm = s.renderVals();
+  assert.ok(vm.sections.some(sc => sc.title === 'Decide now'));
+  assert.equal(vm.homeStats[0].value, s.short(s.state.requests.filter(x => x.status === 'NEW').reduce((a, x) => a + x.requested, 0)));
 }
 
 const bad = [...seen].filter(([, s]) => s !== 'ok');
