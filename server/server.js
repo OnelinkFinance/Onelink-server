@@ -483,12 +483,19 @@ function issue(clientName, clientId, matchedIn) {
   return body + '.' + sig;
 }
 
+// Signature check on bytes (timingSafeEqual throws on unequal byte lengths) and a body that may be garbage: never throws.
+function signedBody(token) {
+  if (!token || typeof token !== 'string' || !token.includes('.')) return null;
+  const [body, sig] = token.split('.');
+  const a = Buffer.from(String(sig || '')), b = Buffer.from(b64(crypto.createHmac('sha256', secret()).update(body).digest()));
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  try { const p = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); return p && typeof p === 'object' ? p : null; } catch { return null; }
+}
+
 function verify(token, clientName) {
   if (!token || typeof token !== 'string' || !token.includes('.')) return { ok: false, why: 'NO_TOKEN' };
-  const [body, sig] = token.split('.');
-  const want = b64(crypto.createHmac('sha256', secret()).update(body).digest());
-  if (sig.length !== want.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(want))) return { ok: false, why: 'BAD_SIGNATURE' };
-  const p = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+  const p = signedBody(token);
+  if (!p) return { ok: false, why: 'BAD_SIGNATURE' };
   if (p.exp < Date.now()) return { ok: false, why: 'EXPIRED' };
   if (p.n !== clientName) return { ok: false, why: 'NAME_MISMATCH' };
   return { ok: true, clientId: p.id, matchedIn: p.m };
@@ -506,12 +513,8 @@ function sign(payload, ttlMs) {
   return body + '.' + b64(crypto.createHmac('sha256', secret()).update(body).digest());
 }
 function unsign(token) {
-  if (!token || typeof token !== 'string' || !token.includes('.')) return null;
-  const [body, sig] = token.split('.');
-  const want = b64(crypto.createHmac('sha256', secret()).update(body).digest());
-  if (sig.length !== want.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(want))) return null;
-  const p = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
-  return p.exp < Date.now() ? null : p;
+  const p = signedBody(token);
+  return !p || !(p.exp >= Date.now()) ? null : p;
 }
 
 return { issue, verify, lock, locked, unlock, sign, unsign };
@@ -543,7 +546,7 @@ const check = (pw, stored) => {
 };
 
 const OPS = ['VIEW_DASHBOARD', 'VIEW_OPERATIONS_DASHBOARD', 'VIEW_OWN_REQUESTS', 'CREATE_REQUEST', 'EDIT_REQUEST', 'UPLOAD_DOCUMENTS', 'REQUEST_APPROVAL', 'VIEW_ACTIVITY'];
-const MGMT = ['VIEW_DASHBOARD', 'VIEW_MANAGEMENT_DASHBOARD', 'VIEW_ALL_OPERATIONS_REQUESTS', 'VIEW_CLIENT_BALANCE', 'VIEW_FINANCIAL_DATA', 'APPROVE_REQUEST', 'DECLINE_REQUEST', 'VIEW_ACTIVITY', 'VIEW_AUDIT_LOG'];
+const MGMT = ['VIEW_DASHBOARD', 'VIEW_MANAGEMENT_DASHBOARD', 'VIEW_ALL_OPERATIONS_REQUESTS', 'VIEW_CLIENT_BALANCE', 'VIEW_FINANCIAL_DATA', 'VIEW_ACTIVITY', 'VIEW_AUDIT_LOG']; // decisions go through the escalation endpoints
 // Management: the three people an escalation goes to. Each decides alone; Sven still gives the final approval.
 const MANAGEMENT = [['adnan', 'Adnan', 'CFO'], ['ahmed', 'Ahmed', 'General Manager'], ['eduard', 'Eduard', 'Chief Legal Officer']];
 function seedTeam() {
@@ -835,8 +838,10 @@ function newRequestProblem(u, item) {
   const pend = pendingRequestFor(item.zohoClientId);
   if (pend) return { status: 409, reason: 'REQUEST_PENDING', error: M_rules.MSG.LOCKED, pendingId: pend.id };
   const pass = M_gate.unsign(item.zohoSubmitToken);
-  if (!pass || pass.k !== 'submit' || pass.u !== u.key || String(pass.c) !== String(item.zohoClientId) || Number(pass.a) !== Number(item.requested))
+  // Single use: the pass is good only while the result of the checks it was issued for is still waiting here.
+  if (!pass || pass.k !== 'submit' || pass.u !== u.key || String(pass.c) !== String(item.zohoClientId) || Number(pass.a) !== Number(item.requested) || !finGet(pass.f, u.key))
     return { status: 422, reason: 'BALANCE_NOT_VALIDATED', error: M_rules.MSG.NOT_VALIDATED };
+  if (String(item.paid).trim() !== String(pass.p || '')) return { status: 422, reason: 'PAID_CHANGED', error: '“Client already paid us?” changed after the financial checks ran. Press Send again.' };
   return null;
 }
 // A refused request must not leave a "<name> requested ..." notification pointing at nothing (or at someone else's request).
@@ -874,7 +879,10 @@ function mayWrite(u, col, item, prev) {
     // never a finance decision (approve / credit / decline stay with Sven).
     if (ops(u)) return (prev ? item.by === prev.by && (prev.by === u.key || isOpsMaster(u)) : item.by === u.key)
       && (!prev || prev.status === item.status || (prev.status === 'NEW' && item.status === 'ACTION') || (prev.status === 'ACTION' && item.status === 'NEW') || (prev.status === 'CREDITED' && item.status === 'PAID'));
-    return (u.perms || []).some(p => ['APPROVE_REQUEST', 'DECLINE_REQUEST', 'CREDIT_FUNDS', 'RELEASE_FUNDS', 'PARTIAL_APPROVE_REQUEST'].includes(p)) || u.dept === 'MANAGEMENT' || u.dept === 'FINANCE';
+    // Management decide escalations (and void) through their own endpoints; Sven gives every final approval,
+    // so a management account may add notes and files but never move a request's status.
+    if (u.dept === 'MANAGEMENT') return !!prev && prev.status === item.status;
+    return (u.perms || []).some(p => ['APPROVE_REQUEST', 'DECLINE_REQUEST', 'CREDIT_FUNDS', 'RELEASE_FUNDS', 'PARTIAL_APPROVE_REQUEST'].includes(p)) || u.dept === 'FINANCE';
   }
   if (col === 'chat') return !prev && item.who === u.key;
   if (col === 'notifications') return !prev || prev.to === u.key; // create for anyone, mark own as read
@@ -990,7 +998,7 @@ function mountRequests(app) {
     if (Number(R.requested) !== Number(pass.a)) return fail(s, 422, 'The amount changed after the checks ran — press Send again.');
     const just = str(b.justification, 2000);
     if (just.length < 15) return fail(s, 422, 'Give management a justification of at least 15 characters.');
-    if (!str(R.company, 200) || !str(R.purpose, 500) || !str(R.paid, 60)) return fail(s, 422, M_rules.MSG.MANDATORY, { reason: 'MANDATORY_FIELDS' });
+    if (!str(R.company, 200) || !str(R.purpose, 500) || !str(pass.p, 60)) return fail(s, 422, M_rules.MSG.MANDATORY, { reason: 'MANDATORY_FIELDS' });
     const pend = pendingRequestFor(pass.c);
     if (pend) return fail(s, 409, M_rules.MSG.LOCKED, { reason: 'REQUEST_PENDING', pendingId: pend.id });
     const docs = await cleanDocs(R.docs);
@@ -1007,7 +1015,7 @@ function mountRequests(app) {
       id, by: u.key, company: str(R.company, 200), person: str(pass.n, 200) || str(R.person, 200), zohoClient: str(pass.n, 200), zohoClientId: String(pass.c),
       purpose: str(R.purpose, 500), zone: str(R.zone, 80), requested: amount, approved: null, credited: 0, status: 'ESCALATED',
       date: str(R.date, 20) || new Date().toLocaleDateString('en-GB', { timeZone: 'Asia/Dubai', day: 'numeric', month: 'short' }),
-      paid: str(R.paid, 60), notes: str(R.notes, 2000), docs, flagged: true,
+      paid: str(pass.p, 60), notes: str(R.notes, 2000), docs, flagged: true, // the answer the checks ran with
       timeline: [
         { at: tlAt(), text: `${u.name} requested ${aed(amount)}` + (docs.length ? ` with ${docs.length} document${docs.length > 1 ? 's' : ''}` : ' — no document attached'), srv: true },
         { at: tlAt(), text: `Financial validation ${fin.id} failed — ${failedLabels}`, srv: true },
@@ -1211,7 +1219,9 @@ function mount(app) {
 
   app.post('/api/sync/put', requireAuth, (q, s) => {
     const { col, item } = q.body || {};
-    if (!COLS.includes(col) || !item || typeof item.id !== 'string') return s.status(400).json({ ok: false, error: 'col + item.id required' });
+    if (!COLS.includes(col) || !item || typeof item !== 'object' || typeof item.id !== 'string') return s.status(400).json({ ok: false, error: 'col + item.id required' });
+    if (col === 'requests' && ['timeline', 'docs'].some(k => item[k] !== undefined && (!Array.isArray(item[k]) || item[k].some(x => !x || typeof x !== 'object'))))
+      return s.status(400).json({ ok: false, error: 'timeline and docs must be lists of entries' });
     let renamed = null;
     const sentId = item.id; // the number the browser used, before any renumbering
     if (col === 'requests') {
@@ -1256,6 +1266,10 @@ function mount(app) {
       }
       const pass = M_gate.unsign(item.zohoSubmitToken), fin = pass && finGet(pass.f, q.user.key);
       if (fin) { item.finance = M_finance.record(fin); finStore.delete(pass.f); }
+      // Nothing decided yet: whatever a browser put in these is dropped; the client is the one the checks ran for.
+      Object.assign(item, { approved: null, credited: 0, flagged: false });
+      for (const k of ['zohoStatus', 'zohoBalance', 'zohoReason', 'zohoValidationId', 'zohoCheckedAt', 'override', 'escalatedBy']) delete item[k];
+      if (pass && pass.n) item.zohoClient = item.person = String(pass.n);
       delete item.zohoSubmitToken; // single use, not stored
       refused.delete(q.user.key + ':' + sentId); // a corrected retry under the same number is a real request
     }
@@ -1336,7 +1350,9 @@ const wasRefused = (userKey, id) => !!(id && refused.has(userKey + ':' + id) && 
 const getRequest = id => db.requests.find(r => r.id === id) || null;
 const status = () => ({ lastReset: db.lastReset || null, requests: db.requests.length });
 
-return { mount, postSystem, resolveRequestId, attachZohoResult, attachFinance, awaitOwnRequest, pendingRequestFor, wasRefused, isOps: restricted, finPut, getRequest, status };
+const canSee = (u, r) => visible(u, 'requests', r);
+
+return { mount, postSystem, resolveRequestId, attachZohoResult, attachFinance, awaitOwnRequest, pendingRequestFor, wasRefused, isOps: restricted, finPut, getRequest, canSee, status };
 })();
 
 // ---- server.js ----
@@ -1348,6 +1364,8 @@ const auth = M_auth;
 const store = M_store;
 
 const E = process.env;
+// Express 4 does not catch errors thrown in async handlers: log them instead of letting one bad request stop the server.
+process.on('unhandledRejection', e => console.error('Unhandled rejection:', e && e.stack || e));
 const app = express();
 const origins = (E.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
 app.use(cors({ origin: (o, cb) => cb(null, !o || origins.includes(o) || origins.includes('*') || /\.onrender\.com$/.test(o)), credentials: true }));
@@ -1474,9 +1492,9 @@ app.post('/api/zoho/precheck', async (q, s) => {
       text: `Blocked — ${q.user.name} tried to request ${aed(amount)} for ${b.clientName}. Failed: ${fin.failed.map(f => f.label).join(', ')}. ${fin.staffError}`
     });
     return s.status(422).json({ ok: false, sufficient: cfd.ok, reason: 'FINANCIAL_CHECKS_FAILED', error: opsUser ? fin.opsError : fin.staffError,
-      failed: fin.failed, finance: view, escalate: { allowed: true, token: gate.sign({ k: 'esc', u: q.user.key, c: v.clientId, a: amount, n: b.clientName, f: fin.id }, 30 * 60 * 1000) } });
+      failed: fin.failed, finance: view, escalate: { allowed: true, token: gate.sign({ k: 'esc', u: q.user.key, c: v.clientId, a: amount, n: b.clientName, p: paid, f: fin.id }, 30 * 60 * 1000) } });
   }
-  s.json({ ok: true, sufficient: true, status: STATUS.PROVISIONAL, submitToken: gate.sign({ k: 'submit', u: q.user.key, c: v.clientId, a: amount, f: fin.id }, 15 * 60 * 1000),
+  s.json({ ok: true, sufficient: true, status: STATUS.PROVISIONAL, submitToken: gate.sign({ k: 'submit', u: q.user.key, c: v.clientId, a: amount, n: b.clientName, p: paid, f: fin.id }, 15 * 60 * 1000),
     finance: view });
 });
 
@@ -1537,6 +1555,7 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
   if (sentId) req.requestId = await store.awaitOwnRequest(q.user.key, sentId);
   if (sentId && store.wasRefused(q.user.key, sentId)) return s.status(409).json({ ok: false, reason: 'REQUEST_NOT_SUBMITTED', error: 'The request was not submitted, so it was not checked.' });
   const stored = req.requestId ? store.getRequest(req.requestId) : null;
+  if (stored && !store.canSee(q.user, stored)) return s.status(403).json({ ok: false, reason: 'NO_ACCESS', error: 'No access — request not created by you' });
   if (stored && stored.status === 'VOID') return s.status(409).json({ ok: false, reason: 'REQUEST_VOID', error: 'This request has been voided.' });
 
   // The balance and the three financial checks come from Zoho — if they cannot be read, nothing is decided.

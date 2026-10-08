@@ -90,9 +90,12 @@ export function evaluateFinance({ amount, paid, books, rec, split, open, pay }) 
         n0(p.refunded) > EPS ? `Refunded ${aed(p.refunded)}` : '')
     ];
     const ok = items.every(i => i.ok);
-    const code = !items[0].ok ? 'DECLARED_UNPAID' : !items[1].ok ? 'NO_CUSTOMER_PAYMENT' : !items[2].ok ? 'PAYMENT_NOT_APPLIED' : !items[3].ok ? 'OUTSTANDING_DUES' : !items[4].ok ? 'PAYMENT_REVERSED' : 'INVOICES_OK';
+    // The most specific failure names the check: a refund while dues are open is a reversal, not just a due.
+    const order = [[0, 'DECLARED_UNPAID'], [1, 'NO_CUSTOMER_PAYMENT'], [4, 'PAYMENT_REVERSED'], [2, 'PAYMENT_NOT_APPLIED'], [3, 'OUTSTANDING_DUES']];
+    const first = order.find(([i]) => !items[i].ok);
+    const code = first ? first[1] : 'INVOICES_OK';
     checks.push({ key: 'INVOICES', label: CHECKS.INVOICES, ok, code,
-      message: ok ? 'Payment received, applied to the invoices, and no dues outstanding.' : items.find(i => !i.ok).text + '.',
+      message: ok ? 'Payment received, applied to the invoices, and no dues outstanding.' : items[first[0]].text + '.',
       detail: `Payments ${n0(p.payments)} · received ${aed(p.received)} · unapplied ${aed(p.unapplied)} · refunded ${aed(p.refunded)} · open invoices ${open.length} (${aed(outstanding)}) · Books receivable ${aed(liveDue)}.`, items });
   }
 
