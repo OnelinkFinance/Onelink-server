@@ -28,8 +28,11 @@ const item = (label, ok, text, detail) => (detail ? { label, ok, text, detail } 
 // split: per-account totals for the client { cfd: { credits, debits, lines, untagged }, cogs: { ... } } — null = no entries
 // open:  the client's unpaid invoices [{ invoice, status, due, total, balance }]
 // pay:   the client's customer payments { payments, received, unapplied, refunded, last } — null = none
-export function evaluateFinance({ amount, paid, books, rec, split, open, pay }) {
+// committed: { amount, count } already approved or credited for this client on the platform and not yet booked in the
+//            ledger — it comes off the CFD balance, so two requests cannot both be approved against the same funds.
+export function evaluateFinance({ amount, paid, books, rec, split, open, pay, committed }) {
   amount = n0(amount);
+  const held = committed ? n0(committed.amount) : 0, heldN = committed ? n0(committed.count) : 0;
   const cfd = (split && split.cfd) || { credits: 0, debits: 0, lines: 0, untagged: 0 };
   const cogs = (split && split.cogs) || { credits: 0, debits: 0, lines: 0, untagged: 0 };
   open = Array.isArray(open) ? open : [];
@@ -37,11 +40,12 @@ export function evaluateFinance({ amount, paid, books, rec, split, open, pay }) 
 
   // A — Customer Fund Disbursement account
   {
-    const avail = rec ? n0(rec.available) : 0;
+    const ledger = rec ? n0(rec.available) : 0, avail = ledger - held;
     const items = [
       item('Client record in the CFD ledger', !!rec, rec ? 'Found in Zoho Analytics (CFD Customer Balances)' : 'No Customer Fund Disbursement record for this client'),
       item('Available balance covers the request', !!rec && avail > 0 && avail + EPS >= amount, !!rec && avail > 0 && avail + EPS >= amount ? 'Sufficient' : 'Not sufficient',
-        `Available ${aed(avail)} · requested ${aed(amount)}` + (rec ? ` · credits ${aed(rec.allocated)} · debits ${aed(rec.used)}` + (rec.status ? ` · ${rec.status}` : '') : ''))
+        `Available ${aed(avail)}` + (held ? ` (ledger ${aed(ledger)} less ${aed(held)} already approved on ${plural(heldN, 'request', 'requests')})` : '') + ` · requested ${aed(amount)}`
+          + (rec ? ` · credits ${aed(rec.allocated)} · debits ${aed(rec.used)}` + (rec.status ? ` · ${rec.status}` : '') : ''))
     ];
     const ok = items.every(i => i.ok);
     checks.push({ key: 'CFD', label: CHECKS.CFD, ok, code: !rec ? 'CFD_NO_RECORD' : ok ? 'CFD_OK' : 'CFD_INSUFFICIENT',
@@ -74,7 +78,10 @@ export function evaluateFinance({ amount, paid, books, rec, split, open, pay }) 
     const outstanding = open.reduce((a, i) => a + n0(i.balance), 0);
     const liveDue = books ? n0(books.outstanding) : 0;
     const p = pay || { payments: 0, received: 0, unapplied: 0, refunded: 0, last: '' };
-    const dues = open.length > 0 || liveDue > EPS;
+    // The live Books contact decides whether anything is owed (Analytics syncs from Books with a delay: an invoice paid
+    // a minute ago can still look open there). The Analytics invoice list only names the invoices.
+    const dues = books ? liveDue > EPS : open.length > 0;
+    if (!dues) open = [];
     const nums = open.slice(0, 5).map(i => i.invoice).filter(Boolean).join(', ') + (open.length > 5 ? ', …' : '');
     const items = [
       item('Operations: client already paid us?', PAID_OK.includes(answer), answer ? `Operations answered “${answer}”` : 'Operations did not answer'),

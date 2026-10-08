@@ -39,6 +39,7 @@ if (enabled) {
 
 const kvGet = k => enabled ? cmd(['GET', k]) : Promise.resolve(null);
 const kvSet = (k, v) => enabled ? cmd(['SET', k, v]) : Promise.resolve(null);
+const kvDel = k => enabled ? cmd(['DEL', k]) : Promise.resolve(null);
 
 const timers = {};
 function push(k, json) {
@@ -47,7 +48,7 @@ function push(k, json) {
   timers[k] = setTimeout(() => cmd(['SET', 'onelink:' + k, json]).catch(e => console.error('Upstash backup failed:', k, e.message)), 400);
 }
 
-return { enabled, kvGet, kvSet, push };
+return { enabled, kvGet, kvSet, kvDel, push };
 })();
 
 // ---- zoho.js ----
@@ -271,16 +272,30 @@ const ALIAS = c => `LEFT JOIN "CFD Automatic Customer Aliases" A ON ${c} = A."So
 const SQL = {
   split: `SELECT ${CUST('R."Resolved Customer ID"')} AS "Customer", TO_STRING(R."Account ID") AS "Account", ROUND(SUM(COALESCE(R."Credit Amount", 0)), 2) AS "Credits", ROUND(SUM(COALESCE(R."Debit Amount", 0)), 2) AS "Debits", COUNT(*) AS "Lines", SUM(CASE WHEN R."Books Customer Tag Status" = 'Customer Tagged' THEN 0 ELSE 1 END) AS "Untagged" FROM "CFD Customer Resolved" R ${ALIAS('R."Resolved Customer ID"')} WHERE R."Resolved Customer ID" IS NOT NULL GROUP BY ${CUST('R."Resolved Customer ID"')}, TO_STRING(R."Account ID")`,
   open: `SELECT ${CUST('I."Customer ID"')} AS "Customer", I."Invoice Number" AS "Invoice", I."Invoice Status" AS "Status", I."Due Date" AS "Due", ROUND(I."Total (BCY)", 2) AS "Total", ROUND(I."Balance (BCY)", 2) AS "Balance" FROM "Invoices" I ${ALIAS('I."Customer ID"')} WHERE I."Invoice Status" NOT IN ('Draft', 'Void') AND I."Balance (BCY)" > 0`,
-  pay: `SELECT ${CUST('C."Customer ID"')} AS "Customer", COUNT(*) AS "Payments", ROUND(SUM(C."Amount (BCY)"), 2) AS "Received", ROUND(SUM(C."Unused Amount (BCY)"), 2) AS "Unapplied", ROUND(SUM(C."Refund Amount (BCY)"), 2) AS "Refunded", MAX(C."Payment Date") AS "Last" FROM "Customer Payments" C ${ALIAS('C."Customer ID"')} GROUP BY ${CUST('C."Customer ID"')}`
+  pay: `SELECT ${CUST('C."Customer ID"')} AS "Customer", COUNT(*) AS "Payments", ROUND(SUM(C."Amount (BCY)"), 2) AS "Received", ROUND(SUM(C."Unused Amount (BCY)"), 2) AS "Unapplied", ROUND(SUM(C."Refund Amount (BCY)"), 2) AS "Refunded", MAX(C."Payment Date") AS "Last" FROM "Customer Payments" C ${ALIAS('C."Customer ID"')} GROUP BY ${CUST('C."Customer ID"')}`,
+  alias: `SELECT TO_STRING(A."Source Customer ID") AS "Source", TO_STRING(A."Canonical Customer ID") AS "Canonical" FROM "CFD Automatic Customer Aliases" A`
 };
 const key = v => String(v ?? '').trim().replace(/\.0+$/, '');
 const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const day = v => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v || '')); return m ? `${m[3]} ${MO[Number(m[2]) - 1]} ${m[1]}` : String(v || ''); };
 
 let data = null, dataAt = 0, loading = null;
+// Duplicate Books contacts are folded onto one canonical contact in every Analytics table (CFD Customer Balances
+// included). The picked contact may be the duplicate, so every lookup goes through this map. Changes rarely: 10 min.
+let aliases = new Map(), aliasesAt = 0;
+const ALIAS_TTL = 10 * 60_000;
+const canonical = id => aliases.get(key(id)) || key(id);
 function refresh() {
   if (!loading) {
+    // Analytics allows five export jobs at a time: these three plus the balance table, then the alias table on its own.
     loading = Promise.all([analyticsSql(SQL.split, 'CFD/COGS split'), analyticsSql(SQL.open, 'open invoice'), analyticsSql(SQL.pay, 'customer payment')])
+      .then(async res => {
+        if (Date.now() - aliasesAt > ALIAS_TTL) {
+          try { aliases = new Map((await analyticsSql(SQL.alias, 'customer alias')).map(r => [key(r.Source), key(r.Canonical)]).filter(([a, b]) => a && b && a !== b)); aliasesAt = Date.now(); }
+          catch (e) { console.error('Zoho Analytics customer aliases not refreshed:', e.message); }
+        }
+        return res;
+      })
       .then(([split, open, pay]) => {
         const S = new Map(), O = new Map(), P = new Map();
         for (const r of split) {
@@ -311,12 +326,14 @@ const invalidate = () => { dataAt = 0; invalidateBalances(); };
 
 const dubai = d => d.toLocaleString('en-GB', { timeZone: 'Asia/Dubai', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).replace(',', ' ·');
 // All three checks for one Books contact. books: the live contact if the caller already read it.
-async function run({ contactId, amount, paid, books }) {
-  const k = key(contactId);
-  if (!/^\d{1,30}$/.test(k)) throw Object.assign(new Error('Zoho Books contact id required'), { code: 'BOOKS' });
-  const [contact, rec, d] = await Promise.all([books ? Promise.resolve(books) : booksGetContact(k), analyticsBalance(k), fresh() ? Promise.resolve(data) : refresh()]);
+// committed: amounts already approved or credited for this client on the platform, not yet booked in the ledger.
+async function run({ contactId, amount, paid, books, committed }) {
+  const raw = key(contactId);
+  if (!/^\d{1,30}$/.test(raw)) throw Object.assign(new Error('Zoho Books contact id required'), { code: 'BOOKS' });
+  const [contact, d] = await Promise.all([books ? Promise.resolve(books) : booksGetContact(raw), fresh() ? Promise.resolve(data) : refresh()]);
+  const k = canonical(raw), rec = await analyticsBalance(k);
   const { _raw, ...pay } = d.pay.get(k) || { payments: 0, received: 0, unapplied: 0, refunded: 0, last: '' };
-  const f = evaluateFinance({ amount, paid, books: contact, rec, split: d.split.get(k) || null, open: d.open.get(k) || [], pay });
+  const f = evaluateFinance({ amount, paid, books: contact, rec, split: d.split.get(k) || null, open: d.open.get(k) || [], pay, committed });
   const t = new Date();
   return { id: 'FV-' + crypto.randomBytes(4).toString('hex').toUpperCase(), at: t.toISOString(), atText: dubai(t), clientId: k,
     source: 'Zoho Books (live contact) + Zoho Analytics (CFD, COGS, invoices, payments)', ...f };
@@ -324,7 +341,7 @@ async function run({ contactId, amount, paid, books }) {
 // What a request stores: the checks, never the headline strings.
 const record = f => f && ({ id: f.id, at: f.at, atText: f.atText, amount: f.amount, ok: f.ok, source: f.source, checks: f.checks });
 
-return { run, record, prefetch, invalidate, forOps: financeForOps, fresh };
+return { run, record, prefetch, invalidate, forOps: financeForOps, fresh, canonical };
 })();
 
 // ---- rules.js ----
@@ -726,7 +743,7 @@ return { setBroadcast, load, pub, requireAuth, isMaster, isOpsMaster, isManageme
 
 // ---- store.js ----
 const M_store = await (async () => {
-const { push, enabled: cloudOn, kvGet, kvSet } = M_cloud;
+const { push, enabled: cloudOn, kvGet, kvSet, kvDel } = M_cloud;
 const { requireAuth, isMaster, isOpsMaster, isManagement, setBroadcast, load: loadUsers, pub } = M_auth;
 // Shared, persistent platform data + real-time push (Server-Sent Events).
 // Every signed-in browser reads the same data and receives every change the moment it happens.
@@ -806,6 +823,7 @@ function redact(u, col, item) {
     return r;
   }
   if (col === 'chat' && item.zoho) { const { zoho, ...c } = item; return { ...c, text: hideAmounts(c.text) }; }
+  if (col === 'audit' && item.detail) return { ...item, detail: String(item.detail).replace(/AED\s?[\d,]+(?:\.\d+)?K?/gi, 'AED •••') }; // e.g. 'balance moved to AED 3,000'
   return item;
 }
 // An Operations browser only holds the stripped copy: when it saves a request, put the hidden parts back.
@@ -820,7 +838,7 @@ const OPEN = ['NEW', 'ACTION', 'ESCALATED', 'MGMT_INFO', 'MGMT_APPROVED'];
 // Only the server moves a request into these (escalation endpoints, void) — and out of ESCALATED / MGMT_INFO.
 const SERVER_STATUS = ['ESCALATED', 'MGMT_INFO', 'MGMT_APPROVED', 'VOID'];
 // Set only by the server: whatever a browser sends for these is replaced by the stored value.
-const SERVER_FIELDS = ['finance', 'escalation', 'voided', 'requestorId', 'clientId', 'createdAt'];
+const SERVER_FIELDS = ['finance', 'financeLatest', 'escalation', 'voided', 'requestorId', 'clientId', 'createdAt'];
 // Operations cannot change the money or the client on a request once it exists (Master Operations Control included).
 const OPS_FIXED = ['requested', 'approved', 'credited', 'zohoClientId', 'zohoClient', 'zohoBalance', 'zohoReason', 'zohoValidationId', 'zohoCheckedAt', 'override'];
 const pendingRequestFor = contactId => (contactId && db.requests.find(r => String(r.zohoClientId || '') === String(contactId) && OPEN.includes(r.status))) || null;
@@ -901,11 +919,15 @@ const remaps = new Map(); // `${userKey}:${oldId}` -> { id, at }
 const DAY = 24 * 3600 * 1000;
 const numOf = id => Number(String(id).replace(/\D/g, '')) || 0;
 const nextRequestId = () => 'FR-' + (Math.max(db.floorNo || 0, db.requests.reduce((a, r) => Math.max(a, numOf(r.id)), 0)) + 1);
-function resolveRequestId(userKey, id) {
+function resolveRequestId(userKey, id, maxAge = DAY) {
   const r = id && remaps.get(userKey + ':' + id);
   if (r && Date.now() - r.at > DAY) { remaps.delete(userKey + ':' + id); return id; }
-  return r ? r.id : id;
+  return r && Date.now() - r.at <= maxAge ? r.id : id;
 }
+// A put carrying a submit pass is a brand-new request. A resend of the same request carries the pass of the checks
+// already attached to it; any other request under a taken number (another user's — or the same user's escalation,
+// numbered by the server before this browser saw it) is a different request.
+const sameSubmission = (item, taken) => { const p = M_gate.unsign(item.zohoSubmitToken); return !!(p && taken.finance && p.f === taken.finance.id); };
 
 // Zoho result of the automatic check that runs when a request is sent. The server attaches it to the request
 // itself; if the browser's copy of the request has not arrived yet, it waits here and is attached on arrival.
@@ -915,20 +937,27 @@ const withZoho = (r, z) => {
   if (!(n.timeline || []).some(t => t.text === z.tl.text)) n.timeline = (n.timeline || []).concat([z.tl]);
   return n;
 };
-function attachZohoResult(userKey, requestId, fields, tl) {
+function attachZohoResult(userKey, requestId, fields, tl, clientId) {
   if (!requestId) return false;
   const id = resolveRequestId(userKey, requestId), r = db.requests.find(x => x.id === id);
-  if (r && r.by === userKey && r.status !== 'VOID') { postSystem('requests', withZoho(r, { fields, tl })); return true; }
-  pendingZoho.set(userKey + ':' + requestId, { fields, tl, at: Date.now() });
+  const same = x => !clientId || String(x.zohoClientId || '') === String(clientId); // a check of this request's own client
+  if (r && r.by === userKey) { const ok = r.status === 'NEW' && same(r); if (ok) postSystem('requests', withZoho(r, { fields, tl })); return ok; } // only the check right after Send
+  pendingZoho.set(userKey + ':' + requestId, { fields, tl, clientId, at: Date.now() });
   for (const [k, v] of pendingZoho) if (Date.now() - v.at > DAY) pendingZoho.delete(k);
   return false;
 }
-// A check Sven (or another finance user) ran on an existing request: the latest financial validation is kept on it.
+// A check Sven (or another finance user) ran on an existing request. The checks from submission (or escalation) are the
+// evidence the request was raised on and never change; the latest re-check is kept beside them.
 function attachFinance(requestId, fin) {
   const r = requestId && db.requests.find(x => x.id === requestId);
   if (!r || r.status === 'VOID' || !fin) return false;
-  postSystem('requests', { ...r, finance: M_finance.record(fin) });
+  postSystem('requests', r.finance ? { ...r, financeLatest: M_finance.record(fin) } : { ...r, finance: M_finance.record(fin) });
   return true;
+}
+// Approved or credited on the platform but not yet booked in the CFD ledger: held against the client's balance.
+function committedFor(contactId, exceptId) {
+  const k = M_finance.canonical(contactId), list = db.requests.filter(r => r.id !== exceptId && r.zohoClientId && M_finance.canonical(r.zohoClientId) === k && ['APPROVED', 'CREDITED'].includes(r.status));
+  return { amount: list.reduce((a, r) => a + (Number(r.status === 'CREDITED' ? r.credited || r.approved : r.approved) || Number(r.requested) || 0), 0), count: list.length };
 }
 // Wait briefly for the browser's copy of a just-sent request (it is pushed alongside the check).
 async function awaitOwnRequest(userKey, requestId, ms = 1500) {
@@ -980,6 +1009,7 @@ const reqOut = (u, r) => redact(u, 'requests', r);
 
 function mountRequests(app) {
   const fail = (s, status, error, extra) => s.status(status).json({ ok: false, error, ...extra });
+  app.use('/api/requests', (q, s, next) => resetting ? fail(s, 503, 'A platform reset is running — try again in a moment.') : next());
   const find = (q, s) => {
     const r = db.requests.find(x => x.id === String(q.params.id || ''));
     if (!r) { fail(s, 404, 'No such request'); return null; }
@@ -1038,6 +1068,7 @@ function mountRequests(app) {
     if (!isManagement(u)) return fail(s, 403, 'Only management (Mr. Adnan, Mr. Ahmed, Mr. Eduard) can decide an escalation.');
     const r = find(q, s); if (!r) return;
     if (!r.escalation || !['ESCALATED', 'MGMT_INFO'].includes(r.status)) return fail(s, 409, 'This request is not waiting for a management decision.');
+    if (r.by === u.key || r.escalation.by === u.key) return fail(s, 403, 'You raised this escalation — one of the other members of management decides it.');
     const action = String(b.action || '').toUpperCase(), note = str(b.note, 2000);
     if (!['APPROVE', 'REJECT', 'INFO'].includes(action)) return fail(s, 400, 'Choose approve, reject or request more information.');
     if (note.length < 3) return fail(s, 422, 'Add a note for the record.');
@@ -1061,7 +1092,7 @@ function mountRequests(app) {
   app.post('/api/requests/:id/escalation/reply', requireAuth, (q, s) => {
     const u = q.user, r = find(q, s); if (!r) return;
     if (r.status !== 'MGMT_INFO') return fail(s, 409, 'Management has not asked for more information on this request.');
-    if (!(r.by === u.key || isOpsMaster(u) || isMaster(u))) return fail(s, 403, 'Only the requester can answer management.');
+    if (!(r.by === u.key || isOpsMaster(u))) return fail(s, 403, 'Only the requester can answer management.');
     const note = str(q.body?.note, 2000);
     if (note.length < 3) return fail(s, 422, 'Write the information management asked for.');
     const at = new Date().toISOString(), atText = AUDIT_DAY();
@@ -1122,7 +1153,12 @@ async function takeBackup(u, reason) {
   fs.mkdirSync(BDIR, { recursive: true });
   fs.writeFileSync(path.join(BDIR, id + '.json'), body);
   if (cloudOn) await kvSet('onelink:backup:' + id, body); // must land before anything is removed
-  const list = [{ id, at: at.toISOString(), atText: AUDIT_DAY(), by: u.name, reason, counts }].concat(await backups()).slice(0, 10);
+  const all = [{ id, at: at.toISOString(), atText: AUDIT_DAY(), by: u.name, reason, counts }].concat(await backups());
+  const list = all.slice(0, 10);
+  for (const old of all.slice(10)) { // the ten newest are kept; older copies are deleted from disk and Upstash
+    try { fs.unlinkSync(path.join(BDIR, old.id + '.json')); } catch {}
+    if (cloudOn) kvDel('onelink:backup:' + old.id).catch(e => console.error('Old backup not deleted:', old.id, e.message));
+  }
   fs.writeFileSync(BINDEX, JSON.stringify(list));
   if (cloudOn) await kvSet('onelink:backups', JSON.stringify(list)).catch(e => console.error('Backup index not mirrored:', e.message));
   return id;
@@ -1180,15 +1216,24 @@ function mountReset(app) {
   app.post('/api/admin/reset/restore', requireAuth, masterOnly, async (q, s) => {
     const u = q.user, b = q.body || {};
     if (b.confirm !== 'RESTORE') return s.status(422).json({ ok: false, error: 'Type RESTORE to confirm.' });
+    if (resetting) return s.status(409).json({ ok: false, error: 'A reset or restore is already running.' });
     const bk = await readBackup(b.backupId);
     if (!bk || !bk.db || !Array.isArray(bk.db.requests)) return s.status(404).json({ ok: false, error: 'Backup not found.' });
-    db = Object.assign({ rev: 0, requests: [], chat: [], notifications: [], audit: [] }, bk.db, { rev: Math.max(db.rev, bk.db.rev || 0) + 1 });
-    refused.clear(); pendingZoho.clear(); remaps.clear(); finStore.clear();
-    M_finance.invalidate();
-    persist();
-    audit(u, 'PLATFORM_RESTORED', `Restored backup ${bk.id} taken ${bk.at} by ${bk.by}`, null);
-    broadcast({ type: 'reload' });
-    s.json({ ok: true, restored: bk.id, counts: Object.fromEntries(COLS.map(c => [c, db[c].length])) });
+    resetting = true;
+    try {
+      let safety;
+      try { safety = await takeBackup(u, 'Before restoring ' + bk.id); } // what is on the platform now stays recoverable
+      catch (e) { return s.status(502).json({ ok: false, error: 'The current data could not be backed up — nothing was restored. ' + e.message }); }
+      const floor = db.requests.reduce((a, r) => Math.max(a, numOf(r.id)), db.floorNo || 0);
+      db = Object.assign({ rev: 0, requests: [], chat: [], notifications: [], audit: [] }, bk.db, { rev: Math.max(db.rev, bk.db.rev || 0) + 1 });
+      db.floorNo = Math.max(floor, bk.db.floorNo || 0); // numbers handed out since the backup are never reissued
+      refused.clear(); pendingZoho.clear(); remaps.clear(); finStore.clear();
+      M_finance.invalidate();
+      persist();
+      audit(u, 'PLATFORM_RESTORED', `Restored backup ${bk.id} taken ${bk.at} by ${bk.by} · the data it replaced is in backup ${safety}`, null);
+      broadcast({ type: 'reload' });
+      s.json({ ok: true, restored: bk.id, safetyBackupId: safety, counts: Object.fromEntries(COLS.map(c => [c, db[c].length])) });
+    } finally { resetting = false; }
   });
 }
 
@@ -1210,7 +1255,8 @@ function mount(app) {
     const { col, items } = q.body || {};
     if (!COLS.includes(col) || !Array.isArray(items)) return s.status(400).json({ ok: false, error: 'col + items[] required' });
     const gone = new Set(db.purged || []);
-    const added = mergeMissing(col, col === 'requests' ? items.filter(x => x && !gone.has(x.id) && !SERVER_STATUS.includes(x.status)) : items);
+    const strip = x => { const c = { ...x }; for (const k of SERVER_FIELDS.concat(['zohoClientId', 'zohoToken', 'zohoSubmitToken', 'override'])) delete c[k]; return c; };
+    const added = mergeMissing(col, col === 'requests' ? items.filter(x => x && typeof x === 'object' && !gone.has(x.id) && !SERVER_STATUS.includes(x.status)).map(strip) : items);
     if (!added) return s.json({ ok: true, added: 0, rev: db.rev });
     db.rev++; persist();
     broadcast({ type: 'reload' });
@@ -1218,6 +1264,7 @@ function mount(app) {
   });
 
   app.post('/api/sync/put', requireAuth, (q, s) => {
+    if (resetting) return s.status(503).json({ ok: false, error: 'A platform reset is running — try again in a moment.' });
     const { col, item } = q.body || {};
     if (!COLS.includes(col) || !item || typeof item !== 'object' || typeof item.id !== 'string') return s.status(400).json({ ok: false, error: 'col + item.id required' });
     if (col === 'requests' && ['timeline', 'docs'].some(k => item[k] !== undefined && (!Array.isArray(item[k]) || item[k].some(x => !x || typeof x !== 'object'))))
@@ -1225,19 +1272,20 @@ function mount(app) {
     let renamed = null;
     const sentId = item.id; // the number the browser used, before any renumbering
     if (col === 'requests') {
+      const fresh = typeof item.zohoSubmitToken === 'string';
       const mapped = resolveRequestId(q.user.key, item.id);
-      if (mapped !== item.id) item.id = mapped;
+      const ownReal = db.requests.find(x => x.id === item.id && x.by === q.user.key);
+      if (mapped !== item.id && (fresh || !ownReal)) item.id = mapped; // the renamed new request — never the user's real one
       else {
         const taken = db.requests.find(x => x.id === item.id);
         const reused = !taken && numOf(item.id) <= (db.floorNo || 0); // a number from before the last reset
-        if ((taken && taken.by !== item.by) || reused) {
-          renamed = nextRequestId();
-          remaps.set(q.user.key + ':' + item.id, { id: renamed, at: Date.now() });
+        if ((taken && (taken.by !== item.by || (fresh && !sameSubmission(item, taken)))) || reused) {
+          renamed = nextRequestId(); // its mapping is recorded below, once the request is accepted
           console.log(`Request number ${item.id} ${taken ? 'already belongs to ' + taken.by : 'was used before the last reset'}; ${q.user.key}'s new request saved as ${renamed}.`);
           item.id = renamed;
         }
       }
-    } else if (typeof item.req === 'string') item.req = resolveRequestId(q.user.key, item.req);
+    } else if (typeof item.req === 'string') item.req = resolveRequestId(q.user.key, item.req, 10 * 60_000);
     const prev = db[col].find(x => x.id === item.id) || null;
     if (!mayWrite(q.user, col, item, prev)) {
       if (col === 'requests' && prev && restricted(q.user) && prev.by !== q.user.key) audit(q.user, 'ACCESS_DENIED', `Tried to change ${prev.id} (${prev.company}), created by ${prev.by}`, prev);
@@ -1250,10 +1298,22 @@ function mount(app) {
     if (col === 'requests') {
       // Server-owned fields: always the stored value (or absent on a new request), whatever the browser sent.
       for (const k of SERVER_FIELDS) { if (prev && prev[k] !== undefined) item[k] = prev[k]; else delete item[k]; }
-      if (prev && ops(q.user)) {
+      if (prev && (ops(q.user) || q.user.dept === 'MANAGEMENT')) {
         for (const k of OPS_FIXED) { if (prev[k] !== undefined) item[k] = prev[k]; else delete item[k]; }
         if (prev.zohoStatus) item.zohoStatus = prev.zohoStatus; // Operations may only mark an unchecked request 'Not validated'
       }
+      if (prev && q.user.dept === 'MANAGEMENT' && !isMaster(q.user)) { // notes and files only: every other field stays as stored
+        const keep = { ...prev, notes: item.notes, docs: item.docs, timeline: item.timeline };
+        for (const k of Object.keys(item)) delete item[k];
+        Object.assign(item, keep);
+        const seen = new Set((item.timeline || []).map(t => t.at + '|' + t.text));
+        const lost = (prev.timeline || []).filter(t => !seen.has(t.at + '|' + t.text));
+        if (lost.length) item.timeline = lost.concat(item.timeline || []);
+      }
+    }
+    if (col === 'requests' && prev && OPEN.includes(item.status) && !OPEN.includes(prev.status)) {
+      const other = pendingRequestFor(item.zohoClientId);
+      if (other && other.id !== item.id) return s.status(409).json({ ok: false, reason: 'REQUEST_PENDING', error: `${other.id} is already open for this client — ${item.id} cannot be re-opened.`, pendingId: other.id });
     }
     if (col === 'requests' && !prev) {
       const bad = newRequestProblem(q.user, item);
@@ -1272,6 +1332,7 @@ function mount(app) {
       if (pass && pass.n) item.zohoClient = item.person = String(pass.n);
       delete item.zohoSubmitToken; // single use, not stored
       refused.delete(q.user.key + ':' + sentId); // a corrected retry under the same number is a real request
+      if (renamed) remaps.set(q.user.key + ':' + sentId, { id: renamed, at: Date.now() });
     }
     if (col === 'notifications' && !prev && item.req && refused.has(q.user.key + ':' + item.req)) Object.assign(item, notSubmitted(item, refused.get(q.user.key + ':' + item.req).reason));
     if (col === 'notifications' && !prev) item._at = Date.now();
@@ -1296,7 +1357,7 @@ function mount(app) {
     }
     if (col === 'requests' && item.by === q.user.key) {
       const k = q.user.key + ':' + sentId, z = pendingZoho.get(k);
-      if (z) { Object.assign(item, withZoho(item, z)); pendingZoho.delete(k); }
+      if (z && (!z.clientId || String(z.clientId) === String(item.zohoClientId || ''))) { Object.assign(item, withZoho(item, z)); pendingZoho.delete(k); }
     }
     upsert(col, item);
     broadcast({ type: 'put', col, item, rev: db.rev, by: q.user.key }, col, item);
@@ -1352,7 +1413,9 @@ const status = () => ({ lastReset: db.lastReset || null, requests: db.requests.l
 
 const canSee = (u, r) => visible(u, 'requests', r);
 
-return { mount, postSystem, resolveRequestId, attachZohoResult, attachFinance, awaitOwnRequest, pendingRequestFor, wasRefused, isOps: restricted, finPut, getRequest, canSee, status };
+const isFinanceUser = u => isMaster(u) || (u.dept === 'FINANCE' && u.active !== false);
+
+return { mount, postSystem, resolveRequestId, attachZohoResult, attachFinance, awaitOwnRequest, pendingRequestFor, wasRefused, isOps: restricted, finPut, getRequest, canSee, committedFor, isFinanceUser, status };
 })();
 
 // ---- server.js ----
@@ -1415,7 +1478,8 @@ app.get('/api/zoho/clients', async (q, s) => {
   if (term.length < 2) return s.json({ ok: true, clients: [], tooShort: true });
   prefetchBalances(); M_finance.prefetch(); // so the balance and the financial checks are ready when a client is picked
   try {
-    const clients = (await booksSearchClients(term)).map(c => { const p = store.pendingRequestFor(c.contactId); return p ? { ...c, pendingId: p.id } : c; });
+    // The Books receivable is read for the financial checks only — never sent to the browser.
+    const clients = (await booksSearchClients(term)).map(({ outstanding, ...c }) => { const p = store.pendingRequestFor(c.contactId); return p ? { ...c, pendingId: p.id } : c; });
     s.json({ ok: true, clients, notFound: !clients.length, message: clients.length ? '' : NOT_FOUND_MSG, source: 'Zoho Books · live' });
   } catch (e) { zohoErr(s, e); }
 });
@@ -1481,7 +1545,7 @@ app.post('/api/zoho/precheck', async (q, s) => {
   const pend = store.pendingRequestFor(v.clientId);
   if (pend) return s.status(409).json({ ok: false, reason: 'REQUEST_PENDING', error: MSG.LOCKED, pendingId: pend.id });
   let fin;
-  try { fin = await M_finance.run({ contactId: v.clientId, amount, paid }); } catch (e) { return zohoErr(s, e); }
+  try { fin = await M_finance.run({ contactId: v.clientId, amount, paid, committed: store.committedFor(v.clientId) }); } catch (e) { return zohoErr(s, e); }
   store.finPut(fin, q.user.key);
   const view = opsUser ? M_finance.forOps(M_finance.record(fin)) : M_finance.record(fin);
   const cfd = fin.checks.find(c => c.key === 'CFD');
@@ -1557,11 +1621,15 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
   const stored = req.requestId ? store.getRequest(req.requestId) : null;
   if (stored && !store.canSee(q.user, stored)) return s.status(403).json({ ok: false, reason: 'NO_ACCESS', error: 'No access — request not created by you' });
   if (stored && stored.status === 'VOID') return s.status(409).json({ ok: false, reason: 'REQUEST_VOID', error: 'This request has been voided.' });
+  // A check on a stored request is a check of THAT request: its client and its amount, never ones from the browser.
+  if (stored && stored.zohoClientId && String(stored.zohoClientId) !== String(books.contactId))
+    return s.status(409).json({ ok: false, reason: 'CLIENT_MISMATCH', error: `This check was for a different client than ${stored.id}.` });
+  if (stored) req.requestedAmount = Number(stored.approved || stored.requested) || req.requestedAmount;
 
   // The balance and the three financial checks come from Zoho — if they cannot be read, nothing is decided.
   let rec, fin;
   try {
-    [rec, fin] = await Promise.all([analyticsBalance(books.contactId), M_finance.run({ contactId: books.contactId, amount: req.requestedAmount, paid: stored ? stored.paid : String(b.paid || ''), books })]);
+    [rec, fin] = await Promise.all([analyticsBalance(M_finance.canonical(books.contactId)), M_finance.run({ contactId: books.contactId, amount: req.requestedAmount, paid: stored ? stored.paid : String(b.paid || ''), books, committed: store.committedFor(books.contactId, stored ? stored.id : null) })]);
   } catch (e) { return zohoErr(s, e); }
 
   const d = decide({ req, books, rec, fin });
@@ -1571,9 +1639,9 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
   const t = stamp();
   const attached = store.attachZohoResult(q.user.key, sentId, {
     zohoStatus: d.approvalStatus, zohoBalance: exported.balance, zohoReason: d.reason, zohoValidationId: validationId, zohoCheckedAt: checkedAt, flagged: !d.ok
-  }, { at: t.day + ' · ' + t.at, text: `Zoho Analytics check — ${d.approvalStatus}${d.ok ? '' : '. ' + (d.reason === 'FINANCIAL_CHECKS_FAILED' ? 'Failed: ' + fin.failed.map(f => f.label).join(', ') : d.notes)}` });
+  }, { at: t.day + ' · ' + t.at, text: `Zoho Analytics check — ${d.approvalStatus}${d.ok ? '' : '. ' + (d.reason === 'FINANCIAL_CHECKS_FAILED' ? 'Failed: ' + fin.failed.map(f => f.label).join(', ') : d.notes)}` }, books.contactId);
   // A check on an existing request by finance (Sven before approving / crediting): the request keeps the latest validation.
-  if (!attached && stored && !store.isOps(q.user)) store.attachFinance(stored.id, fin);
+  if (!attached && stored && store.isFinanceUser(q.user)) store.attachFinance(stored.id, fin);
 
   let sheet;
   try {

@@ -15,6 +15,8 @@ const good = () => ({
   pay: { payments: 2, received: 30000, unapplied: 0, refunded: 0, last: '07 Oct 2026' }
 });
 const run = patch => evaluateFinance({ ...good(), ...patch });
+// The live Books contact decides whether anything is owed; a test with open invoices gives it a matching receivable.
+const owing = n => ({ books: { contactId: '1', contactName: 'Alpha', status: 'active', outstanding: n } });
 const chk = (f, key) => f.checks.find(c => c.key === key);
 const itm = (f, key, label) => chk(f, key).items.find(i => i.label === label);
 const AMOUNT_RE = /AED|\d[\d,]*\.\d\d/;
@@ -37,7 +39,7 @@ describe('evaluateFinance — shape', () => {
     assert.match(itm(f, 'INVOICES', 'Customer payment received in Zoho Books').text, /2 payments on file, last on 07 Oct 2026/);
   });
   test('messages and item texts are amount-free; details carry the figures', () => {
-    for (const patch of [{}, { rec: null }, { amount: 999999 }, { open: [{ invoice: 'INV-1', balance: 100, status: 'Overdue' }] }, { pay: null }]) {
+    for (const patch of [{}, { rec: null }, { amount: 999999 }, { ...owing(100), open: [{ invoice: 'INV-1', balance: 100, status: 'Overdue' }] }, { pay: null }, { committed: { amount: 19000, count: 1 } }]) {
       const f = run(patch);
       for (const c of f.checks) {
         assert.doesNotMatch(c.message, AMOUNT_RE, c.key + ' message: ' + c.message);
@@ -161,17 +163,17 @@ describe('C — invoices', () => {
     assert.equal(chk(run({ pay: null }), 'INVOICES').message, 'No customer payment recorded in Zoho Books.');
   });
   test('unapplied payment with dues → PAYMENT_NOT_APPLIED; without dues passes', () => {
-    const f = run({ pay: { payments: 2, received: 30000, unapplied: 500, refunded: 0 }, open: [{ invoice: 'INV-9', balance: 500, status: 'Sent' }] });
+    const f = run({ ...owing(500), pay: { payments: 2, received: 30000, unapplied: 500, refunded: 0 }, open: [{ invoice: 'INV-9', balance: 500, status: 'Sent' }] });
     assert.equal(chk(f, 'INVOICES').code, 'PAYMENT_NOT_APPLIED');
     assert.equal(chk(f, 'INVOICES').message, 'A payment is recorded but not applied to the open invoice.');
     assert.equal(chk(run({ pay: { payments: 2, received: 30000, unapplied: 500, refunded: 0 } }), 'INVOICES').ok, true);
   });
   test('outstanding open invoices → OUTSTANDING_DUES, list capped at five numbers', () => {
     const open = Array.from({ length: 7 }, (_, i) => ({ invoice: 'INV-' + (i + 1), balance: 10, status: 'Overdue' }));
-    const f = run({ open });
+    const f = run({ ...owing(70), open });
     assert.equal(chk(f, 'INVOICES').code, 'OUTSTANDING_DUES');
     assert.equal(chk(f, 'INVOICES').message, '7 invoices are unpaid or overdue (INV-1, INV-2, INV-3, INV-4, INV-5, …).');
-    const one = run({ open: [{ invoice: 'INV-1', balance: 10 }] });
+    const one = run({ ...owing(10), open: [{ invoice: 'INV-1', balance: 10 }] });
     assert.equal(chk(one, 'INVOICES').message, '1 invoice is unpaid or overdue (INV-1).');
   });
   test('live Books receivable only → OUTSTANDING_DUES', () => {
@@ -184,16 +186,32 @@ describe('C — invoices', () => {
     assert.equal(chk(run({ pay: { payments: 2, received: 30000, unapplied: 0, refunded: 400 } }), 'INVOICES').ok, true);
   });
   test('refund with dues: the refund item fails', () => {
-    const f = run({ pay: { payments: 2, received: 30000, unapplied: 0, refunded: 400 }, open: [{ invoice: 'INV-3', balance: 400 }] });
+    const f = run({ ...owing(400), pay: { payments: 2, received: 30000, unapplied: 0, refunded: 400 }, open: [{ invoice: 'INV-3', balance: 400 }] });
     assert.equal(chk(f, 'INVOICES').ok, false);
     assert.equal(itm(f, 'INVOICES', 'No reversed or deleted payments').ok, false);
     assert.equal(itm(f, 'INVOICES', 'No reversed or deleted payments').text, 'A refund was recorded while invoices are still unpaid');
   });
   test('refund with dues is reported as PAYMENT_REVERSED (code is reachable)', () => {
-    // FINDING: the "No reversed or deleted payments" item only fails when dues exist, and dues always fail the
-    // earlier "No outstanding dues" item, so the PAYMENT_REVERSED code and the refund message can never be produced.
-    const f = run({ pay: { payments: 2, received: 30000, unapplied: 0, refunded: 400 }, open: [{ invoice: 'INV-3', balance: 400 }] });
+    const f = run({ ...owing(400), pay: { payments: 2, received: 30000, unapplied: 0, refunded: 400 }, open: [{ invoice: 'INV-3', balance: 400 }] });
     assert.equal(chk(f, 'INVOICES').code, 'PAYMENT_REVERSED');
+    assert.equal(chk(f, 'INVOICES').message, 'A refund was recorded while invoices are still unpaid.');
+  });
+  test('stale Analytics invoice but the live Books receivable is 0 → paid, passes', () => {
+    const f = run({ open: [{ invoice: 'INV-1', balance: 750, status: 'Overdue' }] }); // good() has outstanding 0 live
+    assert.equal(chk(f, 'INVOICES').ok, true);
+    assert.equal(itm(f, 'INVOICES', 'No outstanding dues').text, 'No unpaid or overdue invoices');
+  });
+  test('no live Books contact → the Analytics invoice list decides', () => {
+    assert.equal(chk(run({ books: null, open: [{ invoice: 'INV-1', balance: 750 }] }), 'INVOICES').code, 'OUTSTANDING_DUES');
+    assert.equal(chk(run({ books: null, open: [] }), 'INVOICES').ok, true);
+  });
+  test('amounts already approved on the platform are held against the CFD balance', () => {
+    assert.equal(chk(run({ committed: { amount: 15000, count: 1 } }), 'CFD').ok, true);       // 20,000 − 15,000 = 5,000 ≥ 5,000
+    const f = run({ committed: { amount: 15001, count: 2 } });
+    assert.equal(chk(f, 'CFD').ok, false);
+    assert.equal(chk(f, 'CFD').code, 'CFD_INSUFFICIENT');
+    assert.match(itm(f, 'CFD', 'Available balance covers the request').detail, /ledger AED 20,000\.00 less AED 15,001\.00 already approved on 2 requests/);
+    assert.equal(f.opsError, OPS_INSUFFICIENT);
   });
   test('opsError for two non-CFD failures uses "checks" plural', () => {
     const f = run({ paid: 'No', split: { cfd: { credits: 0, debits: 0, lines: 0, untagged: 0 }, cogs: { credits: 0, debits: 0, lines: 0, untagged: 0 } } });

@@ -21,7 +21,7 @@ function make(userKey) {
   const c = new Component({});
   c.setState = function (u) { const p = typeof u === 'function' ? u(this.state) : u; this.state = Object.assign({}, this.state, p); };
   c.api = (p, o) => { calls.push({ path: p, body: o && o.body }); const r = replies[p] || { ok: true, status: 200, json: { ok: true } }; return Promise.resolve(typeof r === 'function' ? r(o && o.body) : r); };
-  c.flash = function (t) { this.lastFlash = t; };
+  c.flash = function (t, undo) { this.lastFlash = t; this.lastUndo = undo || null; };
   c.logAudit = () => {};
   c._token = 't';
   const accts = c.state.accounts.concat([
@@ -145,6 +145,8 @@ const seen = new Map();
   assert.equal(vm.detail.esc.canDecide, true);
   assert.equal(vm.detail.esc.decisionLine, 'Waiting for a management decision');
   assert.equal(vm.peek.mgmtDecide, true);
+  assert.equal(vm.detail.showDecide, false, 'management: no Sven decisions on ESCALATED');
+  assert.equal(vm.peek.canDecide, false);
   assert.equal(vm.detail.canVoid, true);
   c.setState({ route: 'board', tab: 'tasks' });
   vm = c.renderVals();
@@ -212,6 +214,15 @@ const seen = new Map();
   assert.equal(vm.detail.canChase, false);
   assert.equal(vm.detail.voidLine, 'Voided by Sven on 08 Oct · 09:00 — Duplicate');
   assert.equal(vm.detail.nextText, 'Voided. This request is locked — nothing can be changed.');
+  assert.equal(vm.detail.esc.decisionLine, 'Closed — voided before a management decision');
+  assert.equal(vm.detail.esc.hasNote, false);
+  assert.ok(vm.peek.facts.some(f => f.label === 'Escalation' && f.value === 'Closed — voided before a management decision · ESC-1A2B3C'));
+  // voided while ESCALATED (no decision yet)
+  const v2 = Object.assign({}, v, { escalation: Object.assign({}, r.escalation, { decision: null }), voided: Object.assign({}, v.voided, { prevStatus: 'ESCALATED' }) });
+  c.setState({ requests: c.state.requests.map(x => x.id === 'FR-900' ? v2 : x) });
+  vm = c.renderVals();
+  assert.equal(vm.detail.esc.decisionLine, 'Closed — voided before a management decision');
+  assert.ok(!/Waiting for/.test(c.escSummary(v2)), c.escSummary(v2));
   c.setState({ route: 'board', tab: 'done' });
   assert.ok(c.renderVals().sections.some(sc => sc.title === 'Voided'));
   c.openModal('chase', 'FR-900');
@@ -279,14 +290,19 @@ const seen = new Map();
   assert.equal(ran, 0);
   assert.equal(c.reqById('FR-900').status, 'APPROVED');
   assert.match(c.reqById('FR-900').timeline.at(-1).text, /management override by Mr\. Adnan \(CFO\)$/);
+  assert.equal(c.lastUndo, null, 'no Undo after the final approval of an overridden request');
   c.creditNow('FR-900');
   assert.equal(ran, 0);
   assert.equal(c.reqById('FR-900').status, 'CREDITED');
+  assert.equal(c.lastUndo, null, 'no Undo after crediting an overridden request');
   // without an override the gate still runs
   const plain = Object.assign({}, r, { id: 'FR-902', status: 'NEW', escalation: null });
   c.setState({ requests: [plain].concat(c.state.requests) });
   c.approveFull('FR-902');
   assert.equal(ran, 1);
+  c.approveFull('FR-902', { ok: true, available: 50000, validationId: 'ZV-1' });
+  assert.equal(c.reqById('FR-902').status, 'APPROVED');
+  assert.equal(typeof c.lastUndo, 'function', 'a plain approval keeps its Undo');
   // reset: preview → run
   replies['/api/admin/reset/preview'] = { ok: true, status: 200, json: { ok: true, live: [{ id: 'FR-900', company: 'K', by: 'maram', status: 'CREDITED', requested: 1, date: '7 Oct' }, { id: 'FR-903', company: 'L', by: 'musa', status: 'NEW', requested: 2, date: '7 Oct' }], history: { requests: 268 }, notifications: 5, audit: 6, chat: 7, backups: [] } };
   c.liveLoad = () => Promise.resolve();
@@ -332,6 +348,99 @@ const seen = new Map();
   c.confirmModal(); await tick(); await tick();
   assert.deepEqual(calls.filter(x => x.path === '/api/requests/FR-900/chase').at(-1).body, { note: '', docs: [{ name: 'receipt.pdf', type: 'Receipt', size: 900, fileId: 'F77' }] });
   assert.equal(c.lastFlash, 'Invoice chase sent to finance');
+}
+
+// ── scenario 7: management never gets Sven's decision buttons (NEW, ACTION, MGMT_APPROVED); info modal refused ──
+{
+  const c = make('adnan');
+  const ovr = { action: 'APPROVE', by: 'ahmed', byName: 'Ahmed', title: 'General Manager', atText: 'now', note: 'ok' };
+  const reqs = [
+    escReq('NEW', { id: 'FR-910', escalation: null, finance: finance(true) }),
+    escReq('ACTION', { id: 'FR-911', escalation: null, finance: finance(true) }),
+    escReq('MGMT_APPROVED', { id: 'FR-912' })
+  ];
+  reqs[2].escalation.decision = ovr;
+  c.setState({ requests: reqs.concat(c.state.requests), route: 'detail' });
+  for (const r of reqs) {
+    c.setState({ reqId: r.id, peekId: r.id });
+    const vm = c.renderVals();
+    resolveAll(markupOf(tpl), vm, seen);
+    assert.equal(vm.detail.showDecide, false, 'management: no decisions on ' + r.status);
+    assert.equal(vm.detail.decisions.length, 0, r.status);
+    assert.equal(vm.peek.canDecide, false, 'management: no peek decisions on ' + r.status);
+  }
+  c.setState({ route: 'board', tab: 'tasks' });
+  const rows = c.renderVals().sections.flatMap(sc => sc.rows);
+  assert.notEqual(rows.find(x => x.num === 'FR-910').actLabel, 'Check and approve');
+  assert.notEqual(rows.find(x => x.num === 'FR-912').actLabel, 'Final approval');
+  for (const kind of ['info', 'decline', 'partial']) {
+    c.openModal(kind, 'FR-910');
+    c.setState({ modal: Object.assign({}, c.state.modal, { value: kind === 'partial' ? '100' : 'Please send the slip' }) });
+    c.confirmModal();
+    assert.equal(c.reqById('FR-910').status, 'NEW', 'management ' + kind + ' refused');
+    assert.match(c.lastFlash, /needs the/);
+    c.setState({ modal: null });
+  }
+  // Sven may still ask for information
+  const s = make('sven');
+  s.setState({ requests: [escReq('NEW', { id: 'FR-910', escalation: null })].concat(s.state.requests) });
+  s.openModal('info', 'FR-910');
+  s.setState({ modal: Object.assign({}, s.state.modal, { value: 'Send the estimate' }) });
+  s.confirmModal();
+  assert.equal(s.reqById('FR-910').status, 'ACTION');
+}
+
+// ── scenario 8: Sven's lower amount — override skips the balance; otherwise the balance gate stays ──
+{
+  const c = make('sven');
+  const o = escReq('MGMT_APPROVED');
+  o.escalation.decision = { action: 'APPROVE', by: 'adnan', byName: 'Adnan', title: 'CFO', atText: 'now', note: 'ok' };
+  const plain = escReq('NEW', { id: 'FR-920', escalation: null });
+  c.setState({ requests: [o, plain].concat(c.state.requests) });
+  const partial = (id, val) => { c.openModal('partial', id); c.setState({ modal: Object.assign({}, c.state.modal, { value: val }) }); c.confirmModal(); };
+  partial('FR-900', '20000');
+  assert.equal(c.state.modal.error, 'Cannot approve more than the requested AED 12,520.'.replace('AED 12,520', c.fmt(12520)));
+  partial('FR-900', '0');
+  assert.equal(c.state.modal.error, 'Enter an amount.');
+  partial('FR-900', '5000');
+  assert.equal(c.reqById('FR-900').status, 'APPROVED');
+  assert.equal(c.reqById('FR-900').approved, 5000);
+  assert.match(c.reqById('FR-900').timeline.at(-1).text, /approved .* — management override by Mr\. Adnan \(CFO\)$/);
+  partial('FR-920', '5000');
+  assert.match(c.state.modal.error, /^Run the Zoho check first/);
+  assert.equal(c.reqById('FR-920').status, 'NEW');
+  c.setState({ requests: c.state.requests.map(x => x.id === 'FR-920' ? Object.assign({}, x, { zohoBalance: 3000 }) : x), modal: null });
+  partial('FR-920', '5000');
+  assert.match(c.state.modal.error, /^The validated Zoho balance for this client is/);
+  partial('FR-920', '2500');
+  assert.equal(c.reqById('FR-920').status, 'APPROVED');
+  assert.ok(!/override/.test(c.reqById('FR-920').timeline.at(-1).text));
+}
+
+// ── scenario 9: CREDITED board action opens the chase modal; refused sync shows the server's reason and reloads; paid in the Zoho payload ──
+{
+  const c = make('sven');
+  const r = escReq('CREDITED', { escalation: null, finance: finance(true) });
+  c.setState({ requests: [r].concat(c.state.requests), route: 'board', tab: 'await' });
+  const row = c.renderVals().sections.flatMap(sc => sc.rows).find(x => x.num === 'FR-900');
+  assert.equal(row.actLabel, 'Chase invoice');
+  row.act();
+  assert.equal(c.state.modal && c.state.modal.kind, 'chase');
+  c.setState({ route: 'detail', reqId: 'FR-900', modal: null });
+  assert.equal(c.renderVals().detail.actLabel, 'Chase invoice');
+  c.renderVals().detail.act();
+  assert.equal(c.state.modal && c.state.modal.kind, 'chase');
+  assert.equal(c.zohoPayload(r).paid, 'No — not yet');
+  // livePush 403
+  let loads = 0;
+  c.isLive = () => true; c.liveLoad = () => { loads++; return Promise.resolve(); };
+  c._sync = { requests: c.state.requests, chat: c.state.chat, notifications: c.state.notifications, audit: c.state.audit };
+  replies['/api/sync/put'] = { ok: false, status: 403, json: { ok: false, error: 'Only Sven can change the status of this request.' } };
+  c.setState({ requests: c.state.requests.map(x => x.id === 'FR-900' ? Object.assign({}, x, { status: 'PAID' }) : x) });
+  c.livePush(); await tick(); await tick();
+  assert.equal(c.lastFlash, 'Only Sven can change the status of this request.');
+  assert.equal(loads, 1);
+  delete replies['/api/sync/put'];
 }
 
 const bad = [...seen].filter(([, s]) => s !== 'ok');

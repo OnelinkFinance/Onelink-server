@@ -189,7 +189,7 @@ const GATE_JS = `  verifyClient() {
     const r = s.peekId ? this.reqById(s.peekId) : null;
     if (!r) return { open: true, closed: false, found: false, missing: true, back: back, missingText: isOps ? 'No access — request not created by you (or it was not submitted).' : 'This request is not on the platform — it was not submitted, or it has been removed.', full: back };
     const u = this.users()[r.by], me = this.me(), mgmt = this.isMgmt(me), st = r.status;
-    const open = ['NEW', 'ACTION'].indexOf(st) >= 0 || (st === 'MGMT_APPROVED' && !mgmt);
+    const open = !mgmt && (['NEW', 'ACTION'].indexOf(st) >= 0 || st === 'MGMT_APPROVED'); // management decides escalations only
     const mgmtDecide = mgmt && (st === 'ESCALATED' || st === 'MGMT_INFO'), canReply = st === 'MGMT_INFO' && (r.by === me.key || this.isOpsMaster(me));
     const canChase = st !== 'VOID', canVoid = st !== 'VOID' && (this.isSven(me) || mgmt);
     const facts = [
@@ -208,7 +208,7 @@ const GATE_JS = `  verifyClient() {
       id: r.id, status: this.statusMeta(r.status).label, company: r.company, client: (r.person && r.person !== '—') ? r.person : r.company,
       by: u ? u.name : r.by, amount: this.fmt(r.requested), facts: facts,
       history: (r.timeline || []).slice(-5).reverse().map(t => ({ at: t.at, text: t.text })),
-      canDecide: !isOps && open && this.canApproveReq(r), approveLabel: st === 'MGMT_APPROVED' ? 'Final approval' : 'Check and approve',
+      canDecide: !isOps && !mgmt && open && this.canApproveReq(r), approveLabel: st === 'MGMT_APPROVED' ? 'Final approval' : 'Check and approve',
       approve: () => this.approveFull(r.id), ask: () => this.openModal('info', r.id), decline: () => this.openModal('decline', r.id),
       mgmtDecide: mgmtDecide, mApprove: () => this.openModal('mgmtApprove', r.id), mReject: () => this.openModal('mgmtReject', r.id), mInfo: () => this.openModal('mgmtInfo', r.id),
       canReply: canReply, reply: () => this.openModal('mgmtReply', r.id),
@@ -337,6 +337,14 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     const d = (r && r.escalation && r.escalation.decision) || {};
     return this.mgmtName(d.byName || this.nameOf(d.by), d.title || this.acctTitle(d.by));
   }
+  /* The server refuses to roll a request back into the escalation flow, so no Undo is offered for one
+     that was overridden by management or whose status before the change was an escalation status. */
+  undoable(r) { return !!r && !this.overridden(r) && ['ESCALATED', 'MGMT_INFO', 'MGMT_APPROVED'].indexOf(r.status) < 0; }
+  /* Voided while still with management (escalated, or waiting on an answer for management). */
+  voidedBeforeDecision(r) {
+    const d = r && r.escalation && r.escalation.decision;
+    return !!r && r.status === 'VOID' && (!d || d.action === 'INFO');
+  }
   withReq(list, item) {
     const cur = list || [], i = cur.findIndex(x => x.id === item.id);
     return i >= 0 ? cur.map(x => (x.id === item.id ? item : x)) : [item].concat(cur);
@@ -369,6 +377,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
   escSummary(r) {
     const esc = r.escalation, d = esc && esc.decision;
     if (!esc) return '';
+    if (this.voidedBeforeDecision(r)) return 'Closed — voided before a management decision' + (esc.id ? ' · ' + esc.id : '');
     if (r.status === 'ESCALATED' || !d) return 'Waiting for management' + (esc.id ? ' · ' + esc.id : '');
     const who = this.mgmtName(d.byName || this.nameOf(d.by), d.title || this.acctTitle(d.by));
     return ({ APPROVE: 'Approved by ', REJECT: 'Rejected by ', INFO: 'More information asked by ' }[d.action] || 'Decided by ') + who;
@@ -453,7 +462,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
   escVals(r, me) {
     const esc = r.escalation;
     if (!esc) return { failed: [], log: [] };
-    const d = esc.decision, st = r.status, waiting = st === 'ESCALATED' || !d, act = waiting ? '' : d.action;
+    const d = esc.decision, st = r.status, closed = this.voidedBeforeDecision(r), waiting = !closed && (st === 'ESCALATED' || !d), act = waiting || closed ? '' : d.action;
     const ACT = { APPROVE: 'Approved & proceed', REJECT: 'Escalation rejected', INFO: 'More information requested' };
     const LOG = { CREATED: 'escalated to management', APPROVE: 'approved & proceed', REJECT: 'rejected the escalation', INFO: 'asked for more information', REPLY: 'replied to management' };
     const failed = (esc.failed || []).map(x => ({ label: x.label || x.key || 'Check', message: x.message || '' }));
@@ -464,12 +473,12 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       justification: esc.justification || '—',
       failed: failed, hasFailed: failed.length > 0,
       to: (esc.to || []).map(t => this.mgmtName(t.name || this.nameOf(t.key), t.title || this.acctTitle(t.key))).join(' · ') || 'Management',
-      decisionLine: waiting ? 'Waiting for a management decision' : (ACT[act] || 'Decided') + ' — ' + this.mgmtName(d.byName || this.nameOf(d.by), d.title || this.acctTitle(d.by)) + (d.atText ? ' · ' + d.atText : ''),
-      decisionNote: !waiting && d.note ? d.note : '', hasNote: !waiting && !!d.note,
-      toneIcon: waiting ? 'ph ph-hourglass' : act === 'APPROVE' ? 'ph ph-seal-check' : act === 'REJECT' ? 'ph ph-prohibit' : 'ph ph-question',
-      toneFg: act === 'APPROVE' ? 'var(--fgGreen)' : act === 'REJECT' ? 'var(--fgRedDeep)' : 'var(--fgAmberDeep)',
-      toneBg: act === 'APPROVE' ? 'var(--chipGreenBg)' : act === 'REJECT' ? 'var(--chipRedBg)' : 'var(--chipAmberBg)',
-      toneBd: act === 'APPROVE' ? 'var(--chipGreenBd)' : act === 'REJECT' ? 'var(--chipRedBd)' : 'var(--chipAmberBd)',
+      decisionLine: closed ? 'Closed — voided before a management decision' : waiting ? 'Waiting for a management decision' : (ACT[act] || 'Decided') + ' — ' + this.mgmtName(d.byName || this.nameOf(d.by), d.title || this.acctTitle(d.by)) + (d.atText ? ' · ' + d.atText : ''),
+      decisionNote: !waiting && !closed && d.note ? d.note : '', hasNote: !waiting && !closed && !!d.note,
+      toneIcon: closed ? 'ph ph-lock-simple' : waiting ? 'ph ph-hourglass' : act === 'APPROVE' ? 'ph ph-seal-check' : act === 'REJECT' ? 'ph ph-prohibit' : 'ph ph-question',
+      toneFg: closed ? 'var(--mut)' : act === 'APPROVE' ? 'var(--fgGreen)' : act === 'REJECT' ? 'var(--fgRedDeep)' : 'var(--fgAmberDeep)',
+      toneBg: closed ? 'var(--tint)' : act === 'APPROVE' ? 'var(--chipGreenBg)' : act === 'REJECT' ? 'var(--chipRedBg)' : 'var(--chipAmberBg)',
+      toneBd: closed ? 'var(--line)' : act === 'APPROVE' ? 'var(--chipGreenBd)' : act === 'REJECT' ? 'var(--chipRedBd)' : 'var(--chipAmberBd)',
       log: log, hasLog: log.length > 0,
       canDecide: this.isMgmt(me) && (st === 'ESCALATED' || st === 'MGMT_INFO'),
       approve: () => this.openModal('mgmtApprove', r.id), reject: () => this.openModal('mgmtReject', r.id), info: () => this.openModal('mgmtInfo', r.id),
@@ -673,7 +682,7 @@ const APPROVE_FULL_JS = `  approveFull(id, validated) {
       { to: r.by, text: this.fmt(r.requested) + ' approved for ' + r.company + '. Waiting on the card top-up.' });
     this.logAudit('REQUEST_APPROVED', r.company + ' — ' + this.fmt(r.requested) + (v ? ' · validation ' + v.validationId : '') + (ovr ? ' · management override by ' + by : ''), r.id, r.company);
     this.setState({ zoho: null });
-    this.flash('Approved ' + this.fmt(r.requested) + ' — ' + r.company, () => this.undoTo(before));
+    this.flash('Approved ' + this.fmt(r.requested) + ' — ' + r.company, this.undoable(r) ? () => this.undoTo(before) : null);
   }
 `;
 
@@ -695,8 +704,45 @@ const CREDIT_NOW_JS = `  creditNow(id, validated) {
       { to: r.by, text: this.fmt(amt) + ' credited for ' + r.company + '. You can pay now.' });
     this.logAudit('FUNDS_CREDITED', r.company + ' — ' + this.fmt(amt) + (v ? ' · re-validated ' + v.validationId : '') + (ovr ? ' · management override by ' + by : ''), r.id, r.company);
     this.setState({ zoho: null });
-    this.flash('Credited ' + this.fmt(amt) + ' — ' + r.company, () => this.undoTo(before));
+    this.flash('Credited ' + this.fmt(amt) + ' — ' + r.company, this.undoable(r) ? () => this.undoTo(before) : null);
   }
+`;
+
+// Sven's decisions in the modal (Not approved / Approve a lower amount / Ask for information). Management never
+// gets these — they decide escalations through their own endpoint. A lower amount on a management-approved
+// request skips the Zoho balance gate, like the final approval does.
+const DECIDE_JS = `    if (m.kind === 'decline') {
+      if (this.isMgmt(me) || !this.can('DECLINE_REQUEST')) return this.deny('Declining a request needs the DECLINE_REQUEST permission.');
+      if (!v) return err('A reason is required.');
+      this.apply(m.id, { status: 'DECLINED', approved: 0, notes: v }, me.name + ' did not approve — ' + v,
+        { to: r.by, text: r.company + ' ' + this.fmt(r.requested) + ' not approved: ' + v });
+      this.logAudit('REQUEST_DECLINED', r.company + ' — ' + this.fmt(r.requested) + ' — ' + v, r.id, r.company);
+      return this.flash('Not approved — ' + r.company, null, 'ph ph-prohibit');
+    }
+    if (m.kind === 'partial') {
+      const amt = Number(v), ovr = this.overridden(r), by = ovr ? this.overrideBy(r) : '';
+      if (this.isMgmt(me) || !this.can('PARTIAL_APPROVE_REQUEST')) return this.deny('Partial approval needs the PARTIAL_APPROVE_REQUEST permission.');
+      if (!amt || amt <= 0) return err('Enter an amount.');
+      if (amt > r.requested) return err('Cannot approve more than the requested ' + this.fmt(r.requested) + '.');
+      // management approved the escalation: no Zoho balance needed and no balance cap
+      if (!ovr) {
+        if (typeof r.zohoBalance !== 'number') return err('Run the Zoho check first — no approval without a balance validated in Zoho Analytics.');
+        if (amt > (Number(r.zohoBalance) || 0)) return err('The validated Zoho balance for this client is ' + this.fmt(Number(r.zohoBalance) || 0) + ' — approval cannot exceed it.');
+      }
+      this.apply(m.id, { status: 'APPROVED', approved: amt }, me.name + ' approved ' + this.fmt(amt) + ' of ' + this.fmt(r.requested) + (ovr ? ' — management override by ' + by : ''),
+        { to: r.by, text: this.fmt(amt) + ' of ' + this.fmt(r.requested) + ' approved for ' + r.company + '.' });
+      this.logAudit('REQUEST_PARTIALLY_APPROVED', r.company + ' — ' + this.fmt(amt) + ' of ' + this.fmt(r.requested) + (ovr ? ' · management override by ' + by : ''), r.id, r.company);
+      return this.flash('Approved ' + this.fmt(amt));
+    }
+    if (m.kind === 'info') {
+      if (this.isMgmt(me) || !(this.can('DECLINE_REQUEST') || this.can('APPROVE_REQUEST'))) return this.deny('Asking for information needs the DECLINE_REQUEST or APPROVE_REQUEST permission.');
+      if (!v) return err('Say what you need.');
+      this.apply(m.id, { status: 'ACTION' }, me.name + ' asked for information — ' + v,
+        { to: r.by, text: r.company + ' needs info: ' + v });
+      return this.flash('Sent to ' + this.users()[r.by].name, null, 'ph ph-question');
+    }
+  }
+
 `;
 
 // Board: every status has a tab and a section, for Operations and for finance / management.
@@ -740,13 +786,13 @@ const ACTION_FOR_JS = `    const actionFor = r => {
         : { note: r.by === me.key ? 'Your own request' : 'With Sven' };
       if (r.status === 'ESCALATED') return { note: 'With management' };
       if (r.status === 'MGMT_INFO') return { note: 'Waiting on operations' };
-      if (r.status === 'NEW') return this.canApproveReq(r)
+      if (r.status === 'NEW') return this.canApproveReq(r) && !mgmtMe
         ? { label: 'Check and approve', go: () => this.approveFull(r.id), primary: true }
         : { note: r.by === me.key ? 'Your own request' : 'With finance' };
       if (r.status === 'APPROVED') return this.can('CREDIT_FUNDS')
         ? { label: 'Validate and credit', go: () => this.creditNow(r.id), primary: true }
         : { note: 'Awaiting the credit' };
-      if (r.status === 'CREDITED') return { label: 'Chase invoice', go: () => this.chase(r.id) };
+      if (r.status === 'CREDITED') return { label: 'Chase invoice', go: () => this.openModal('chase', r.id) };
       if (r.status === 'ACTION') return { label: 'Ask again', go: () => this.remind(r.id) };
       return { note: 'Closed' };
     };
@@ -1150,8 +1196,8 @@ export const TEMPLATE_RULES = [
       flagged: !!z.r.flagged,
       flag: () => this.flagForSven(z.r.id, 'client does not have sufficient balance in Zoho Analytics'),
 ` },
-  ["      const bal = this.zohoLookup(r.company);\n      if (!bal.missing && amt > (Number(bal.available) || 0))",
-   "      if (typeof r.zohoBalance !== 'number') return err('Run the Zoho check first — no approval without a balance validated in Zoho Analytics.');\n      const bal = { available: r.zohoBalance };\n      if (amt > (Number(bal.available) || 0))"],
+  // Sven's decisions: management never; a lower amount needs the live balance unless management approved the escalation
+  { start: "    if (m.kind === 'decline') {\n      if (!this.can('DECLINE_REQUEST'))", end: '  post() {', to: DECIDE_JS },
   // approval and credit always need a live Zoho check (the Master Controls toggle can no longer switch it off)
   ["    if (this.state.settings.requireZohoBeforeApprove && !validated) return this.runZoho(id, 'approve');",
    `    if (!validated) return this.runZoho(id, 'approve');\n    if (validated.ok !== true || validated.partialOnly) return this.flash('${INSUFFICIENT}', null, 'ph ph-flag');`],
@@ -1295,6 +1341,14 @@ ${PEEK_MORE}              <div style="display:flex; flex-direction:column; gap:8
   // B5. management override for Sven's final approval and the credit
   { start: '  approveFull(id, validated) {', end: '  approveAvailable(id, amount, v) {', to: APPROVE_FULL_JS },
   { start: '  creditNow(id, validated) {', end: '  markPaid(id) {', to: CREDIT_NOW_JS },
+  ["    this.flash('Approved ' + this.fmt(amt) + ' — the available balance', () => this.undoTo(before));",
+   "    this.flash('Approved ' + this.fmt(amt) + ' — the available balance', this.undoable(r) ? () => this.undoTo(before) : null);"],
+  // 5c. a refused sync write shows the server's reason, then the screen goes back to the server's copy
+  ["          if (o.status === 403) this.flash('The server refused that change — not permitted for your account', null, 'ph ph-prohibit');",
+   "          if (o.status === 403) { this.flash((o.json && o.json.error) || 'The server refused that change — not permitted for your account', null, 'ph ph-prohibit'); this.liveLoad(false); }"],
+  // 6. the automatic check after Send also evaluates the "client already paid us?" answer
+  ["      company: r.company, purpose: r.purpose, requestedAmount: r.requested, zone: r.zone, validationToken:",
+   "      company: r.company, purpose: r.purpose, requestedAmount: r.requested, zone: r.zone, paid: r.paid, validationToken:"],
   // modal kinds: mgmtApprove, mgmtReject, mgmtInfo, mgmtReply, void, chase, restore
   { start: '  openModal(kind, id) {', end: '  confirmModal() {', to: OPEN_MODAL_JS },
   ["    const r = this.reqById(m.id);\n    if (m.kind === 'override') {", CONFIRM_NEW_KINDS + "    const r = this.reqById(m.id);\n    if (m.kind === 'override') {"],
@@ -1318,7 +1372,7 @@ ${PEEK_MORE}              <div style="display:flex; flex-direction:column; gap:8
    "    let detail = { tiles: [], fields: [], docs: [], timeline: [], decisions: [], st: this.statusMeta('NEW'), fin: { checks: [] }, esc: { failed: [], log: [] } };"],
   [NEXT_TEXT_FROM, NEXT_TEXT_TO],
   ["      if (!isOps && (r.status === 'NEW' || r.status === 'ACTION')) {",
-   "      if (!isOps && (r.status === 'NEW' || r.status === 'ACTION' || (r.status === 'MGMT_APPROVED' && !mgmtMe))) {"],
+   "      if (!isOps && !mgmtMe && (r.status === 'NEW' || r.status === 'ACTION' || r.status === 'MGMT_APPROVED')) {"],
   [ST_TAB_FROM, ST_TAB_TO],
   ["    }\n\n    const forced = this.p('layout', 'Auto');",
    "      Object.assign(detail, this.detailExtra(r, me, isOps));\n    }\n\n    const forced = this.p('layout', 'Auto');"],

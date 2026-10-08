@@ -8,18 +8,18 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO = path.resolve(HERE, '..');
-export const SANDBOX = process.env.ONELINK_SANDBOX || '/tmp/claude-0/-home-user-Onelink-server/2fd66c1a-b3d2-5133-86b5-71fcd4fc019d/scratchpad/sandbox';
+// The server under test: the repository itself, or a copy named in ONELINK_SANDBOX (server.js and finance-rules.js are
+// refreshed into the copy before the first run).
+export const SANDBOX = process.env.ONELINK_SANDBOX || REPO;
 export const STUB = path.join(HERE, 'zoho-stub.mjs');
 export const MASTER_PW = 'master-pass-123456';
 export const TEAM_PW = 'team-pass-123';
 export const SECRET = '0123456789abcdef0123456789abcdef0123';
 export const OPS_INSUFFICIENT = 'Client does not have sufficient balance to request funds. Please contact Sven.';
 
-// The author may have fixed things since the last run: refresh server.js + finance-rules.js in the sandbox.
-// client-workflow.js stays the last committed copy already in the sandbox (another agent edits the live one).
 let synced = false;
 export function syncSandbox() {
-  if (synced) return;
+  if (synced || path.resolve(SANDBOX) === REPO) return;
   for (const f of ['server.js', 'finance-rules.js']) fs.copyFileSync(path.join(REPO, f), path.join(SANDBOX, f));
   synced = true;
 }
