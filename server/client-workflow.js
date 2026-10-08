@@ -182,12 +182,14 @@ const GATE_JS = `  verifyClient() {
     this.setState(s => ({ requests: s.requests.filter(r => r.id !== id), route: s.reqId === id ? 'board' : s.route, reqId: s.reqId === id ? null : s.reqId }));
     this.flash(error || 'The server refused this request — nothing was submitted.', null, 'ph ph-prohibit');
   }
-  /* A notification opens its request right inside the Updates panel — the page and tab stay where they are. */
-  peekVals(isOps) {
+  /* A notification opens its request right inside the Updates panel — the page and tab stay where they are.
+     isOps: any Operations user — no balances, no decisions (Master Operations Control included).
+     ownOnly: Operations limited to their own requests (everyone but Master Operations Control). */
+  peekVals(isOps, ownOnly) {
     const s = this.state, back = () => this.setState({ peekId: null, peekMissing: false });
     if (!s.peekId && !s.peekMissing) return { open: false, closed: true };
     const r = s.peekId ? this.reqById(s.peekId) : null;
-    if (!r) return { open: true, closed: false, found: false, missing: true, back: back, missingText: isOps ? 'No access — request not created by you (or it was not submitted).' : 'This request is not on the platform — it was not submitted, or it has been removed.', full: back };
+    if (!r) return { open: true, closed: false, found: false, missing: true, back: back, missingText: ownOnly ? 'No access — request not created by you (or it was not submitted).' : 'This request is not on the platform — it was not submitted, or it has been removed.', full: back };
     const u = this.users()[r.by], me = this.me(), mgmt = this.isMgmt(me), st = r.status;
     const open = !mgmt && (['NEW', 'ACTION'].indexOf(st) >= 0 || st === 'MGMT_APPROVED'); // management decides escalations only
     const mgmtDecide = mgmt && (st === 'ESCALATED' || st === 'MGMT_INFO'), canReply = st === 'MGMT_INFO' && (r.by === me.key || this.isOpsMaster(me));
@@ -497,7 +499,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     };
   }
   detailExtra(r, me, isOps) {
-    const restricted = isOps && !this.isOpsMaster(me), locked = r.status === 'VOID', vd = r.voided || {};
+    const restricted = isOps, locked = r.status === 'VOID', vd = r.voided || {}; // amounts: every Operations user, Master Operations Control too
     const who = vd.byName || (vd.by ? this.nameOf(vd.by) : '');
     const out = {
       editable: !locked, locked: locked,
@@ -541,7 +543,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
   setReset(p) { this.setState(s => ({ reset: Object.assign({}, s.reset, p) })); }
   loadReset() {
     if (!this.isMaster()) return;
-    this.setState(s => ({ reset: Object.assign({ sel: {}, clearNotifs: true, includeHistory: false, reason: '', confirm: '' }, s.reset, { loading: true, error: '' }) }));
+    this.setState(s => ({ reset: Object.assign({ sel: {}, clearNotifs: true, clearLiveLogs: true, includeHistory: false, reason: '', confirm: '' }, s.reset, { loading: true, error: '' }) }));
     this.api('/api/admin/reset/preview').then(o => {
       if (!o.ok || o.json.ok === false) throw new Error(o.json.error || 'HTTP ' + o.status);
       const sel = {};
@@ -553,20 +555,25 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     const st = this.state.reset || {}, live = (st.data && st.data.live) || [];
     return live.filter(x => st.sel && st.sel[x.id]).map(x => x.id);
   }
+  /* Audit entries and chat messages created on the live platform that are not tied to any request. */
+  resetLiveLogs() {
+    const d = (this.state.reset || {}).data, ll = (d && d.liveLogs) || {};
+    return { audit: this.resetCount(ll.audit), chat: this.resetCount(ll.chat) };
+  }
   resetValid() {
-    const st = this.state.reset || {};
+    const st = this.state.reset || {}, ll = this.resetLiveLogs();
     return !!st.data && !st.busy && !!String(st.reason || '').trim() && st.confirm === 'RESET'
-      && (this.resetSelected().length > 0 || !!st.includeHistory || st.clearNotifs !== false);
+      && (this.resetSelected().length > 0 || !!st.includeHistory || st.clearNotifs !== false || (st.clearLiveLogs !== false && ll.audit + ll.chat > 0));
   }
   runReset() {
     const st = this.state.reset;
     if (!st || st.busy) return;
     if (!this.resetValid()) return this.setReset({ error: 'Pick what to remove, give a reason and type RESET to confirm.' });
-    const body = { ids: this.resetSelected(), includeHistory: !!st.includeHistory, clearNotifications: st.clearNotifs !== false, reason: String(st.reason).trim(), confirm: 'RESET' };
+    const body = { ids: this.resetSelected(), includeHistory: !!st.includeHistory, clearNotifications: st.clearNotifs !== false, clearLiveLogs: st.clearLiveLogs !== false, reason: String(st.reason).trim(), confirm: 'RESET' };
     this.setReset({ busy: true, error: '' });
     this.api('/api/admin/reset', { method: 'POST', body: body }).then(o => {
       if (!o.ok || o.json.ok === false) return this.setReset({ busy: false, error: o.json.error || 'The server refused the reset (HTTP ' + o.status + '). Nothing was removed.' });
-      this.setReset({ busy: false, result: o.json, reason: '', confirm: '', includeHistory: false });
+      this.setReset({ busy: false, result: o.json, resultLiveLogs: body.clearLiveLogs, reason: '', confirm: '', includeHistory: false });
       this.flash('Backed up and reset — backup ' + (o.json.backupId || ''), null, 'ph ph-broom');
       this.loadReset();
       this.liveLoad(false);
@@ -575,7 +582,9 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
   resetVals() {
     const st = this.state.reset || {}, d = st.data || null, live = (d && d.live) || [], sel = st.sel || {}, uAll = this.users();
     const histN = d && d.history ? this.resetCount(d.history.requests) : 0, nSel = live.filter(x => sel[x.id]).length;
-    const valid = this.resetValid(), res = st.result || null;
+    const valid = this.resetValid(), res = st.result || null, ll = this.resetLiveLogs();
+    // what the server reports for the live-platform logs, if it does; otherwise what was asked for
+    const resLL = res ? (res.liveLogs || (res.removed && res.removed.liveLogs) || null) : null;
     const tick = on => this.setReset({ sel: live.reduce((a, x) => { a[x.id] = on; return a; }, {}) });
     return {
       intro: 'Removes requests created on the live platform (test data) together with their chat records, notifications and audit entries. A full backup is taken first and can be restored. The March–September history rebuilt from the Alaan Card Invoices group is kept unless you tick the box. Balances are always read live from Zoho Books + Zoho Analytics.',
@@ -594,6 +603,8 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       selLine: nSel + ' of ' + live.length + ' selected',
       selectAll: () => tick(true), selectNone: () => tick(false),
       clearNotifs: st.clearNotifs !== false, toggleNotifs: () => this.setReset({ clearNotifs: st.clearNotifs === false }),
+      clearLiveLogs: st.clearLiveLogs !== false, toggleLiveLogs: () => this.setReset({ clearLiveLogs: st.clearLiveLogs === false }),
+      liveLogsLabel: 'Also remove audit entries and chat messages created on the live platform that are not tied to a request (' + ll.audit + ' audit · ' + ll.chat + ' chat)',
       includeHistory: !!st.includeHistory, toggleHistory: () => this.setReset({ includeHistory: !st.includeHistory }),
       historyLabel: 'Also remove the March–September history (' + histN + ' requests)',
       historyWarn: st.includeHistory ? 'The March–September ledger will be deleted too. It is in the backup, but the board starts empty.' : false,
@@ -606,6 +617,9 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       resultLine: res ? 'Backup ' + (res.backupId || '—') + ' taken, then the reset ran.' : '',
       removedLine: res ? 'Removed: ' + (this.resetCounts(res.removed) || 'nothing') : '',
       keptLine: res ? 'Kept: ' + (this.resetCounts(res.kept) || 'nothing') : '',
+      liveLogsLine: res ? (st.resultLiveLogs === false
+        ? 'Live-platform audit entries and chat messages not tied to a request: kept'
+        : 'Live-platform audit entries and chat messages not tied to a request: removed' + (resLL ? ' (' + this.resetCount(resLL.audit) + ' audit · ' + this.resetCount(resLL.chat) + ' chat)' : '')) : '',
       backups: ((d && d.backups) || []).map(b => ({
         id: b.id, at: b.atText || b.at || '', by: b.by || '—', reason: b.reason || '', counts: this.resetCounts(b.counts),
         restore: () => this.openModal('restore', b.id)
@@ -722,8 +736,8 @@ const CREDIT_NOW_JS = `  creditNow(id, validated) {
 
 // Sven's decisions in the modal (Not approved / Approve a lower amount / Ask for information). Management never
 // gets these — they decide escalations through their own endpoint. A lower amount runs the live server check first
-// and is capped at what can still be approved (net balance); on a management-approved request it skips that gate,
-// like the final approval does.
+// and is capped at what can still be approved (net balance); every financial check other than the CFD balance must
+// pass in that answer. On a management-approved request it skips that gate, like the final approval does.
 const DECIDE_JS = `    if (m.kind === 'decline') {
       if (this.isMgmt(me) || !this.can('DECLINE_REQUEST')) return this.deny('Declining a request needs the DECLINE_REQUEST permission.');
       if (!v) return err('A reason is required.');
@@ -760,6 +774,13 @@ const DECIDE_JS = `    if (m.kind === 'decline') {
         const said = j && (j.notes || j.error);
         if (!j || j.availableBalance === undefined || j.availableBalance === null || !isFinite(avail) || j.clientMatched === false || j.relevancePassed === false || (j.ok === false && j.error))
           return refuse(said || ('The live Zoho check could not complete (' + (j ? 'no balance in the answer' : this.zohoWhy(out && out.why, out && out.status)[0]) + ') — nothing was approved.'));
+        // a lower amount only answers a short CFD balance: every other financial check must pass
+        const fchecks = j.finance && Array.isArray(j.finance.checks) ? j.finance.checks : null;
+        if (!fchecks || !fchecks.length) return refuse('The live answer did not include the financial checks — nothing was approved. Run the check again, or escalate the request to management.');
+        const badChecks = fchecks.filter(c => !c || (c.key !== 'CFD' && c.ok !== true));
+        const cfdShort = fchecks.some(c => c && c.key === 'CFD' && c.ok !== true);
+        if (badChecks.length || (j.reason === 'FINANCIAL_CHECKS_FAILED' && !cfdShort))
+          return refuse('A lower amount cannot be approved — financial checks failed: ' + (badChecks.map(c => (c && (c.label || c.key)) || 'Check').join(', ') || 'see the latest re-check') + '. Only a short Customer Fund Disbursement balance can be answered with a lower amount; this request needs a management escalation (Approve & proceed) instead. Nothing was approved.');
         if (amt > avail) return refuse((said ? said + ' — ' : '') + 'Approval cannot exceed what can still be approved for this client: ' + this.fmt(Math.max(0, avail)) + '.');
         const now = this.reqById(mid);
         if (!now || now.status !== st0) return refuse(mid + ' changed while the balance was checked — nothing was approved.');
@@ -1128,6 +1149,7 @@ const RESET_PANE = `            <sc-if value="{{ master.m_reset }}" hint-placeho
                     <span style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--fgGreen)"><i class="ph ph-check-circle" style="font-size:16px"></i>{{ master.reset.resultLine }}</span>
                     <span style="font-size:12px; color:var(--ink2)">{{ master.reset.removedLine }}</span>
                     <span style="font-size:12px; color:var(--mut)">{{ master.reset.keptLine }}</span>
+                    <span style="font-size:12px; color:var(--mut)">{{ master.reset.liveLogsLine }}</span>
                   </section>
                 </sc-if>
                 <section style="border-radius:18px; background:var(--sf); border:1px solid var(--line); overflow:hidden">
@@ -1163,6 +1185,9 @@ const RESET_PANE = `            <sc-if value="{{ master.m_reset }}" hint-placeho
                   <span style="font-size:11.5px; color:var(--mut3)">{{ master.reset.nowLine }}</span>
                   <label style="display:flex; align-items:center; gap:9px; font-size:12.5px; color:var(--ink2); cursor:pointer">
                     <input type="checkbox" checked="{{ master.reset.clearNotifs }}" sc-camel-on-change="{{ master.reset.toggleNotifs }}" style="accent-color:var(--fgBlue)">Clear every notification
+                  </label>
+                  <label style="display:flex; align-items:center; gap:9px; font-size:12.5px; color:var(--ink2); cursor:pointer">
+                    <input type="checkbox" checked="{{ master.reset.clearLiveLogs }}" sc-camel-on-change="{{ master.reset.toggleLiveLogs }}" style="accent-color:var(--fgBlue)">{{ master.reset.liveLogsLabel }}
                   </label>
                   <label style="display:flex; align-items:center; gap:9px; font-size:12.5px; color:var(--fgRed); cursor:pointer">
                     <input type="checkbox" checked="{{ master.reset.includeHistory }}" sc-camel-on-change="{{ master.reset.toggleHistory }}" style="accent-color:var(--fgRed)">{{ master.reset.historyLabel }}
@@ -1229,12 +1254,12 @@ export const TEMPLATE_RULES = [
   { start: '      const rec = this.zohoLookup(r.company);\n      const avail = rec.missing', end: '    }\n\n    const forced = this.p(\'layout\', \'Auto\');',
     to: `      const known = typeof r.zohoBalance === 'number', avail = known ? r.zohoBalance : 0;
       detail.zeroBalance = openStates.indexOf(r.status) >= 0 && known && avail < r.requested;
-      detail.zeroLine = '${INSUFFICIENT} Requested ' + this.fmt(r.requested) + ' · Zoho Analytics balance ' + this.fmt(avail) + '.';
+      detail.zeroLine = '${INSUFFICIENT} Requested ' + this.fmt(r.requested) + (isOps ? '' : ' · Zoho Analytics balance ' + this.fmt(avail)) + '.';
       detail.flagged = !!r.flagged;
       detail.flag = () => this.flagForSven(r.id, 'client does not have sufficient balance in Zoho Analytics');
       detail.canEscalate = isOps && this.isOpsMaster(me) && ['NEW', 'ACTION', 'APPROVED'].indexOf(r.status) >= 0;
       detail.escalate = () => this.escalate(r.id);
-      detail.balanceLine = known && !(isOps && !this.isOpsMaster(me)) ? 'Zoho Analytics balance ' + this.fmt(avail) + (r.zohoStatus ? ' · ' + r.zohoStatus : '') : r.zohoStatus ? 'Zoho Analytics check · ' + r.zohoStatus : 'Zoho Analytics balance not checked yet';
+      detail.balanceLine = known && !isOps ? 'Zoho Analytics balance ' + this.fmt(avail) + (r.zohoStatus ? ' · ' + r.zohoStatus : '') : r.zohoStatus ? 'Zoho Analytics check · ' + r.zohoStatus : 'Zoho Analytics balance not checked yet';
 ` },
   { start: '    const zeroList = s.requests.filter(', end: '      go: () => this.open(z.r.id)\n    }));',
     to: `    const zeroList = s.requests.filter(x => openStates.indexOf(x.status) >= 0 && typeof x.zohoBalance === 'number' && x.zohoBalance < x.requested)
@@ -1304,9 +1329,11 @@ export const TEMPLATE_RULES = [
   ['<label>Purpose of payment</label>', '<label>Purpose of payment *</label>'],
   ['<label>Amount required (AED)</label>', '<label>Amount required (AED) *</label>'],
   ['            <label>Client already paid us?</label>\n            <sc-raw-select class="input" value="{{ form.paid }}" sc-camel-on-change="{{ onForm.paid }}" style="border-radius:12px">\n              <sc-for list="{{ paidOptions }}" as="p" hint-placeholder-count="4"><option value="{{ p }}">{{ p }}</option></sc-for>\n            </sc-raw-select>',
-   '            <label>Client already paid us? *</label>\n            <sc-raw-select class="input" value="{{ form.paid }}" sc-camel-on-change="{{ onForm.paid }}" style="border-radius:12px; border-color:{{ err.paidBd }}">\n              <option value="">Select…</option>\n              <sc-for list="{{ paidOptions }}" as="p" hint-placeholder-count="4"><option value="{{ p }}">{{ p }}</option></sc-for>\n            </sc-raw-select>\n            <sc-if value="{{ err.paid }}" hint-placeholder-val="{{ false }}">\n              <div style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--fgRed); margin-top:5px"><i class="ph ph-warning-circle" style="font-size:13px"></i>{{ err.paid }}</div>\n            </sc-if>'],
+   '            <label>Client already paid us? (Yes/No) *</label>\n            <sc-raw-select class="input" value="{{ form.paid }}" sc-camel-on-change="{{ onForm.paid }}" style="border-radius:12px; border-color:{{ err.paidBd }}">\n              <option value="">Select…</option>\n              <sc-for list="{{ paidOptions }}" as="p" hint-placeholder-count="2"><option value="{{ p }}">{{ p }}</option></sc-for>\n            </sc-raw-select>\n            <sc-if value="{{ err.paid }}" hint-placeholder-val="{{ false }}">\n              <div style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--fgRed); margin-top:5px"><i class="ph ph-warning-circle" style="font-size:13px"></i>{{ err.paid }}</div>\n            </sc-if>'],
   // "Already paid?" must be chosen; the date starts at today (the export had 17 Sep 2026 frozen in)
   ["paid: 'Yes — in full', date: '2026-09-17', notes: '' };", "paid: '', date: new Date().toISOString().slice(0, 10), notes: '' };"],
+  // the answer is Yes or No (only Yes passes the invoice check); older requests keep and show their legacy wording
+  ["      paidOptions: ['Yes — in full','Yes — partially','No — not yet','Using existing credits'],", "      paidOptions: ['Yes', 'No'],"],
   // live "company → status" toast read statusMeta()[0], which is undefined (statusMeta returns an object)
   ["else if (col === 'requests') this.flash(item.company + ' → ' + this.statusMeta(item.status)[0], null, 'ph ph-arrows-clockwise');",
    "else if (col === 'requests') this.flash(item.company + ' → ' + this.statusMeta(item.status).label, null, 'ph ph-arrows-clockwise');"],
@@ -1332,11 +1359,11 @@ export const TEMPLATE_RULES = [
    "          if (col === 'requests' && o.json && o.json.renamed) this.renameRequest(item.id, o.json.renamed);\n          if (col === 'requests' && o.json && o.json.reject) this.rejectRequest(item.id, o.json.error);"],
   // notifications open the request inline (Updates panel) — no route change, no tab switch
   ["          if (nn.req && this.reqById(nn.req)) this.open(nn.req);\n          else this.go('board', { tab: isOps ? 'tasks' : 'tasks' });",
-   "          this.setState({ peekId: nn.req || null, peekMissing: !(nn.req && this.reqById(nn.req)) });\n          if (nn.req && this.reqById(nn.req)) this.logView(nn.req);"],
+   "          if (!nn.req) return; // nothing to open (password reset, blocked attempt …): marked read, the list stays\n          this.setState({ peekId: nn.req, peekMissing: !this.reqById(nn.req) });\n          if (this.reqById(nn.req)) this.logView(nn.req);"],
   ["      notifOpen: s.notifOpen, toggleNotif: () => this.setState({ notifOpen: !s.notifOpen }),",
    "      notifOpen: s.notifOpen, toggleNotif: () => this.setState({ notifOpen: !s.notifOpen, peekId: null, peekMissing: false }),"],
   ["go: () => this.setState({ userMenu: false, notifOpen: true }) }", "go: () => this.setState({ userMenu: false, notifOpen: true, peekId: null, peekMissing: false }) }"],
-  ["      notifsEmpty: mineNotifs.length === 0,", "      notifsEmpty: mineNotifs.length === 0, peek: this.peekVals(isOps && !this.isOpsMaster(me)),"],
+  ["      notifsEmpty: mineNotifs.length === 0,", "      notifsEmpty: mineNotifs.length === 0, peek: this.peekVals(isOps, isOps && !this.isOpsMaster(me)),"],
   ['        <div style="flex:1; overflow:auto; padding:12px">\n          <sc-for list="{{ notifs }}" as="n" hint-placeholder-count="3">',
    `        <sc-if value="{{ peek.open }}" hint-placeholder-val="{{ false }}">
           <div style="flex:1; overflow:auto; padding:14px 18px 18px; display:flex; flex-direction:column; gap:12px; animation:riseIn .2s ease">

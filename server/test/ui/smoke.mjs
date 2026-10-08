@@ -98,7 +98,7 @@ const seen = new Map();
   c.setState({ requests: [r].concat(c.state.requests), reqId: 'FR-900', route: 'detail', peekId: 'FR-900', masterTab: 'reset', notifOpen: true });
   c.setState({ gate: { name: 'Kenenia LTD', status: 'ok', token: 'vt', clientId: 'c1' }, form: Object.assign(c.blankForm(), { company: 'Kenenia LTD', purpose: 'Renewal', amount: '12520', paid: 'No — not yet' }), formDocs: [] });
   c.setState({ finFail: { failed: r.escalation.failed, finance: finance(false), token: 'esc-tok', allowed: true, error: 'Client does not have sufficient balance to request funds. Please contact Sven.', clientName: 'Kenenia LTD', amount: 12520, open: true, justification: 'short', sendError: 'Write at least 15 characters so management can decide.' } });
-  c.setState({ reset: { data: { ok: true, live: [{ id: 'FR-900', company: 'Kenenia LTD', by: 'maram', byName: 'Maram', status: 'ESCALATED', requested: 12520, date: '7 Oct' }], history: { requests: 268 }, notifications: 40, audit: 120, chat: 300, backups: [{ id: 'BK-1', atText: '06 Oct · 10:00', by: 'Sven', reason: 'test', counts: { requests: 3, chat: 2, notifications: 9, audit: 4 } }] }, sel: { 'FR-900': true }, clearNotifs: true, includeHistory: true, reason: 'x', confirm: 'RESET', result: { ok: true, backupId: 'BK-2', removed: { requests: 1, chat: 0, notifications: 3, audit: 2 }, kept: { requests: 268, chat: 300, notifications: 0, audit: 118 } } } });
+  c.setState({ reset: { data: { ok: true, live: [{ id: 'FR-900', company: 'Kenenia LTD', by: 'maram', byName: 'Maram', status: 'ESCALATED', requested: 12520, date: '7 Oct' }], history: { requests: 268 }, notifications: 40, audit: 120, chat: 300, liveLogs: { audit: 11, chat: 5 }, backups: [{ id: 'BK-1', atText: '06 Oct · 10:00', by: 'Sven', reason: 'test', counts: { requests: 3, chat: 2, notifications: 9, audit: 4 } }] }, sel: { 'FR-900': true }, clearNotifs: true, includeHistory: true, reason: 'x', confirm: 'RESET', result: { ok: true, backupId: 'BK-2', removed: { requests: 1, chat: 0, notifications: 3, audit: 2 }, kept: { requests: 268, chat: 300, notifications: 0, audit: 118 } } } });
   c.openModal('chase', 'FR-900');
   c.setState({ modal: Object.assign({}, c.state.modal, { files: [{ key: 'k1', name: 'inv.pdf', size: 2048, type: 'Invoice', status: 'done', fileId: 'F1' }] }) });
   const vm = c.renderVals();
@@ -121,6 +121,12 @@ const seen = new Map();
   assert.equal(vm.master.m_reset, true);
   assert.equal(vm.master.reset.historyLabel, 'Also remove the March–September history (268 requests)');
   assert.equal(vm.master.reset.disabled, false);
+  assert.equal(vm.master.reset.clearLiveLogs, true, 'live-platform logs: ticked by default');
+  assert.equal(vm.master.reset.liveLogsLabel, 'Also remove audit entries and chat messages created on the live platform that are not tied to a request (11 audit · 5 chat)');
+  assert.equal(vm.master.reset.liveLogsLine, 'Live-platform audit entries and chat messages not tied to a request: removed');
+  assert.deepEqual(vm.paidOptions, ['Yes', 'No']);
+  assert.ok(tpl.includes('<label>Client already paid us? (Yes/No) *</label>'));
+  assert.ok(tpl.includes('<option value="">Select…</option>'));
   assert.ok(vm.master.nav.some(n => n.label === 'Platform reset' && n.icon === 'ph ph-broom'));
   assert.equal(vm.modal.files.length, 1);
   assert.equal(vm.modal.confirmText, 'Send chase');
@@ -232,14 +238,14 @@ const seen = new Map();
 // ── scenario 4: form — precheck fails, escalate, form resets and opens the new request ──
 {
   const c = make('maram');
-  c.setState({ route: 'new', gate: { name: 'Kenenia LTD', status: 'ok', token: 'vt', clientId: 'c1' }, form: Object.assign(c.blankForm(), { company: 'Kenenia LTD', purpose: 'Renewal', amount: '12520', paid: 'No — not yet', date: '2026-10-07' }), formDocs: [{ key: 'f1', name: 'inv.pdf', size: 10, type: 'Invoice', status: 'done', fileId: 'F9' }] });
+  c.setState({ route: 'new', gate: { name: 'Kenenia LTD', status: 'ok', token: 'vt', clientId: 'c1' }, form: Object.assign(c.blankForm(), { company: 'Kenenia LTD', purpose: 'Renewal', amount: '12520', paid: 'No', date: '2026-10-07' }), formDocs: [{ key: 'f1', name: 'inv.pdf', size: 10, type: 'Invoice', status: 'done', fileId: 'F9' }] });
   const realFetch = globalThis.fetch;
   let preBody = null;
   globalThis.fetch = (u, o) => { preBody = JSON.parse(o.body); return Promise.resolve({ status: 422, json: () => Promise.resolve({ ok: false, reason: 'FINANCIAL_CHECKS_FAILED', error: 'Client does not have sufficient balance to request funds. Please contact Sven.', failed: [{ key: 'CFD', label: 'Customer Fund Disbursement account', message: 'Not enough' }], finance: finance(false), escalate: { allowed: true, token: 'esc-tok' } }) }); };
   c.send(true);
   await tick(); await tick(); await tick();
   globalThis.fetch = realFetch;
-  assert.equal(preBody.paid, 'No — not yet', 'precheck sends paid');
+  assert.equal(preBody.paid, 'No', 'precheck sends paid');
   assert.equal(c.state.errors.summary, null, 'the failed-checks panel carries the message, not the summary box');
   assert.equal(c.state.finFail.error, 'Client does not have sufficient balance to request funds. Please contact Sven.');
   let vm = c.renderVals();
@@ -307,7 +313,7 @@ const seen = new Map();
   assert.equal(c.reqById('FR-902').status, 'APPROVED');
   assert.equal(typeof c.lastUndo, 'function', 'a plain approval keeps its Undo');
   // reset: preview → run
-  replies['/api/admin/reset/preview'] = { ok: true, status: 200, json: { ok: true, live: [{ id: 'FR-900', company: 'K', by: 'maram', status: 'CREDITED', requested: 1, date: '7 Oct' }, { id: 'FR-903', company: 'L', by: 'musa', status: 'NEW', requested: 2, date: '7 Oct' }], history: { requests: 268 }, notifications: 5, audit: 6, chat: 7, backups: [] } };
+  replies['/api/admin/reset/preview'] = { ok: true, status: 200, json: { ok: true, live: [{ id: 'FR-900', company: 'K', by: 'maram', status: 'CREDITED', requested: 1, date: '7 Oct' }, { id: 'FR-903', company: 'L', by: 'musa', status: 'NEW', requested: 2, date: '7 Oct' }], history: { requests: 268 }, notifications: 5, audit: 6, chat: 7, liveLogs: { audit: 3, chat: 2 }, backups: [] } };
   c.liveLoad = () => Promise.resolve();
   c.loadReset(); await tick(); await tick();
   let vm = c.renderVals();
@@ -318,13 +324,28 @@ const seen = new Map();
   c.renderVals().master.reset.onConfirm({ target: { value: 'reset' } });
   vm = c.renderVals();
   assert.equal(vm.master.reset.disabled, false);
-  replies['/api/admin/reset'] = { ok: true, status: 200, json: { ok: true, backupId: 'BK-9', removed: { requests: 1, chat: 0, notifications: 5, audit: 2 }, kept: { requests: 268, chat: 7, notifications: 0, audit: 4 } } };
+  assert.equal(vm.master.reset.liveLogsLabel, 'Also remove audit entries and chat messages created on the live platform that are not tied to a request (3 audit · 2 chat)');
+  replies['/api/admin/reset'] = { ok: true, status: 200, json: { ok: true, backupId: 'BK-9', removed: { requests: 1, chat: 0, notifications: 5, audit: 2, liveLogs: { audit: 3, chat: 2 } }, kept: { requests: 268, chat: 7, notifications: 0, audit: 4 } } };
   vm.master.reset.run(); await tick(); await tick();
   const rb = calls.filter(x => x.path === '/api/admin/reset').at(-1).body;
-  assert.deepEqual(rb, { ids: ['FR-900'], includeHistory: false, clearNotifications: true, reason: 'Test data', confirm: 'RESET' });
+  assert.deepEqual(rb, { ids: ['FR-900'], includeHistory: false, clearNotifications: true, clearLiveLogs: true, reason: 'Test data', confirm: 'RESET' });
   vm = c.renderVals();
   resolveAll(markupOf(tpl), vm, seen);
   assert.equal(vm.master.reset.resultLine, 'Backup BK-9 taken, then the reset ran.');
+  assert.equal(vm.master.reset.liveLogsLine, 'Live-platform audit entries and chat messages not tied to a request: removed (3 audit · 2 chat)');
+  // unticked: sent as false and reported as kept
+  await tick(); await tick();
+  vm = c.renderVals();
+  assert.equal(vm.master.reset.clearLiveLogs, true, 'still ticked after the reload');
+  vm.master.reset.toggleLiveLogs();
+  c.renderVals().master.reset.onReason({ target: { value: 'Second pass' } });
+  c.renderVals().master.reset.onConfirm({ target: { value: 'RESET' } });
+  vm = c.renderVals();
+  assert.equal(vm.master.reset.clearLiveLogs, false);
+  replies['/api/admin/reset'] = { ok: true, status: 200, json: { ok: true, backupId: 'BK-10', removed: { requests: 0, chat: 0, notifications: 0, audit: 0 }, kept: { requests: 268, chat: 7, notifications: 0, audit: 4 } } };
+  vm.master.reset.run(); await tick(); await tick();
+  assert.equal(calls.filter(x => x.path === '/api/admin/reset').at(-1).body.clearLiveLogs, false);
+  assert.equal(c.renderVals().master.reset.liveLogsLine, 'Live-platform audit entries and chat messages not tied to a request: kept');
   // restore modal
   c.openModal('restore', 'BK-9');
   c.setState({ modal: Object.assign({}, c.state.modal, { value: 'nope' }) });
@@ -427,7 +448,7 @@ const seen = new Map();
   assert.match(c.state.modal.error, /^The live Zoho check could not complete \(Timed out/);
   assert.equal(c.state.modal.busy, false);
   assert.equal(c.reqById('FR-920').status, 'NEW');
-  zReply = { live: true, status: 200, json: { ok: false, reason: 'INSUFFICIENT_BALANCE', availableBalance: 3000, notes: 'Client does not have sufficient balance for the full amount.', validationId: 'ZV-1' } };
+  zReply = { live: true, status: 200, json: { ok: false, reason: 'INSUFFICIENT_BALANCE', availableBalance: 3000, notes: 'Client does not have sufficient balance for the full amount.', validationId: 'ZV-1', finance: finance(false) } };
   partial('FR-920', '5000'); await tick(); await tick(); await tick();
   assert.equal(c.state.modal.error, 'Client does not have sufficient balance for the full amount. — Approval cannot exceed what can still be approved for this client: ' + c.fmt(3000) + '.');
   assert.equal(c.reqById('FR-920').status, 'NEW');
@@ -440,7 +461,24 @@ const seen = new Map();
   assert.equal(c.reqById('FR-920').status, 'NEW');
   // the old local zohoBalance no longer decides: the live net balance does
   c.setState({ requests: c.state.requests.map(x => x.id === 'FR-920' ? Object.assign({}, x, { zohoBalance: 99999 }) : x) });
+  // the live answer without the financial checks, or with a non-CFD check failing: refused, nothing approved
   zReply = { live: true, status: 200, json: { ok: false, reason: 'INSUFFICIENT_BALANCE', availableBalance: 3000, notes: 'Short.', validationId: 'ZV-2' } };
+  partial('FR-920', '2500'); await tick(); await tick(); await tick();
+  assert.match(c.state.modal.error, /^The live answer did not include the financial checks — nothing was approved\./);
+  assert.equal(c.reqById('FR-920').status, 'NEW');
+  const badInv = finance(false); badInv.checks[2] = Object.assign({}, badInv.checks[2], { ok: false, message: 'Not paid' });
+  zReply = { live: true, status: 200, json: { ok: false, reason: 'FINANCIAL_CHECKS_FAILED', availableBalance: 3000, notes: 'Financial validation failed', validationId: 'ZV-2', finance: badInv } };
+  partial('FR-920', '2500'); await tick(); await tick(); await tick();
+  assert.match(c.state.modal.error, /^A lower amount cannot be approved — financial checks failed: Invoice payment verification\. .*management escalation/);
+  assert.ok(!/Customer Fund Disbursement account,/.test(c.state.modal.error), 'the CFD check is not listed as a blocker');
+  assert.equal(c.reqById('FR-920').status, 'NEW');
+  // FINANCIAL_CHECKS_FAILED although the CFD check passed: some other check is the reason — refused
+  zReply = { live: true, status: 200, json: { ok: false, reason: 'FINANCIAL_CHECKS_FAILED', availableBalance: 30000, notes: 'x', validationId: 'ZV-2', finance: finance(true) } };
+  partial('FR-920', '2500'); await tick(); await tick(); await tick();
+  assert.match(c.state.modal.error, /^A lower amount cannot be approved/);
+  assert.equal(c.reqById('FR-920').status, 'NEW');
+  // only the CFD balance short: capped at the net balance
+  zReply = { live: true, status: 200, json: { ok: false, reason: 'FINANCIAL_CHECKS_FAILED', availableBalance: 3000, notes: 'Short.', validationId: 'ZV-2', finance: finance(false) } };
   partial('FR-920', '4000'); await tick(); await tick(); await tick();
   assert.match(c.state.modal.error, /cannot exceed/);
   partial('FR-920', '2500'); await tick(); await tick(); await tick();
@@ -452,7 +490,7 @@ const seen = new Map();
   // the dialog replaced while the check runs: nothing approved, result reported with a flash
   const p2 = escReq('NEW', { id: 'FR-921', escalation: null });
   c.setState({ requests: [p2].concat(c.state.requests) });
-  c.zohoCall = () => Promise.resolve({ live: true, status: 200, json: { ok: true, availableBalance: 50000, validationId: 'ZV-3' } });
+  c.zohoCall = () => Promise.resolve({ live: true, status: 200, json: { ok: true, availableBalance: 50000, validationId: 'ZV-3', finance: finance(true) } });
   partial('FR-921', '1000');
   c.setState({ modal: null }); c.openModal('chase', 'FR-921');
   await tick(); await tick(); await tick();
@@ -460,7 +498,7 @@ const seen = new Map();
   assert.equal(c.state.modal.kind, 'chase');
   assert.match(c.lastFlash, /^Not approved — the dialog was closed/);
   c.setState({ modal: null });
-  assert.equal(zc, 6, 'override path never calls the live check');
+  assert.equal(zc, 9, 'override path never calls the live check');
 }
 
 // ── scenario 9: CREDITED board action opens the chase modal; refused sync shows the server's reason and reloads; paid in the Zoho payload ──
@@ -657,6 +695,75 @@ const seen = new Map();
   vm = s.renderVals();
   assert.ok(vm.sections.some(sc => sc.title === 'Decide now'));
   assert.equal(vm.homeStats[0].value, s.short(s.state.requests.filter(x => x.status === 'NEW').reduce((a, x) => a + x.requested, 0)));
+}
+
+// ── scenario 14: a notification with no request is marked read and the list stays; a missing request still shows the box ──
+{
+  const c = make('sven');
+  c.setState({ notifOpen: true, notifications: [
+    { id: 'N-1', to: 'sven', text: 'Password reset requested by Maram', at: 'now', read: false, req: '' },
+    { id: 'N-2', to: 'sven', text: 'Blocked — Musa tried to request for Kenenia LTD', at: 'now', read: false },
+    { id: 'N-3', to: 'sven', text: 'FR-999 updated', at: 'now', read: false, req: 'FR-999' }
+  ].concat(c.state.notifications) });
+  let vm = c.renderVals();
+  const pick = text => vm.notifs.find(n => n.text === text);
+  pick('Password reset requested by Maram').go();
+  assert.equal(c.state.notifications.find(n => n.id === 'N-1').read, true);
+  vm = c.renderVals();
+  assert.equal(vm.peek.open, false, 'no peek for a notification without a request');
+  assert.equal(vm.peek.closed, true);
+  assert.equal(c.state.notifOpen, true);
+  pick('Blocked — Musa tried to request for Kenenia LTD').go();
+  vm = c.renderVals();
+  assert.equal(c.state.notifications.find(n => n.id === 'N-2').read, true);
+  assert.equal(vm.peek.open, false);
+  pick('FR-999 updated').go();
+  vm = c.renderVals();
+  assert.equal(vm.peek.open, true);
+  assert.equal(vm.peek.missing, true);
+  assert.equal(vm.peek.missingText, 'This request is not on the platform — it was not submitted, or it has been removed.');
+}
+
+// ── scenario 15: Amina (Master Operations Control) sees every Operations request but never an amount or balance ──
+{
+  const latest = Object.assign(finance(false), { id: 'FV-AAAA0001', atText: '08 Oct · 09:00' });
+  const r = escReq('NEW', { by: 'maram', escalation: null, finance: finance(false), financeLatest: latest, zohoBalance: 3000, zohoStatus: 'Flagged – Sven review' });
+  const c = make('amina');
+  assert.equal(c.isOpsMaster(c.me()), true);
+  c.setState({ requests: [r].concat(c.state.requests), reqId: 'FR-900', route: 'detail', peekId: 'FR-900' });
+  let vm = c.renderVals();
+  resolveAll(markupOf(tpl), vm, seen);
+  assert.equal(vm.peek.found, true, 'Amina still sees requests by other Operations users');
+  assert.equal(vm.peek.canDecide, false, 'no finance decisions for Operations');
+  assert.equal(vm.peek.canReply, false);
+  const z = vm.peek.facts.find(f => f.label === 'Zoho Analytics');
+  assert.equal(z.value, 'Flagged – Sven review', 'no balance in the peek');
+  assert.equal(vm.detail.balanceLine, 'Zoho Analytics check · Flagged – Sven review');
+  assert.ok(!/3,000|balance AED/.test(vm.detail.zeroLine), vm.detail.zeroLine);
+  assert.equal(vm.detail.fin.checks[0].hasDetail, false, 'no check detail for Master Operations Control');
+  assert.equal(vm.detail.finAt.checks[0].hasDetail, false);
+  assert.equal(vm.detail.canEscalate, true, 'she can still act on the request');
+  c.setState({ route: 'board', tab: 'pending' });
+  assert.ok(c.renderVals().sections.flatMap(sc => sc.rows).some(x => x.num === 'FR-900'), 'on her board');
+  // a request missing for her is "not on the platform", not "no access"
+  c.setState({ peekId: 'FR-0X404', peekMissing: true });
+  assert.equal(c.renderVals().peek.missingText, 'This request is not on the platform — it was not submitted, or it has been removed.');
+  // restricted Operations keep the "no access" wording
+  const m = make('maram');
+  m.setState({ peekId: 'FR-0X404', peekMissing: true });
+  assert.equal(m.renderVals().peek.missingText, 'No access — request not created by you (or it was not submitted).');
+  // Sven still sees the balance
+  const s2 = make('sven');
+  s2.setState({ requests: [r].concat(s2.state.requests), reqId: 'FR-900', route: 'detail', peekId: 'FR-900' });
+  vm = s2.renderVals();
+  assert.match(vm.detail.balanceLine, /^Zoho Analytics balance /);
+  assert.ok(/balance/.test(vm.peek.facts.find(f => f.label === 'Zoho Analytics').value));
+  // a legacy "already paid?" answer on an old request is still shown as it was saved
+  const old = escReq('PAID', { id: 'FR-950', escalation: null, paid: 'Using existing credits' });
+  s2.setState({ requests: [old].concat(s2.state.requests), reqId: 'FR-950', peekId: 'FR-950' });
+  vm = s2.renderVals();
+  assert.ok(vm.detail.fields.some(f => f.value === 'Using existing credits'));
+  assert.ok(vm.peek.facts.some(f => f.label === 'Client already paid us?' && f.value === 'Using existing credits'));
 }
 
 const bad = [...seen].filter(([, s]) => s !== 'ok');

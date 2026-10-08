@@ -111,7 +111,7 @@ try {
   const ops = await session('maram', 'team-pass-123');
 
   await step('Operations: client passing all three checks is sent as Pending Sven Approval with the checks on it', async () => {
-    await newRequest(ops.page, { client: 'Alpha Trading LLC', purpose: 'Licence renewal', amount: 12000, paid: 'Yes — in full' });
+    await newRequest(ops.page, { client: 'Alpha Trading LLC', purpose: 'Licence renewal', amount: 12000, paid: 'Yes' });
     await ops.page.getByText('Financial validation', { exact: true }).first().waitFor({ timeout: 15000 });
     await ops.page.getByText('All three checks passed', { exact: false }).first().waitFor({ timeout: 10000 });
     expect(await ops.page.getByText('Pending Sven Approval').count() > 0, 'status label missing');
@@ -120,7 +120,7 @@ try {
   });
 
   await step('Operations: failing client is blocked with the failed checks and can escalate with a justification', async () => {
-    await newRequest(ops.page, { client: 'Beta Holdings FZE', purpose: 'Visa fines', amount: 4000, paid: 'Yes — in full' });
+    await newRequest(ops.page, { client: 'Beta Holdings FZE', purpose: 'Visa fines', amount: 4000, paid: 'Yes' });
     await ops.page.getByText('Client does not have sufficient balance to request funds. Please contact Sven.').first().waitFor({ timeout: 15000 });
     expect(await ops.page.getByText('Invoice payment verification').count() > 0, 'invoice check not listed');
     const body = await ops.page.locator('body').innerText();

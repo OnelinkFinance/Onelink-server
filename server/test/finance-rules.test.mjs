@@ -14,7 +14,7 @@ const good = () => ({
   open: [],
   pay: { payments: 2, received: 30000, unapplied: 0, refunded: 0, last: '07 Oct 2026' }
 });
-const run = patch => evaluateFinance({ ...good(), ...patch });
+const run = patch => evaluateFinance({ inv: { invoices: 1, invoiced: 30000, outstanding: 0, writtenOff: 0, paid: 30000, credited: 0 }, ...good(), ...patch });
 // The live Books contact decides whether anything is owed; a test with open invoices gives it a matching receivable.
 const owing = n => ({ books: { contactId: '1', contactName: 'Alpha', status: 'active', outstanding: n } });
 const chk = (f, key) => f.checks.find(c => c.key === key);
@@ -200,6 +200,18 @@ describe('C — invoices', () => {
     const f = run({ open: [{ invoice: 'INV-1', balance: 750, status: 'Overdue' }] }); // good() has outstanding 0 live
     assert.equal(chk(f, 'INVOICES').ok, true);
     assert.equal(itm(f, 'INVOICES', 'No outstanding dues').text, 'No unpaid or overdue invoices');
+  });
+  test('invoices marked paid without a matching payment or credit note → INVOICE_PAYMENT_MISMATCH', () => {
+    const inv = { invoices: 2, invoiced: 10000, outstanding: 0, writtenOff: 0, paid: 5000, credited: 0 };
+    const f = run({ inv });
+    assert.equal(chk(f, 'COGS').code, 'INVOICE_PAYMENT_MISMATCH');
+    assert.equal(chk(f, 'COGS').message, 'Invoices are marked paid without a matching payment in Zoho Books.');
+    assert.match(itm(f, 'COGS', 'Invoices match payments').detail, /unmatched AED 5,000\.00/);
+    assert.equal(chk(run({ inv: { ...inv, credited: 5000 } }), 'COGS').ok, true);          // a credit note covers it
+    assert.equal(chk(run({ inv: { ...inv, outstanding: 5000 } }), 'COGS').ok, true);       // still open → a due, not a mismatch
+    assert.equal(chk(run({ inv: { ...inv, writtenOff: 4999.5 } }), 'COGS').ok, true);      // within AED 1
+    assert.equal(chk(run({ inv: null }), 'COGS').ok, false);                               // could not be read → not passed
+    assert.equal(itm(run({ inv: { invoices: 0, invoiced: 0, outstanding: 0, writtenOff: 0, paid: 0, credited: 0 } }), 'COGS', 'Invoices match payments').text, 'No invoices for this client yet');
   });
   test('a contact in a duplicate group: invoices of the other contacts count even when its own receivable is 0', () => {
     const open = [{ invoice: 'INV-5002', balance: 4200, status: 'Overdue' }];

@@ -207,6 +207,65 @@ test('a new request under the number of the same user\'s escalation gets a new n
   assert.equal((await snap('sven')).requests.filter(r => r.zohoClientId === C.hotel.id).length, 1);
 });
 
+test('invoices marked paid without a matching payment fail the COGS check (Operations see no amounts)', async () => {
+  const p = await precheck('maram', C.victor);
+  assert.equal(p.status, 422);
+  const cogs = p.json.finance.checks.find(c => c.key === 'COGS');
+  assert.equal(cogs.ok, false);
+  assert.equal(cogs.code, 'INVOICE_PAYMENT_MISMATCH');
+  assert.doesNotMatch(JSON.stringify(p.json), /AED/);
+});
+
+test('an open request from the history locks its client by exact Books name', async () => {
+  const open = (await snap('sven')).requests.find(r => !r.zohoClientId && ['NEW', 'ACTION'].includes(r.status));
+  assert.ok(open, 'the ledger has open history requests');
+  const r = await api('maram', 'POST', '/api/zoho/validate-client', { contactId: C.whiskey.id });
+  assert.equal(r.status, 409, JSON.stringify(r.json));
+  assert.equal(r.json.pendingId, C.whiskey.pending);
+});
+
+test('browser-written audit rows and notifications carry the real author; Operations notify only finance', async () => {
+  await api('maram', 'POST', '/api/sync/put', { col: 'audit', item: { id: 'forged-a1', user: 'Sven', userId: 'sven', dept: 'FINANCE', action: 'REQUEST_APPROVED', detail: 'forged', by: 'server' } });
+  const a = (await snap('sven')).audit.find(x => x.id === 'forged-a1');
+  assert.equal(a.user, 'Maram'); assert.equal(a.userId, 'maram'); assert.equal(a.by, 'browser');
+  await api('maram', 'POST', '/api/sync/put', { col: 'notifications', item: { id: 'forged-n1', to: 'sven', text: 'Management approved — your final approval is needed.', read: false } });
+  const n = (await snap('sven')).notifications.find(x => x.id === 'forged-n1');
+  assert.match(n.text, /^Maram: /);
+  assert.equal((await api('maram', 'POST', '/api/sync/put', { col: 'notifications', item: { id: 'forged-n2', to: 'anastasiya', text: 'hi', read: false } })).status, 403);
+});
+
+test('an oversized or deeply nested entry is refused and the server keeps running', async () => {
+  let deep = []; for (let i = 0; i < 50; i++) deep = [deep];
+  const r = await api('maram', 'POST', '/api/sync/put', { col: 'chat', item: { id: 'deep-1', who: 'maram', kind: 'msg', text: 'hi', x: deep } });
+  assert.equal(r.status, 413);
+  await new Promise(res => setTimeout(res, 400));
+  assert.ok(srv.alive(), 'server still running');
+});
+
+test('an uploaded file is never served as a page', async () => {
+  const up = await api('maram', 'POST', '/api/files', { name: 'invoice.pdf', mime: 'text/html', data: Buffer.from('<script>alert(1)</script>').toString('base64') });
+  assert.equal(up.status, 200);
+  const r = await fetch(srv.base + '/api/files/' + up.json.id, { headers: { Authorization: 'Bearer ' + T.maram } });
+  assert.equal(r.headers.get('content-type'), 'application/octet-stream');
+  assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+  assert.match(r.headers.get('content-disposition'), /^attachment/);
+});
+
+test('crediting records the time and ledger baseline once; an undo of "paid" does not reset them', async () => {
+  const id = await submit('maram', C.xray, 'FR-9420');
+  let r = await reqOf('sven', id);
+  assert.equal((await put('sven', { ...r, status: 'APPROVED', approved: 5000 })).status, 200);
+  r = await reqOf('sven', id);
+  assert.equal((await put('sven', { ...r, status: 'CREDITED', credited: 5000 })).status, 200);
+  const credited = await reqOf('sven', id);
+  assert.ok(credited.creditedAt);
+  assert.equal(typeof credited.ledgerDebitsAtCredit, 'number');
+  assert.equal((await put('maram', { ...(await reqOf('maram', id)), status: 'PAID' })).status, 200);
+  await new Promise(res => setTimeout(res, 20));
+  assert.equal((await put('sven', { ...(await reqOf('sven', id)), status: 'CREDITED' })).status, 200);
+  assert.equal((await reqOf('sven', id)).creditedAt, credited.creditedAt);
+});
+
 test('restore keeps a backup of what it replaces and never reissues request numbers', async () => {
   const pre = (await api('sven', 'GET', '/api/admin/reset/preview')).json;
   const r = await api('sven', 'POST', '/api/admin/reset', { ids: pre.live.map(x => x.id), clearNotifications: false, reason: 'test reset', confirm: 'RESET' });

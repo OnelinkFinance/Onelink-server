@@ -10,6 +10,8 @@
 //   split:    [{ Customer, Account, Credits, Debits, Lines, Untagged, 'Last debit' }],
 //   invoices: [{ Customer, Invoice, Status, Due, Total, Balance }],
 //   payments: [{ Customer, Payments, Received, Unapplied, Refunded, Last }],
+//   settlement: [{ Customer, Invoices, Invoiced, Outstanding, 'Written off', Paid, Credited }],
+//   aliases:  [{ Source, Canonical }],
 //   fail:     { books?: <status>, analytics?: <status> }   // optional: force an HTTP error
 // }
 // Every request is appended (one JSON line) to env ZOHO_STUB_LOG when set.
@@ -20,7 +22,9 @@ const HEAD = {
   balances: ['Resolved Customer ID', 'Resolved Customer Name', 'Credits AED', 'Debits AED', 'Balance AED', 'Balance Status', 'Balance Alert'],
   split: ['Customer', 'Account', 'Credits', 'Debits', 'Lines', 'Untagged', 'Last debit'],
   invoices: ['Customer', 'Invoice', 'Status', 'Due', 'Total', 'Balance'],
-  payments: ['Customer', 'Payments', 'Received', 'Unapplied', 'Refunded', 'Last']
+  payments: ['Customer', 'Payments', 'Received', 'Unapplied', 'Refunded', 'Last'],
+  settlement: ['Customer', 'Invoices', 'Invoiced', 'Outstanding', 'Written off', 'Paid', 'Credited'],
+  aliases: ['Source', 'Canonical']
 };
 const fixture = () => {
   const f = process.env.ZOHO_STUB_FIXTURE;
@@ -36,6 +40,8 @@ const text = (body, status = 200) => new Response(body, { status, headers: { 'Co
 const jobs = new Map(); // jobId -> kind
 let seq = 1;
 function kindOf(sql) {
+  if (sql.includes('AS "Source"')) return 'aliases';                 // the alias table on its own
+  if (sql.includes('"Invoice Payments"')) return 'settlement';       // invoice settlement (before the plain invoice list)
   if (sql.includes('CFD Customer Balances')) return 'balances';
   if (sql.includes('CFD Customer Resolved')) return 'split';
   if (sql.includes('"Invoices"')) return 'invoices';

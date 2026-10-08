@@ -144,7 +144,7 @@ test('b. one open request per client: precheck / validate / escalate → 409', a
   const p1 = await precheck('maram', C.mike), p2 = await precheck('maram', C.mike);
   assert.equal(p1.status, 422); assert.equal(p2.status, 422);
   const body = t => ({ escalateToken: t, clientName: C.mike.name, justification: 'Client paid in cash at the office today.',
-    request: { company: 'Mike FZCO', person: C.mike.name, purpose: 'Visa', zone: 'IFZA', requested: 5000, paid: PAID, date: '8 Oct', notes: '', docs: [] } });
+    request: { company: C.mike.name + ' FZCO', person: C.mike.name, purpose: 'Visa', zone: 'IFZA', requested: 5000, paid: PAID, date: '8 Oct', notes: '', docs: [] } });
   const e1 = await api('maram', 'POST', '/api/requests/escalate', body(p1.json.escalate.token));
   assert.equal(e1.status, 200, JSON.stringify(e1.json));
   const e2 = await api('maram', 'POST', '/api/requests/escalate', body(p2.json.escalate.token));
@@ -161,7 +161,7 @@ test('b. one open request per client: precheck / validate / escalate → 409', a
 let ESC1; // Kilo, escalated by maram
 test('c. escalation: create, notifications, justification, single use, token kinds', async () => {
   const p = await precheck('maram', C.kilo);
-  const req = { company: 'Kilo FZCO', person: C.kilo.name, purpose: 'Visa renewal', zone: 'IFZA', requested: 5000, paid: PAID, date: '8 Oct', notes: 'urgent', docs: [] };
+  const req = { company: C.kilo.name + ' FZCO', person: C.kilo.name, purpose: 'Visa renewal', zone: 'IFZA', requested: 5000, paid: PAID, date: '8 Oct', notes: 'urgent', docs: [] };
   const short = await api('maram', 'POST', '/api/requests/escalate', { escalateToken: p.json.escalate.token, clientName: C.kilo.name, justification: 'too short', request: req });
   assert.equal(short.status, 422);
   const changed = await api('maram', 'POST', '/api/requests/escalate', { escalateToken: p.json.escalate.token, clientName: C.kilo.name, justification: 'Client paid by bank transfer yesterday.', request: { ...req, requested: 9000 } });
@@ -424,17 +424,16 @@ test('k3. a restricted Operations user cannot run a funding check against someon
 });
 
 // ---------- h. Amina ----------
-test('h. Amina (Master Operations Control): sees all ops requests and balances, cannot decide or void', async () => {
+test('h. Amina (Master Operations Control): sees all ops requests but — as Operations — no balances; cannot decide or void', async () => {
   const s = await snap('amina');
   const ids = s.requests.map(r => r.id);
   for (const id of [FR1, FR_B, ESC1]) assert.ok(ids.includes(id), id);
   const fr1 = s.requests.find(r => r.id === FR1);
-  assert.equal(fr1.zohoBalance, 50000, 'balance visible');
-  assert.ok(findKeys(fr1.finance, 'detail').length > 0, 'finance details visible');
-  const bal = await api('amina', 'GET', `/api/zoho/client-balance?contactId=${C.bravo.id}`);
-  assert.equal(bal.status, 200);
-  assert.equal(bal.json.balance.available, 50000);
+  assert.equal(fr1.zohoBalance, undefined, 'no balance for Operations');
+  assert.deepEqual(findKeys(fr1.finance, 'detail'), [], 'no finance figures for Operations');
+  assert.equal((await api('amina', 'GET', `/api/zoho/client-balance?contactId=${C.bravo.id}`)).status, 403);
   assert.equal((await api('maram', 'GET', `/api/zoho/client-balance?contactId=${C.bravo.id}`)).status, 403);
+  assert.ok((await snap('sven')).requests.find(r => r.id === FR1).zohoBalance === 50000, 'Sven still sees it');
   const mikeId = (await snap('sven')).requests.find(r => r.zohoClientId === C.mike.id && r.status === 'ESCALATED').id;
   assert.equal((await decide('amina', mikeId, 'APPROVE')).status, 403);
   assert.equal((await api('amina', 'POST', `/api/requests/${mikeId}/void`, { reason: 'Not allowed to void' })).status, 403);

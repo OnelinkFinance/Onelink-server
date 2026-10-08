@@ -10,11 +10,13 @@
 //      payments are applied to the invoices, no invoice is unpaid or overdue, and no payment was refunded
 //      while dues are still open. A deleted or reversed payment re-opens its invoice, so it shows up as a due.
 //
+//      B also requires every settled invoice to be covered by a payment or credit note (no invoice/payment mismatch).
 // Every check and item carries `message` / `text` that is safe to show Operations (no amounts), and `detail`
 // with the figures, which the server strips before anything reaches a restricted Operations user.
 
 export const CHECKS = { CFD: 'Customer Fund Disbursement account', COGS: 'Cost of Goods Sold account', INVOICES: 'Invoice payment verification' };
-export const PAID_OK = ['Yes — in full', 'Using existing credits'];
+// 'Client already paid us?' is Yes / No; the older answers on requests from before count as Yes.
+export const PAID_OK = ['Yes', 'Yes — in full', 'Using existing credits'];
 export const OPS_INSUFFICIENT = 'Client does not have sufficient balance to request funds. Please contact Sven.';
 const EPS = 0.005;
 
@@ -32,7 +34,8 @@ const item = (label, ok, text, detail) => (detail ? { label, ok, text, detail } 
 //            ledger — it comes off the CFD balance, so two requests cannot both be approved against the same funds.
 // grouped: the contact is one of several Books contacts folded onto one client — its own live receivable does not
 //          cover the others' invoices, so the Analytics list counts too.
-export function evaluateFinance({ amount, paid, books, rec, split, open, pay, committed, grouped }) {
+// inv:   the client's invoice settlement { invoices, invoiced, outstanding, writtenOff, paid, credited } — null = could not be read
+export function evaluateFinance({ amount, paid, books, rec, split, open, pay, committed, grouped, inv }) {
   amount = n0(amount);
   const held = committed ? n0(committed.amount) : 0, heldN = committed ? n0(committed.count) : 0;
   const cfd = (split && split.cfd) || { credits: 0, debits: 0, lines: 0, untagged: 0 };
@@ -64,11 +67,18 @@ export function evaluateFinance({ amount, paid, books, rec, split, open, pay, co
       item('Client payment received', received > EPS, received > EPS ? 'Client funds received into the CFD account' : 'No client payment recorded in the CFD account', `Received ${aed(received)}`),
       item('Costs booked to COGS are covered', cogsNet <= received + EPS, cogsNet <= received + EPS ? 'Covered by what the client paid' : 'Costs booked to COGS exceed what the client paid', `COGS ${aed(cogsNet)} against ${aed(received)} received`),
       item('Entries mapped to the client in Zoho Books', untagged === 0, untagged === 0 ? 'Every CFD and COGS entry is tagged to this client' : plural(untagged, 'entry is', 'entries are') + ' matched only by reference — not tagged to the client in Zoho Books'),
+      // Invoices marked paid must be covered by payments or credit notes applied to them (write-offs and open balances aside).
+      (() => {
+        if (!inv) return item('Invoices match payments', false, 'Invoice settlement could not be read from Zoho Analytics');
+        const settled = n0(inv.invoiced) - n0(inv.outstanding) - n0(inv.writtenOff), covered = n0(inv.paid) + n0(inv.credited), gap = settled - covered;
+        return item('Invoices match payments', gap <= 1, !n0(inv.invoices) ? 'No invoices for this client yet' : gap <= 1 ? 'Every settled invoice has a matching payment or credit note' : 'Invoices are marked paid without a matching payment in Zoho Books',
+          `Settled ${aed(settled)} · payments ${aed(inv.paid)} · credit notes ${aed(inv.credited)}` + (gap > 1 ? ` · unmatched ${aed(gap)}` : ''));
+      })(),
       item('No negative-balance alert', !(rec && rec.alert), rec && rec.alert ? 'Zoho Analytics flags a negative balance for this client' : 'No alert in Zoho Analytics', rec && rec.alert ? String(rec.alert) : ''),
       item('COGS entries on file', true, n0(cogs.lines) ? plural(n0(cogs.lines), 'COGS entry', 'COGS entries') + ' for this client' : 'No COGS entry yet — first disbursement for this client')
     ];
     const ok = items.every(i => i.ok);
-    const code = !items[0].ok ? 'COGS_NO_PAYMENT' : !items[1].ok ? 'COGS_EXCEEDS_PAYMENTS' : !items[2].ok ? 'COGS_UNMAPPED' : !items[3].ok ? 'COGS_ALERT' : 'COGS_OK';
+    const code = !items[0].ok ? 'COGS_NO_PAYMENT' : !items[1].ok ? 'COGS_EXCEEDS_PAYMENTS' : !items[2].ok ? 'COGS_UNMAPPED' : !items[3].ok ? 'INVOICE_PAYMENT_MISMATCH' : !items[4].ok ? 'COGS_ALERT' : 'COGS_OK';
     checks.push({ key: 'COGS', label: CHECKS.COGS, ok, code,
       message: ok ? 'Client payment received and the costs booked to COGS are covered.' : items.find(i => !i.ok).text + '.',
       detail: `CFD credits ${aed(cfd.credits)}, debits ${aed(cfd.debits)} · COGS debits ${aed(cogs.debits)}, credits ${aed(cogs.credits)}.`, items });
