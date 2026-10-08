@@ -181,6 +181,17 @@ try {
     await shot(svenUI.page, '5-sven-approved');
   }).catch(async e => { await shot(svenUI.page, 'sven-final'); throw e; });
 
+  await step('Sven: "Check and approve" runs the live check on the stored request and approves the full amount', async () => {
+    await palette(svenUI.page, 'View pending approvals');
+    await svenUI.page.getByText('Alpha Trading LLC').first().click();
+    await svenUI.page.getByRole('button', { name: 'Check and approve' }).first().click();
+    await svenUI.page.getByRole('button', { name: 'Approve the full amount' }).first().click({ timeout: 20000 });
+    await svenUI.page.waitForTimeout(1200);
+    const r = (await api(tSven, '/api/sync/snapshot')).json.requests.find(x => x.zohoClientId === ALPHA);
+    expect(r.status === 'APPROVED', 'expected APPROVED, got ' + r.status);
+    expect(r.financeLatest && r.financeLatest.ok === true, 'the re-check is not kept on the request');
+  }).catch(async e => { await shot(svenUI.page, 'sven-check-approve'); throw e; });
+
   await step('Sven: chase invoice with a file from the request page', async () => {
     await palette(svenUI.page, 'View pending approvals');
     await svenUI.page.getByText('Alpha Trading LLC').first().click();

@@ -5,7 +5,8 @@ export const COGS = '7050654000000034003';
 
 const PASS = {
   '2001': 'Alpha Pass One', '2002': 'Bravo Pass Two', '2003': 'Charlie Pass Three', '2004': 'Delta Pass Four',
-  '2005': 'Echo Pass Five', '2006': 'Foxtrot Pass Six', '2007': 'Golf Pass Seven', '2008': 'Hotel Pass Eight'
+  '2005': 'Echo Pass Five', '2006': 'Foxtrot Pass Six', '2007': 'Golf Pass Seven', '2008': 'Hotel Pass Eight',
+  '2009': 'India Pass Nine', '2010': 'Juliet Pass Ten', '2011': 'Uniform Pass Eleven'
 };
 // CFD fails (balance below the amount used in the tests, 5000). Compact currency on purpose: 'AED 1.2K' = 1200.
 const LOW = { '3001': 'Kilo Low Balance', '3002': 'Lima Low Balance', '3003': 'Mike Low Balance', '3004': 'November Low Balance', '3008': 'Sierra Low Balance' };

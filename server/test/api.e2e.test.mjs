@@ -391,13 +391,11 @@ test('k. client-funding-check: passing request ok + finance; failing client → 
   assert.ok(!('zohoBalance' in mine), 'ops copy has no zohoBalance');
   assert.equal((await reqOf('sven', FR1)).zohoBalance, 50000);
 
+  // Operations cannot run a free-form check (no submitted request): it would let them probe a balance amount by amount.
   const o = await pick('maram', C.oscar);
   const f = await api('maram', 'POST', '/api/zoho/client-funding-check', { validationToken: o.token, clientName: o.clientName, company: 'Oscar', purpose: 'Visa', requestedAmount: 5000, paid: PAID });
-  assert.equal(f.status, 200);
-  assert.equal(f.json.ok, false);
-  assert.equal(f.json.reason, 'FINANCIAL_CHECKS_FAILED');
-  assert.doesNotMatch(f.json.notes, /AED|\d{1,3}(,\d{3})+/);
-  assert.match(f.json.notes, /Cost of Goods Sold account check failed/);
+  assert.equal(f.status, 409);
+  assert.equal(f.json.reason, 'REQUEST_NOT_FOUND');
   assert.doesNotMatch(JSON.stringify(f.json), /AED/);
   const fs_ = await api('sven', 'POST', '/api/zoho/client-funding-check', { validationToken: (await pick('sven', C.oscar)).token, clientName: C.oscar.name, company: 'Oscar', purpose: 'Visa', requestedAmount: 5000, paid: PAID });
   assert.equal(fs_.json.reason, 'FINANCIAL_CHECKS_FAILED');

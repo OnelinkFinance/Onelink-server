@@ -7,7 +7,7 @@
 // {
 //   contacts: [{ contact_id, contact_name, company_name, status, outstanding_receivable_amount }],
 //   balances: [{ "Resolved Customer ID", "Resolved Customer Name", "Credits AED", "Debits AED", "Balance AED", "Balance Status", "Balance Alert" }],
-//   split:    [{ Customer, Account, Credits, Debits, Lines, Untagged }],
+//   split:    [{ Customer, Account, Credits, Debits, Lines, Untagged, 'Last debit' }],
 //   invoices: [{ Customer, Invoice, Status, Due, Total, Balance }],
 //   payments: [{ Customer, Payments, Received, Unapplied, Refunded, Last }],
 //   fail:     { books?: <status>, analytics?: <status> }   // optional: force an HTTP error
@@ -18,7 +18,7 @@ import fs from 'node:fs';
 const realFetch = globalThis.fetch;
 const HEAD = {
   balances: ['Resolved Customer ID', 'Resolved Customer Name', 'Credits AED', 'Debits AED', 'Balance AED', 'Balance Status', 'Balance Alert'],
-  split: ['Customer', 'Account', 'Credits', 'Debits', 'Lines', 'Untagged'],
+  split: ['Customer', 'Account', 'Credits', 'Debits', 'Lines', 'Untagged', 'Last debit'],
   invoices: ['Customer', 'Invoice', 'Status', 'Due', 'Total', 'Balance'],
   payments: ['Customer', 'Payments', 'Received', 'Unapplied', 'Refunded', 'Last']
 };

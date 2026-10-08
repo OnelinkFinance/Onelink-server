@@ -69,12 +69,52 @@ test('a funding check on a stored request uses that request\'s own client and am
   const id = await submit('maram', C.alpha, 'FR-9401');
   const other = await pick('maram', C.bravo);
   const mism = await api('maram', 'POST', '/api/zoho/client-funding-check', { requestId: id, clientName: other.clientName, validationToken: other.token, company: 'x', purpose: 'y', requestedAmount: 10 });
-  assert.equal(mism.status, 409);
-  assert.equal(mism.json.reason, 'CLIENT_MISMATCH');
+  assert.equal(mism.status, 200, 'a stored request is checked against its own client, whatever token is sent');
+  assert.equal(mism.json.clientId, C.alpha.id);
+  assert.equal(mism.json.requestedAmount, 5000);
   const own = await pick('sven', C.alpha);
   const ok = await api('sven', 'POST', '/api/zoho/client-funding-check', { requestId: id, clientName: own.clientName, validationToken: own.token, company: 'x', purpose: 'y', requestedAmount: 1 });
   assert.equal(ok.status, 200);
   assert.equal(ok.json.requestedAmount, 5000, 'the stored amount is checked, not the one sent');
+});
+
+test('Sven can check a stored request without a (30-minute) pick token', async () => {
+  const id = await submit('maram', C.india, 'FR-9410');
+  const r = await api('sven', 'POST', '/api/zoho/client-funding-check', { requestId: id, clientName: C.india.name, validationToken: 'expired.token', company: 'x', purpose: 'y', requestedAmount: 5000 });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.equal(r.json.clientId, C.india.id);
+});
+
+test('a re-check (financeLatest) reaches restricted Operations without figures', async () => {
+  const id = await submit('maram', C.juliet, 'FR-9411');
+  const v = await api('sven', 'POST', '/api/zoho/client-funding-check', { requestId: id, clientName: C.juliet.name, company: 'x', purpose: 'y', requestedAmount: 5000 });
+  assert.equal(v.status, 200);
+  const mine = await reqOf('maram', id);
+  assert.ok(mine.financeLatest, 'maram sees that a re-check ran');
+  const text = JSON.stringify(mine);
+  assert.doesNotMatch(text, /"detail"/);
+  assert.doesNotMatch(text, /AED [\d,]+\.\d\d/);
+  assert.match(JSON.stringify((await reqOf('sven', id)).financeLatest), /"detail"/);
+});
+
+test('Operations cannot rewrite or delete stored history lines, change "already paid", or clear the flag', async () => {
+  const id = await submit('maram', C.uniform, 'FR-9412');
+  const r = await reqOf('maram', id);
+  const w = await put('maram', { ...r, paid: 'No — not yet', flagged: false, zohoStatus: 'Pending Sven Approval', timeline: [{ at: '8 Oct · 11:00', text: 'Maram: forged line' }] });
+  assert.equal(w.status, 200);
+  const after = await reqOf('sven', id);
+  assert.equal(after.paid, PAID);
+  assert.equal(after.zohoStatus, undefined);
+  for (const t of r.timeline) assert.ok(after.timeline.some(x => x.at === t.at && x.text === t.text), 'lost: ' + t.text);
+  assert.equal(after.timeline[after.timeline.length - 1].text, 'Maram: forged line', 'new lines are appended after the stored ones');
+});
+
+test('a restricted user cannot probe a balance with many different amounts', async () => {
+  let last;
+  for (const amount of [100, 200, 300, 400, 500, 600, 700]) last = await precheck('anastasiya', C.oscar, amount);
+  assert.equal(last.status, 429);
+  assert.equal(last.json.reason, 'TOO_MANY_AMOUNTS');
+  assert.ok((await snap('sven')).audit.some(a => a.action === 'BALANCE_PROBE_BLOCKED'));
 });
 
 test('the submission checks stay on the request; a re-check is kept beside them', async () => {

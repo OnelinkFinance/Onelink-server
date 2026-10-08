@@ -201,6 +201,11 @@ describe('C — invoices', () => {
     assert.equal(chk(f, 'INVOICES').ok, true);
     assert.equal(itm(f, 'INVOICES', 'No outstanding dues').text, 'No unpaid or overdue invoices');
   });
+  test('a contact in a duplicate group: invoices of the other contacts count even when its own receivable is 0', () => {
+    const open = [{ invoice: 'INV-5002', balance: 4200, status: 'Overdue' }];
+    assert.equal(chk(run({ open, grouped: true }), 'INVOICES').code, 'OUTSTANDING_DUES');
+    assert.equal(chk(run({ open, grouped: false }), 'INVOICES').ok, true); // single contact: the live receivable (0) decides
+  });
   test('no live Books contact → the Analytics invoice list decides', () => {
     assert.equal(chk(run({ books: null, open: [{ invoice: 'INV-1', balance: 750 }] }), 'INVOICES').code, 'OUTSTANDING_DUES');
     assert.equal(chk(run({ books: null, open: [] }), 'INVOICES').ok, true);

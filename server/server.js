@@ -270,7 +270,7 @@ const FIN_TTL = 60_000;
 const CUST = c => `CASE WHEN A."Canonical Customer ID" IS NOT NULL THEN TO_STRING(A."Canonical Customer ID") ELSE TO_STRING(${c}) END`;
 const ALIAS = c => `LEFT JOIN "CFD Automatic Customer Aliases" A ON ${c} = A."Source Customer ID"`;
 const SQL = {
-  split: `SELECT ${CUST('R."Resolved Customer ID"')} AS "Customer", TO_STRING(R."Account ID") AS "Account", ROUND(SUM(COALESCE(R."Credit Amount", 0)), 2) AS "Credits", ROUND(SUM(COALESCE(R."Debit Amount", 0)), 2) AS "Debits", COUNT(*) AS "Lines", SUM(CASE WHEN R."Books Customer Tag Status" = 'Customer Tagged' THEN 0 ELSE 1 END) AS "Untagged" FROM "CFD Customer Resolved" R ${ALIAS('R."Resolved Customer ID"')} WHERE R."Resolved Customer ID" IS NOT NULL GROUP BY ${CUST('R."Resolved Customer ID"')}, TO_STRING(R."Account ID")`,
+  split: `SELECT ${CUST('R."Resolved Customer ID"')} AS "Customer", TO_STRING(R."Account ID") AS "Account", ROUND(SUM(COALESCE(R."Credit Amount", 0)), 2) AS "Credits", ROUND(SUM(COALESCE(R."Debit Amount", 0)), 2) AS "Debits", COUNT(*) AS "Lines", SUM(CASE WHEN R."Books Customer Tag Status" = 'Customer Tagged' THEN 0 ELSE 1 END) AS "Untagged", MAX(CASE WHEN R."Debit Amount" > 0 THEN R."Transaction Date" ELSE NULL END) AS "Last debit" FROM "CFD Customer Resolved" R ${ALIAS('R."Resolved Customer ID"')} WHERE R."Resolved Customer ID" IS NOT NULL GROUP BY ${CUST('R."Resolved Customer ID"')}, TO_STRING(R."Account ID")`,
   open: `SELECT ${CUST('I."Customer ID"')} AS "Customer", I."Invoice Number" AS "Invoice", I."Invoice Status" AS "Status", I."Due Date" AS "Due", ROUND(I."Total (BCY)", 2) AS "Total", ROUND(I."Balance (BCY)", 2) AS "Balance" FROM "Invoices" I ${ALIAS('I."Customer ID"')} WHERE I."Invoice Status" NOT IN ('Draft', 'Void') AND I."Balance (BCY)" > 0`,
   pay: `SELECT ${CUST('C."Customer ID"')} AS "Customer", COUNT(*) AS "Payments", ROUND(SUM(C."Amount (BCY)"), 2) AS "Received", ROUND(SUM(C."Unused Amount (BCY)"), 2) AS "Unapplied", ROUND(SUM(C."Refund Amount (BCY)"), 2) AS "Refunded", MAX(C."Payment Date") AS "Last" FROM "Customer Payments" C ${ALIAS('C."Customer ID"')} GROUP BY ${CUST('C."Customer ID"')}`,
   alias: `SELECT TO_STRING(A."Source Customer ID") AS "Source", TO_STRING(A."Canonical Customer ID") AS "Canonical" FROM "CFD Automatic Customer Aliases" A`
@@ -285,24 +285,32 @@ let data = null, dataAt = 0, loading = null;
 let aliases = new Map(), aliasesAt = 0;
 const ALIAS_TTL = 10 * 60_000;
 const canonical = id => aliases.get(key(id)) || key(id);
+let aliasLoading = null;
+// In the background, after the other exports (Analytics allows five jobs at a time); checks use the last good map meanwhile.
+function refreshAliases() {
+  if (aliasLoading || Date.now() - aliasesAt <= ALIAS_TTL) return;
+  aliasLoading = analyticsSql(SQL.alias, 'customer alias')
+    .then(rows => { aliases = new Map(rows.map(r => [key(r.Source), key(r.Canonical)]).filter(([a, b]) => a && b && a !== b)); aliasesAt = Date.now(); })
+    .catch(e => { aliasesAt = Date.now() - ALIAS_TTL + 60_000; console.error('Zoho Analytics customer aliases not refreshed:', e.message); }) // retry in a minute
+    .finally(() => { aliasLoading = null; });
+}
+// Is this contact one of several Books contacts folded together (it, or another contact, maps onto the same canonical one)?
+const grouped = id => { const k = canonical(id); return k !== key(id) || [...aliases.values()].includes(k); };
+const MON = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+const dateOf = v => { const t = String(v || ''); let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(t); if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3]);
+  m = /^(\d{1,2}) ([A-Z][a-z]{2}),? (\d{4})/.exec(t); return m && MON[m[2]] !== undefined ? Date.UTC(+m[3], MON[m[2]], +m[1]) : 0; };
 function refresh() {
   if (!loading) {
-    // Analytics allows five export jobs at a time: these three plus the balance table, then the alias table on its own.
     loading = Promise.all([analyticsSql(SQL.split, 'CFD/COGS split'), analyticsSql(SQL.open, 'open invoice'), analyticsSql(SQL.pay, 'customer payment')])
-      .then(async res => {
-        if (Date.now() - aliasesAt > ALIAS_TTL) {
-          try { aliases = new Map((await analyticsSql(SQL.alias, 'customer alias')).map(r => [key(r.Source), key(r.Canonical)]).filter(([a, b]) => a && b && a !== b)); aliasesAt = Date.now(); }
-          catch (e) { console.error('Zoho Analytics customer aliases not refreshed:', e.message); }
-        }
-        return res;
-      })
+      .then(res => { refreshAliases(); return res; })
       .then(([split, open, pay]) => {
         const S = new Map(), O = new Map(), P = new Map();
         for (const r of split) {
           const k = key(r.Customer), acc = key(r.Account), side = acc === CFD_ACCOUNT ? 'cfd' : acc === COGS_ACCOUNT ? 'cogs' : null;
           if (!k || !side) continue;
-          const e = S.get(k) || { cfd: { credits: 0, debits: 0, lines: 0, untagged: 0 }, cogs: { credits: 0, debits: 0, lines: 0, untagged: 0 } };
+          const e = S.get(k) || { cfd: { credits: 0, debits: 0, lines: 0, untagged: 0 }, cogs: { credits: 0, debits: 0, lines: 0, untagged: 0 }, lastDebit: 0 };
           const t = e[side]; t.credits += num(r.Credits); t.debits += num(r.Debits); t.lines += num(r.Lines); t.untagged += num(r.Untagged);
+          e.lastDebit = Math.max(e.lastDebit, dateOf(r['Last debit']));
           S.set(k, e);
         }
         for (const r of open) { const k = key(r.Customer); if (!k) continue; (O.get(k) || O.set(k, []).get(k)).push({ invoice: r.Invoice || '', status: r.Status || '', due: r.Due || '', total: num(r.Total), balance: num(r.Balance) }); }
@@ -333,7 +341,7 @@ async function run({ contactId, amount, paid, books, committed }) {
   const [contact, d] = await Promise.all([books ? Promise.resolve(books) : booksGetContact(raw), fresh() ? Promise.resolve(data) : refresh()]);
   const k = canonical(raw), rec = await analyticsBalance(k);
   const { _raw, ...pay } = d.pay.get(k) || { payments: 0, received: 0, unapplied: 0, refunded: 0, last: '' };
-  const f = evaluateFinance({ amount, paid, books: contact, rec, split: d.split.get(k) || null, open: d.open.get(k) || [], pay, committed });
+  const f = evaluateFinance({ amount, paid, books: contact, rec, split: d.split.get(k) || null, open: d.open.get(k) || [], pay, committed, grouped: grouped(raw) });
   const t = new Date();
   return { id: 'FV-' + crypto.randomBytes(4).toString('hex').toUpperCase(), at: t.toISOString(), atText: dubai(t), clientId: k,
     source: 'Zoho Books (live contact) + Zoho Analytics (CFD, COGS, invoices, payments)', ...f };
@@ -341,7 +349,13 @@ async function run({ contactId, amount, paid, books, committed }) {
 // What a request stores: the checks, never the headline strings.
 const record = f => f && ({ id: f.id, at: f.at, atText: f.atText, amount: f.amount, ok: f.ok, source: f.source, checks: f.checks });
 
-return { run, record, prefetch, invalidate, forOps: financeForOps, fresh, canonical };
+// Day (UTC ms) of the client's latest CFD / COGS debit in the ledger — when the latest spend was booked. 0 = none.
+async function lastDebit(contactId) {
+  const d = fresh() ? data : await refresh();
+  return ((d.split.get(canonical(contactId)) || {}).lastDebit) || 0;
+}
+
+return { run, record, prefetch, invalidate, forOps: financeForOps, fresh, canonical, lastDebit };
 })();
 
 // ---- rules.js ----
@@ -534,7 +548,7 @@ function unsign(token) {
   return !p || !(p.exp >= Date.now()) ? null : p;
 }
 
-return { issue, verify, lock, locked, unlock, sign, unsign };
+return { issue, verify, lock, locked, unlock, sign, unsign, signedBody };
 })();
 
 // ---- auth.js ----
@@ -819,7 +833,7 @@ function redact(u, col, item) {
   if (col === 'requests') {
     const { zohoBalance, ...r } = item;
     if (Array.isArray(r.timeline)) r.timeline = r.timeline.map(t => ({ ...t, text: hideAmounts(t.text) }));
-    if (r.finance) r.finance = M_finance.forOps(r.finance);
+    for (const k of ['finance', 'financeLatest']) if (r[k]) r[k] = M_finance.forOps(r[k]); // every financial check record
     return r;
   }
   if (col === 'chat' && item.zoho) { const { zoho, ...c } = item; return { ...c, text: hideAmounts(c.text) }; }
@@ -838,9 +852,9 @@ const OPEN = ['NEW', 'ACTION', 'ESCALATED', 'MGMT_INFO', 'MGMT_APPROVED'];
 // Only the server moves a request into these (escalation endpoints, void) — and out of ESCALATED / MGMT_INFO.
 const SERVER_STATUS = ['ESCALATED', 'MGMT_INFO', 'MGMT_APPROVED', 'VOID'];
 // Set only by the server: whatever a browser sends for these is replaced by the stored value.
-const SERVER_FIELDS = ['finance', 'financeLatest', 'escalation', 'voided', 'requestorId', 'clientId', 'createdAt'];
+const SERVER_FIELDS = ['finance', 'financeLatest', 'escalation', 'voided', 'requestorId', 'clientId', 'createdAt', 'creditedAt'];
 // Operations cannot change the money or the client on a request once it exists (Master Operations Control included).
-const OPS_FIXED = ['requested', 'approved', 'credited', 'zohoClientId', 'zohoClient', 'zohoBalance', 'zohoReason', 'zohoValidationId', 'zohoCheckedAt', 'override'];
+const OPS_FIXED = ['requested', 'approved', 'credited', 'paid', 'zohoClientId', 'zohoClient', 'zohoBalance', 'zohoReason', 'zohoValidationId', 'zohoCheckedAt', 'override'];
 const pendingRequestFor = contactId => (contactId && db.requests.find(r => String(r.zohoClientId || '') === String(contactId) && OPEN.includes(r.status))) || null;
 
 // The three financial checks run at Send: kept here until the request (or its escalation) arrives, then attached to it.
@@ -927,7 +941,9 @@ function resolveRequestId(userKey, id, maxAge = DAY) {
 // A put carrying a submit pass is a brand-new request. A resend of the same request carries the pass of the checks
 // already attached to it; any other request under a taken number (another user's — or the same user's escalation,
 // numbered by the server before this browser saw it) is a different request.
-const sameSubmission = (item, taken) => { const p = M_gate.unsign(item.zohoSubmitToken); return !!(p && taken.finance && p.f === taken.finance.id); };
+// The pass may have expired by the time a browser resends (it keeps its copy): only a validly signed pass for OTHER checks
+// marks a different request; an unreadable one on the user's own number is treated as an edit.
+const sameSubmission = (item, taken) => { const p = M_gate.signedBody(item.zohoSubmitToken); return !p || !p.f || !!(taken.finance && p.f === taken.finance.id); };
 
 // Zoho result of the automatic check that runs when a request is sent. The server attaches it to the request
 // itself; if the browser's copy of the request has not arrived yet, it waits here and is attached on arrival.
@@ -954,10 +970,18 @@ function attachFinance(requestId, fin) {
   postSystem('requests', r.finance ? { ...r, financeLatest: M_finance.record(fin) } : { ...r, finance: M_finance.record(fin) });
   return true;
 }
-// Approved or credited on the platform but not yet booked in the CFD ledger: held against the client's balance.
-function committedFor(contactId, exceptId) {
-  const k = M_finance.canonical(contactId), list = db.requests.filter(r => r.id !== exceptId && r.zohoClientId && M_finance.canonical(r.zohoClientId) === k && ['APPROVED', 'CREDITED'].includes(r.status));
-  return { amount: list.reduce((a, r) => a + (Number(r.status === 'CREDITED' ? r.credited || r.approved : r.approved) || Number(r.requested) || 0), 0), count: list.length };
+// Money approved on the platform but not yet visible in the CFD ledger is held against the client's balance, so two
+// requests cannot both be approved against the same funds:
+//   APPROVED — always (not on the card yet);
+//   CREDITED / PAID — until the ledger shows a CFD or COGS debit for the client on or after the day it was credited
+//   (the card spend has been booked), and for at most HOLD_DAYS (booking can carry an earlier date).
+// Voided requests hold nothing. lastDebit: day of the client's latest debit in the ledger (M_finance.lastDebit).
+const HOLD_DAYS = 30;
+function committedFor(contactId, exceptId, lastDebit = 0) {
+  const k = M_finance.canonical(contactId), day = iso => { const d = new Date(iso); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); };
+  const held = r => r.status === 'APPROVED' || (['CREDITED', 'PAID'].includes(r.status) && r.creditedAt && Date.now() - Date.parse(r.creditedAt) < HOLD_DAYS * DAY && !(lastDebit >= day(r.creditedAt)));
+  const list = db.requests.filter(r => r.id !== exceptId && r.zohoClientId && M_finance.canonical(r.zohoClientId) === k && held(r));
+  return { amount: list.reduce((a, r) => a + (Number(r.status === 'APPROVED' ? r.approved : r.credited || r.approved) || Number(r.requested) || 0), 0), count: list.length };
 }
 // Wait briefly for the browser's copy of a just-sent request (it is pushed alongside the check).
 async function awaitOwnRequest(userKey, requestId, ms = 1500) {
@@ -1300,16 +1324,21 @@ function mount(app) {
       for (const k of SERVER_FIELDS) { if (prev && prev[k] !== undefined) item[k] = prev[k]; else delete item[k]; }
       if (prev && (ops(q.user) || q.user.dept === 'MANAGEMENT')) {
         for (const k of OPS_FIXED) { if (prev[k] !== undefined) item[k] = prev[k]; else delete item[k]; }
-        if (prev.zohoStatus) item.zohoStatus = prev.zohoStatus; // Operations may only mark an unchecked request 'Not validated'
+        // Operations may only mark an unchecked request 'Not validated', and may raise the flag but never clear it.
+        if (prev.zohoStatus || item.zohoStatus !== 'Not validated') { if (prev.zohoStatus !== undefined) item.zohoStatus = prev.zohoStatus; else delete item.zohoStatus; }
+        if (prev.flagged) item.flagged = true;
+        // History is append-only for them: every stored line stays as stored; lines they add go after it.
+        if (Array.isArray(prev.timeline)) {
+          const stored = new Set(prev.timeline.flatMap(t => [t.at + '|' + t.text, t.at + '|' + hideAmounts(t.text)]));
+          item.timeline = prev.timeline.concat((item.timeline || []).filter(t => !stored.has(t.at + '|' + t.text)));
+        }
       }
       if (prev && q.user.dept === 'MANAGEMENT' && !isMaster(q.user)) { // notes and files only: every other field stays as stored
         const keep = { ...prev, notes: item.notes, docs: item.docs, timeline: item.timeline };
         for (const k of Object.keys(item)) delete item[k];
         Object.assign(item, keep);
-        const seen = new Set((item.timeline || []).map(t => t.at + '|' + t.text));
-        const lost = (prev.timeline || []).filter(t => !seen.has(t.at + '|' + t.text));
-        if (lost.length) item.timeline = lost.concat(item.timeline || []);
       }
+      if (prev && item.status === 'CREDITED' && prev.status !== 'CREDITED') item.creditedAt = new Date().toISOString(); // when the card was topped up
     }
     if (col === 'requests' && prev && OPEN.includes(item.status) && !OPEN.includes(prev.status)) {
       const other = pendingRequestFor(item.zohoClientId);
@@ -1415,7 +1444,7 @@ const canSee = (u, r) => visible(u, 'requests', r);
 
 const isFinanceUser = u => isMaster(u) || (u.dept === 'FINANCE' && u.active !== false);
 
-return { mount, postSystem, resolveRequestId, attachZohoResult, attachFinance, awaitOwnRequest, pendingRequestFor, wasRefused, isOps: restricted, finPut, getRequest, canSee, committedFor, isFinanceUser, status };
+return { mount, postSystem, audit, resolveRequestId, attachZohoResult, attachFinance, awaitOwnRequest, pendingRequestFor, wasRefused, isOps: restricted, finPut, getRequest, canSee, committedFor, isFinanceUser, status };
 })();
 
 // ---- server.js ----
@@ -1544,8 +1573,14 @@ app.post('/api/zoho/precheck', async (q, s) => {
   if (!v.ok) return s.status(403).json({ ok: false, reason: 'INVALID_VALIDATION_TOKEN', why: v.why, error: NOT_FOUND_MSG });
   const pend = store.pendingRequestFor(v.clientId);
   if (pend) return s.status(409).json({ ok: false, reason: 'REQUEST_PENDING', error: MSG.LOCKED, pendingId: pend.id });
+  if (opsUser && probing(q.user.key, v.clientId, amount)) {
+    store.audit(q.user, 'BALANCE_PROBE_BLOCKED', `${b.clientName} — more than ${PROBE_MAX} different amounts checked within an hour`);
+    store.postSystem('notifications', { id: 'zp' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex'), to: 'sven', at: stamp().both, read: false, req: null,
+      text: `${q.user.name} checked more than ${PROBE_MAX} different amounts for ${b.clientName} within an hour — further checks for this client are paused for an hour.` });
+    return s.status(429).json({ ok: false, reason: 'TOO_MANY_AMOUNTS', error: 'Too many different amounts were checked for this client. Contact Sven.' });
+  }
   let fin;
-  try { fin = await M_finance.run({ contactId: v.clientId, amount, paid, committed: store.committedFor(v.clientId) }); } catch (e) { return zohoErr(s, e); }
+  try { fin = await M_finance.run({ contactId: v.clientId, amount, paid, committed: store.committedFor(v.clientId, null, await M_finance.lastDebit(v.clientId)) }); } catch (e) { return zohoErr(s, e); }
   store.finPut(fin, q.user.key);
   const view = opsUser ? M_finance.forOps(M_finance.record(fin)) : M_finance.record(fin);
   const cfd = fin.checks.find(c => c.key === 'CFD');
@@ -1561,6 +1596,17 @@ app.post('/api/zoho/precheck', async (q, s) => {
   s.json({ ok: true, sufficient: true, status: STATUS.PROVISIONAL, submitToken: gate.sign({ k: 'submit', u: q.user.key, c: v.clientId, a: amount, n: b.clientName, p: paid, f: fin.id }, 15 * 60 * 1000),
     finance: view });
 });
+
+// Operations only ever learn sufficient / not sufficient. Trying many amounts for one client would reveal its balance,
+// so a restricted user gets PROBE_MAX different amounts per client per hour.
+const PROBE_MAX = 6, probes = new Map(); // `${user}:${client}` -> [{ amount, at }]
+function probing(userKey, clientId, amount) {
+  const k = userKey + ':' + clientId, now = Date.now(), list = (probes.get(k) || []).filter(x => now - x.at < 3600_000);
+  if (!list.some(x => x.amount === amount)) list.push({ amount, at: now });
+  probes.set(k, list);
+  if (probes.size > 5000) probes.delete(probes.keys().next().value);
+  return new Set(list.map(x => x.amount)).size > PROBE_MAX;
+}
 
 // Restart from the beginning — the only way to clear the lock.
 app.post('/api/zoho/restart', (q, s) => { gate.unlock(q.sid); s.json({ ok: true }); });
@@ -1600,9 +1646,12 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
 
   // A token proves the client was picked from the Books list (it carries the contact_id).
   // Requests raised before the dropdown carry none and must match a Books contact exactly by name.
+  // A request already on the platform is checked against its own client — the pick token (30 minutes) is not needed.
+  const known = req.requestId ? store.getRequest(store.resolveRequestId(q.user.key, req.requestId)) : null;
   let books;
   try {
-    if (b.validationToken) {
+    if (known && known.zohoClientId && store.canSee(q.user, known)) books = await booksGetContact(known.zohoClientId);
+    else if (b.validationToken) {
       const v = gate.verify(b.validationToken, req.clientName);
       if (!v.ok) return s.status(403).json({ ok: false, reason: 'INVALID_VALIDATION_TOKEN', why: v.why, error: NOT_FOUND_MSG });
       books = await booksGetContact(v.clientId);
@@ -1620,6 +1669,8 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
   if (sentId && store.wasRefused(q.user.key, sentId)) return s.status(409).json({ ok: false, reason: 'REQUEST_NOT_SUBMITTED', error: 'The request was not submitted, so it was not checked.' });
   const stored = req.requestId ? store.getRequest(req.requestId) : null;
   if (stored && !store.canSee(q.user, stored)) return s.status(403).json({ ok: false, reason: 'NO_ACCESS', error: 'No access — request not created by you' });
+  // Operations check only a request they submitted (its stored amount): no free-form amounts to probe a balance with.
+  if (store.isOps(q.user) && !stored) return s.status(409).json({ ok: false, reason: 'REQUEST_NOT_FOUND', error: 'The request has not reached the server yet — Sven checks it before approving.' });
   if (stored && stored.status === 'VOID') return s.status(409).json({ ok: false, reason: 'REQUEST_VOID', error: 'This request has been voided.' });
   // A check on a stored request is a check of THAT request: its client and its amount, never ones from the browser.
   if (stored && stored.zohoClientId && String(stored.zohoClientId) !== String(books.contactId))
@@ -1629,7 +1680,10 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
   // The balance and the three financial checks come from Zoho — if they cannot be read, nothing is decided.
   let rec, fin;
   try {
-    [rec, fin] = await Promise.all([analyticsBalance(M_finance.canonical(books.contactId)), M_finance.run({ contactId: books.contactId, amount: req.requestedAmount, paid: stored ? stored.paid : String(b.paid || ''), books, committed: store.committedFor(books.contactId, stored ? stored.id : null) })]);
+    const committed = store.committedFor(books.contactId, stored ? stored.id : null, await M_finance.lastDebit(books.contactId));
+    [rec, fin] = await Promise.all([analyticsBalance(M_finance.canonical(books.contactId)), M_finance.run({ contactId: books.contactId, amount: req.requestedAmount, paid: stored ? stored.paid : String(b.paid || ''), books, committed })]);
+    // What can still be approved: the ledger balance less amounts already approved or credited and not yet booked.
+    if (rec) rec = { ...rec, available: rec.available - committed.amount };
   } catch (e) { return zohoErr(s, e); }
 
   const d = decide({ req, books, rec, fin });

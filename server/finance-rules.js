@@ -30,7 +30,9 @@ const item = (label, ok, text, detail) => (detail ? { label, ok, text, detail } 
 // pay:   the client's customer payments { payments, received, unapplied, refunded, last } — null = none
 // committed: { amount, count } already approved or credited for this client on the platform and not yet booked in the
 //            ledger — it comes off the CFD balance, so two requests cannot both be approved against the same funds.
-export function evaluateFinance({ amount, paid, books, rec, split, open, pay, committed }) {
+// grouped: the contact is one of several Books contacts folded onto one client — its own live receivable does not
+//          cover the others' invoices, so the Analytics list counts too.
+export function evaluateFinance({ amount, paid, books, rec, split, open, pay, committed, grouped }) {
   amount = n0(amount);
   const held = committed ? n0(committed.amount) : 0, heldN = committed ? n0(committed.count) : 0;
   const cfd = (split && split.cfd) || { credits: 0, debits: 0, lines: 0, untagged: 0 };
@@ -79,8 +81,9 @@ export function evaluateFinance({ amount, paid, books, rec, split, open, pay, co
     const liveDue = books ? n0(books.outstanding) : 0;
     const p = pay || { payments: 0, received: 0, unapplied: 0, refunded: 0, last: '' };
     // The live Books contact decides whether anything is owed (Analytics syncs from Books with a delay: an invoice paid
-    // a minute ago can still look open there). The Analytics invoice list only names the invoices.
-    const dues = books ? liveDue > EPS : open.length > 0;
+    // a minute ago can still look open there). The Analytics invoice list only names the invoices — unless the contact is
+    // one of a group of duplicates, whose other members' invoices its own receivable does not include.
+    const dues = books && !grouped ? liveDue > EPS : open.length > 0 || liveDue > EPS;
     if (!dues) open = [];
     const nums = open.slice(0, 5).map(i => i.invoice).filter(Boolean).join(', ') + (open.length > 5 ? ', …' : '');
     const items = [
