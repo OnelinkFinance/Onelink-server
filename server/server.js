@@ -306,7 +306,11 @@ function refresh() {
       .then(async res => {
         if (!aliasesAt) { refreshAliases(); await aliasLoading; } else refreshAliases();
         let inv = null; // second batch: Analytics runs at most five export jobs at a time
-        try { inv = await analyticsSql(SQL.inv, 'invoice settlement'); } catch (e) { console.error('Zoho Analytics invoice settlement not read:', e.message); }
+        try { inv = await analyticsSql(SQL.inv, 'invoice settlement'); }
+        catch (e) {
+          console.error('Zoho Analytics invoice settlement not read:', e.message);
+          if (!(data && data.inv)) throw e; // never decide on a missing source — the check answers "Zoho unavailable"
+        }
         return [...res, inv];
       })
       .then(([split, open, pay, inv]) => {
@@ -326,7 +330,7 @@ function refresh() {
           if (day(r.Last) && (!e.last || String(r.Last) > e._raw)) { e.last = day(r.Last); e._raw = String(r.Last); }
           P.set(k, e);
         }
-        const I = inv ? new Map() : null;
+        const I = inv ? new Map() : data.inv; // a failed read keeps the last good figures
         for (const r of inv || []) {
           const k = key(r.Customer); if (!k) continue;
           const e = I.get(k) || { invoices: 0, invoiced: 0, outstanding: 0, writtenOff: 0, paid: 0, credited: 0 };
@@ -368,8 +372,8 @@ const record = f => f && ({ id: f.id, at: f.at, atText: f.atText, amount: f.amou
 // Everything debited to the client's CFD and COGS accounts so far (the card spend booked against its funds).
 const totalDebits = (d, contactId) => { const e = d.split.get(canonical(contactId)); return e ? Math.round((e.cfd.debits + e.cogs.debits) * 100) / 100 : 0; };
 async function ledgerDebits(contactId) { return totalDebits(await current(), contactId); }
-// The last figure read (however old) — taken as the baseline when a card is topped up. null = nothing read yet.
-const ledgerDebitsNow = contactId => data ? totalDebits(data, contactId) : null;
+// The figure as of now if the cached data is fresh — the baseline when a card is topped up. null = not fresh.
+const ledgerDebitsNow = contactId => fresh() ? totalDebits(data, contactId) : null;
 
 return { run, record, prefetch, invalidate, forOps: financeForOps, fresh, canonical, ledgerDebits, ledgerDebitsNow };
 })();
@@ -908,6 +912,7 @@ function newRequestProblem(u, item) {
 }
 // A refused request must not leave a "<name> requested ..." notification pointing at nothing (or at someone else's request).
 const refused = new Map(); // `${userKey}:${requestId}` -> { reason, at }
+const remember = (map, k, v, max = 5000) => { map.set(k, v); for (const [key, e] of map) { if (map.size <= max && Date.now() - (e.at || 0) < DAY) break; map.delete(key); } };
 const notSubmitted = (n, reason) => ({ ...n, req: null, text: 'Not submitted — ' + n.text.replace(/\.$/, '') + '. ' + reason });
 
 function send(c, ev) { try { c.res.write(`data: ${JSON.stringify(ev)}\n\n`); } catch (e) { console.error('Live event not sent:', e.message); } }
@@ -953,6 +958,15 @@ function mayWrite(u, col, item, prev) {
   return false;
 }
 const VOID_LOCKED = 'This request has been voided and is locked — nothing on it can change.';
+// A history line written in a browser by Operations or management: never marked as the server's, always signed.
+const authored = (t, u) => { const { srv, ...line } = t; const text = String(line.text || ''); return { ...line, by: u.key, text: text.startsWith(u.name) ? text : u.name + ': ' + text }; };
+// At most WRITE_MAX browser writes per user per minute (a person clicking stays far below it; a script does not).
+const WRITE_MAX = 120, writes = new Map();
+function writesExceeded(userKey) {
+  const now = Date.now(), list = (writes.get(userKey) || []).filter(t => now - t < 60_000);
+  list.push(now); writes.set(userKey, list);
+  return list.length > WRITE_MAX;
+}
 // An entry a browser sends: at most 8 levels deep and 400 KB (documents are stored separately, by file id).
 function tooBig(item) {
   const deep = (v, d) => d > 8 || (v && typeof v === 'object' && Object.values(v).some(x => deep(x, d + 1)));
@@ -1008,6 +1022,15 @@ function attachFinance(requestId, fin) {
   postSystem('requests', r.finance ? { ...r, financeLatest: M_finance.record(fin) } : { ...r, finance: M_finance.record(fin) });
   return true;
 }
+// The cached ledger was not fresh when the card was topped up: read it now and record the baseline (until then, held in full).
+function fillBaseline(id) {
+  const r = db.requests.find(x => x.id === id);
+  if (!r || !r.zohoClientId || typeof r.ledgerDebitsAtCredit === 'number') return;
+  M_finance.ledgerDebits(r.zohoClientId).then(v => {
+    const cur = db.requests.find(x => x.id === id);
+    if (cur && typeof cur.ledgerDebitsAtCredit !== 'number' && cur.creditedAt) postSystem('requests', { ...cur, ledgerDebitsAtCredit: v });
+  }).catch(e => console.error('Ledger baseline not recorded for', id, '—', e.message, '(held in full meanwhile)'));
+}
 // Money approved on the platform but not yet booked in the CFD ledger is held against the client's balance, so two
 // requests cannot both be approved against the same funds:
 //   APPROVED — the full approved amount (nothing is on the card yet);
@@ -1022,8 +1045,10 @@ function committedFor(contactId, exceptId, ledgerDebits = 0) {
   const mine = db.requests.filter(r => r.id !== exceptId && r.zohoClientId && M_finance.canonical(r.zohoClientId) === k);
   const approved = mine.filter(r => r.status === 'APPROVED');
   let amount = approved.reduce((a, r) => a + (Number(r.approved) || Number(r.requested) || 0), 0), count = approved.length;
-  const credited = mine.filter(r => CREDITED_LIKE(r) && r.creditedAt && typeof r.ledgerDebitsAtCredit === 'number' && Date.now() - Date.parse(r.creditedAt) < HOLD_DAYS * DAY)
-    .sort((a, b) => Date.parse(a.creditedAt) - Date.parse(b.creditedAt));
+  const recent = mine.filter(r => CREDITED_LIKE(r) && r.creditedAt && Date.now() - Date.parse(r.creditedAt) < HOLD_DAYS * DAY);
+  // No baseline (the ledger could not be read when the card was topped up): held in full until HOLD_DAYS.
+  for (const r of recent.filter(x => typeof x.ledgerDebitsAtCredit !== 'number')) { amount += Number(r.credited || r.approved) || Number(r.requested) || 0; count++; }
+  const credited = recent.filter(r => typeof r.ledgerDebitsAtCredit === 'number').sort((a, b) => Date.parse(a.creditedAt) - Date.parse(b.creditedAt));
   if (credited.length) {
     let booked = Math.max(0, ledgerDebits - credited[0].ledgerDebitsAtCredit); // spend booked since the oldest of them was credited
     for (const r of credited) {
@@ -1048,6 +1073,8 @@ function upsert(col, item) {
   const prev = i >= 0 ? list[i] : null;
   if (i >= 0) list[i] = item; else if (col === 'chat') list.push(item); else list.unshift(item); // chat is oldest-first, the rest newest-first
   if (col === 'audit' && list.length > 5000) list.length = 5000;
+  if (col === 'notifications' && list.length > 5000) list.length = 5000;        // newest first
+  if (col === 'chat' && list.length > 10000) list.splice(0, list.length - 10000); // oldest first
   db.rev++; persist();
   return prev;
 }
@@ -1353,6 +1380,8 @@ function mount(app) {
     if (col === 'requests' && ['timeline', 'docs'].some(k => item[k] !== undefined && (!Array.isArray(item[k]) || item[k].some(x => !x || typeof x !== 'object'))))
       return s.status(400).json({ ok: false, error: 'timeline and docs must be lists of entries' });
     if (tooBig(item)) return s.status(413).json({ ok: false, error: 'That entry is too large or too deeply nested.' });
+    if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(item.id) || (col === 'requests' && !/^[A-Za-z0-9_-]{1,40}$/.test(item.id))) return s.status(400).json({ ok: false, error: 'Invalid id.' });
+    if (writesExceeded(q.user.key)) return s.status(429).json({ ok: false, error: 'Too many changes in a short time — wait a moment.' });
     let renamed = null;
     const sentId = item.id; // the number the browser used, before any renumbering
     if (col === 'requests') {
@@ -1390,7 +1419,7 @@ function mount(app) {
         // History is append-only for them: every stored line stays as stored; lines they add go after it.
         if (Array.isArray(prev.timeline)) {
           const stored = new Set(prev.timeline.flatMap(t => [t.at + '|' + t.text, t.at + '|' + hideAmounts(t.text)]));
-          item.timeline = prev.timeline.concat((item.timeline || []).filter(t => !stored.has(t.at + '|' + t.text)));
+          item.timeline = prev.timeline.concat((item.timeline || []).filter(t => !stored.has(t.at + '|' + t.text)).map(t => authored(t, q.user)));
         }
       }
       if (prev && q.user.dept === 'MANAGEMENT' && !isMaster(q.user)) { // notes and files only: every other field stays as stored
@@ -1402,17 +1431,18 @@ function mount(app) {
       if (prev && item.status === 'CREDITED' && prev.status !== 'CREDITED' && !prev.creditedAt) {
         item.creditedAt = new Date().toISOString();
         const base = item.zohoClientId ? M_finance.ledgerDebitsNow(item.zohoClientId) : null;
-        if (base !== null) item.ledgerDebitsAtCredit = base;
+        if (base !== null) item.ledgerDebitsAtCredit = base; else if (item.zohoClientId) setTimeout(() => fillBaseline(item.id), 0);
       }
     }
     if (col === 'requests' && prev && OPEN.includes(item.status) && !OPEN.includes(prev.status)) {
       const other = pendingRequestFor(item.zohoClientId, [item.zohoClient, item.person, item.company]);
       if (other && other.id !== item.id) return s.status(409).json({ ok: false, reason: 'REQUEST_PENDING', error: `${other.id} is already open for this client — ${item.id} cannot be re-opened.`, pendingId: other.id });
     }
+    if (col === 'requests' && !prev && !isMaster(q.user)) item.timeline = (item.timeline || []).map(t => authored(t, q.user)); // a new request's lines
     if (col === 'requests' && !prev) {
       const bad = newRequestProblem(q.user, item);
       if (bad) {
-        refused.set(q.user.key + ':' + sentId, { reason: bad.error, at: Date.now() });
+        remember(refused, q.user.key + ':' + sentId, { reason: bad.error, at: Date.now() });
         for (const n of db.notifications) // its notification may already be here
           if (n.req === sentId && n.to === 'sven' && n.text.startsWith(q.user.name + ' requested') && Date.now() - (n._at || 0) < 120_000) postSystem('notifications', notSubmitted(n, bad.error));
         console.log(`New request ${sentId} from ${q.user.key} refused: ${bad.reason}`);
@@ -1428,14 +1458,15 @@ function mount(app) {
       refused.delete(q.user.key + ':' + sentId); // a corrected retry under the same number is a real request
       if (renamed) remaps.set(q.user.key + ':' + sentId, { id: renamed, at: Date.now() });
     }
-    if (col === 'notifications' && !prev && item.req && refused.has(q.user.key + ':' + item.req)) Object.assign(item, notSubmitted(item, refused.get(q.user.key + ':' + item.req).reason));
-    if (col === 'notifications' && !prev) item._at = Date.now();
     if (col === 'audit' && !prev) Object.assign(item, { user: q.user.name, userId: q.user.key, dept: q.user.dept, by: 'browser' }); // never someone else's name
     if (col === 'notifications' && !prev && !isMaster(q.user)) {
       // A notification from a browser says who sent it.
       item.from = q.user.key;
-      if (!String(item.text || '').includes(q.user.name)) item.text = q.user.name + ': ' + String(item.text || '');
+      if (!String(item.text || '').startsWith(q.user.name)) item.text = q.user.name + ': ' + String(item.text || '');
     }
+    if (col === 'notifications' && !prev && item.req && refused.has(q.user.key + ':' + item.req)) Object.assign(item, notSubmitted(item, refused.get(q.user.key + ':' + item.req).reason));
+    if (col === 'notifications' && !prev) item._at = Date.now();
+    if (col === 'notifications' && prev) Object.assign(item, { ...prev, read: !!item.read }); // the recipient can only mark it read
     if (col === 'chat' && !prev) item.who = q.user.key;
     if (col === 'requests' && prev && ops(q.user)) restoreHidden(item, prev);
     if (col === 'requests' && !prev) Object.assign(item, { requestorId: item.by, clientId: item.zohoClientId || null, createdAt: new Date().toISOString() }); // tags
@@ -1460,6 +1491,9 @@ function mount(app) {
       const k = q.user.key + ':' + sentId, z = pendingZoho.get(k);
       if (z && (!z.clientId || String(z.clientId) === String(item.zohoClientId || ''))) { Object.assign(item, withZoho(item, z)); pendingZoho.delete(k); }
     }
+    // The merged request (stored history plus additions) stays within bounds too.
+    if (col === 'requests' && ((item.timeline || []).length > 400 || (item.docs || []).length > 100 || JSON.stringify(item).length > 600_000))
+      return s.status(413).json({ ok: false, error: 'This request has reached its size limit — contact Sven.' });
     upsert(col, item);
     broadcast({ type: 'put', col, item, rev: db.rev, by: q.user.key }, col, item);
     if (col === 'requests') audit(q.user, !prev ? 'REQUEST_CREATED' : prev.status !== item.status ? 'REQUEST_' + item.status : 'REQUEST_EDITED',
@@ -1698,6 +1732,15 @@ function probing(userKey, clientKey, amount) {
   return { why, first: true };
 }
 
+const checks = new Map(); // `${user}:${request or client}` -> last funding check
+function checkThrottled(userKey, what) {
+  const k = userKey + ':' + what, last = checks.get(k) || 0;
+  if (Date.now() - last < 120_000) return true;
+  checks.set(k, Date.now());
+  if (checks.size > 5000) checks.delete(checks.keys().next().value);
+  return false;
+}
+
 // Restart from the beginning — the only way to clear the lock.
 app.post('/api/zoho/restart', (q, s) => { gate.unlock(q.sid); s.json({ ok: true }); });
 
@@ -1738,6 +1781,12 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
   // Requests raised before the dropdown carry none and must match a Books contact exactly by name.
   // A request already on the platform is checked against its own client — the pick token (30 minutes) is not needed.
   const known = req.requestId ? store.getRequest(store.resolveRequestId(q.user.key, req.requestId)) : null;
+  // A history request (from before the Zoho client link) names no Books client: Operations cannot point it at one.
+  if (known && !known.zohoClientId && store.hidesAmounts(q.user))
+    return s.status(409).json({ ok: false, reason: 'NO_ZOHO_CLIENT', error: 'This request predates the Zoho client link — Sven checks it before approving.' });
+  // Outside finance, one check per request (or client) every two minutes: each check notifies Sven and writes the sheet.
+  if (!store.isFinanceUser(q.user) && checkThrottled(q.user.key, known ? known.id : (b.validationToken ? 't:' + String(b.validationToken).slice(0, 80) : 'n:' + req.clientName)))
+    return s.status(429).json({ ok: false, reason: 'CHECKED_RECENTLY', error: 'This request was checked a moment ago — try again in two minutes.' });
   let books;
   try {
     if (known && known.zohoClientId && store.canSee(q.user, known)) books = await booksGetContact(known.zohoClientId);

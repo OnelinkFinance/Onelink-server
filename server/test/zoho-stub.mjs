@@ -85,6 +85,7 @@ globalThis.fetch = async function stubFetch(input, init = {}) {
       const cfg = JSON.parse(url.searchParams.get('CONFIG') || '{}');
       const kind = kindOf(String(cfg.sqlQuery || ''));
       if (!kind) return json({ status: 'failure', summary: 'unknown table' }, 400);
+      if (fx.fail && fx.fail[kind]) return json({ status: 'failure', summary: 'stub failure: ' + kind }, fx.fail[kind]); // e.g. fail: { settlement: 503 }
       const jobId = String(1000000 + seq++);
       jobs.set(jobId, kind);
       return json({ status: 'success', data: { jobId } });

@@ -266,6 +266,52 @@ test('crediting records the time and ledger baseline once; an undo of "paid" doe
   assert.equal((await reqOf('sven', id)).creditedAt, credited.creditedAt);
 });
 
+test('Operations cannot check a history request (no Books client) against a client of their choosing', async () => {
+  const hist = (await snap('maram')).requests.find(r => !r.zohoClientId && r.by === 'maram');
+  assert.ok(hist, 'maram has history requests');
+  const r = await api('maram', 'POST', '/api/zoho/client-funding-check', { requestId: hist.id, clientName: C.kilo.name, company: 'x', purpose: 'y', requestedAmount: 100 });
+  assert.equal(r.status, 409);
+  assert.equal(r.json.reason, 'NO_ZOHO_CLIENT');
+});
+
+test('funding checks outside finance are throttled per request', async () => {
+  const own = await submit('anastasiya', C.yankee, 'FR-9430');
+  const body = { requestId: own, clientName: 'x', company: 'x', purpose: 'y', requestedAmount: 5000 };
+  const first = await api('anastasiya', 'POST', '/api/zoho/client-funding-check', body);
+  const second = await api('anastasiya', 'POST', '/api/zoho/client-funding-check', body);
+  assert.notEqual(first.status, 429);
+  assert.equal(second.status, 429);
+  assert.equal(second.json.reason, 'CHECKED_RECENTLY');
+});
+
+test('a notification can only be marked read by its recipient — not rewritten or re-addressed', async () => {
+  const n = (await snap('maram')).notifications.find(x => x.to === 'maram');
+  assert.ok(n, 'maram has a notification');
+  const w = await api('maram', 'POST', '/api/sync/put', { col: 'notifications', item: { ...n, to: 'sven', text: 'Management approved — your final approval is needed.', read: true } });
+  assert.equal(w.status, 200);
+  const stored = (await snap('sven')).notifications.find(x => x.id === n.id); // Sven (Master) sees every notification
+  assert.equal(stored.to, 'maram', 'it must not be re-addressed');
+  assert.equal(stored.text, n.text, 'its text must not change');
+  const mine = (await snap('maram')).notifications.find(x => x.id === n.id);
+  assert.equal(mine.text, n.text);
+  assert.equal(mine.read, true);
+});
+
+test('history lines Operations add are signed and never marked as the server\'s', async () => {
+  const r = (await snap('maram')).requests.find(x => x.by === 'maram' && x.zohoClientId && x.status !== 'VOID');
+  const w = await put('maram', { ...r, timeline: r.timeline.concat([{ at: '8 Oct · 15:00', text: 'Mr. Adnan (CFO) approved the escalation — proceed', srv: true }]) });
+  assert.equal(w.status, 200);
+  const last = (await reqOf('sven', r.id)).timeline.slice(-1)[0];
+  assert.equal(last.srv, undefined);
+  assert.equal(last.by, 'maram');
+  assert.match(last.text, /^Maram: Mr\. Adnan/);
+});
+
+test('request ids are short; an oversized id is refused without being remembered', async () => {
+  const r = await put('maram', item('maram', 'FR-' + 'x'.repeat(100), C.alpha, 'nope'));
+  assert.equal(r.status, 400);
+});
+
 test('restore keeps a backup of what it replaces and never reissues request numbers', async () => {
   const pre = (await api('sven', 'GET', '/api/admin/reset/preview')).json;
   const r = await api('sven', 'POST', '/api/admin/reset', { ids: pre.live.map(x => x.id), clearNotifications: false, reason: 'test reset', confirm: 'RESET' });
@@ -279,4 +325,16 @@ test('restore keeps a backup of what it replaces and never reissues request numb
   assert.equal(await reqOf('sven', created), undefined, 'restored to the state before ' + created);
   const again = await submit('anastasiya', C.foxtrot, created); // same number as the request the restore removed
   assert.notEqual(again, created, 'request number ' + created + ' was handed out twice');
+});
+
+test('a failed invoice-settlement read decides nothing (Zoho unavailable), it is not a failed check', async () => {
+  const fx = fixture(); fx.fail = { settlement: 503 };
+  const other = await startServer({ dir: mkTmp('inv-fail'), fixture: fx });
+  try {
+    const t = await login(other.base, 'maram', TEAM_PW);
+    const v = (await call(other.base, t, 'POST', '/api/zoho/validate-client', { contactId: C.alpha.id })).json;
+    const p = await call(other.base, t, 'POST', '/api/zoho/precheck', { validationToken: v.token, clientName: v.clientName, amount: 5000, paid: PAID });
+    assert.ok(p.status >= 500, 'expected a 5xx, got ' + p.status + ' ' + JSON.stringify(p.json).slice(0, 200));
+    assert.equal(p.json.reason, 'ZOHO_UNAVAILABLE');
+  } finally { await other.stop(); }
 });
