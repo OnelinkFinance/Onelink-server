@@ -1,185 +1,282 @@
 <title>Free Zone Commissions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
+/* Layout: navy control band on top, KPI row, tabbed work area; a right-hand drawer explains any figure. */
 :root {
   color-scheme: light;
-  --page: #f9f9f7; --surface: #fcfcfb; --raised: #ffffff;
-  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
-  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
-  --accent: #2a78d6;
-  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s-other: #a8a69f;
-  --good: #0ca30c; --good-ink: #006300; --warn: #fab219; --serious: #ec835a; --critical: #d03b3b;
-  --good-bg: #e7f5e7; --warn-bg: #fff4dc; --serious-bg: #fdeee7; --critical-bg: #fbe9e9; --neutral-bg: #efeeea;
+  --page: #f2f4f7; --surface: #ffffff; --raised: #ffffff; --sunk: #f6f7fa;
+  --ink: #0e1726; --ink-2: #47536a; --muted: #7a8597; --grid: #e3e7ee; --axis: #c5ccd8; --border: rgba(14,23,38,.10);
+  --accent: #1d5bd6; --accent-ink: #ffffff; --accent-soft: #e8effc;
+  --band: #0e1a2b; --band-2: #16263d; --band-ink: #f4f7fb; --band-muted: #a7b4c9; --band-line: rgba(255,255,255,.12);
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s-other: #a3a9b4;
+  --good: #0ca30c; --good-ink: #0a6b2a; --warn: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --good-bg: #e6f5ea; --warn-bg: #fff4dc; --serious-bg: #fdeee7; --critical-bg: #fbe9e9; --neutral-bg: #eef0f4;
+  --f-display: 'Sora', 'IBM Plex Sans', system-ui, sans-serif; --f-body: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif; --f-mono: 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+  --shadow: 0 1px 2px rgba(14,23,38,.05), 0 4px 16px rgba(14,23,38,.05);
 }
-@media (prefers-color-scheme: dark) {
-  :root:where(:not([data-theme="light"])) {
-    color-scheme: dark;
-    --page: #0d0d0d; --surface: #1a1a19; --raised: #222221;
-    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
-    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
-    --accent: #3987e5;
-    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s-other: #5c5b57;
-    --good-ink: #0ca30c; --good-bg: #13280f; --warn-bg: #2e2510; --serious-bg: #2e1c14; --critical-bg: #2e1515; --neutral-bg: #262624;
-  }
-}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  color-scheme: dark;
+  --page: #0a0f18; --surface: #111a27; --raised: #172233; --sunk: #0e1622;
+  --ink: #eef2f8; --ink-2: #b5c0d2; --muted: #8391a7; --grid: #223048; --axis: #2e3d57; --border: rgba(255,255,255,.09);
+  --accent: #6b9bff; --accent-ink: #0a0f18; --accent-soft: #1a2a48;
+  --band: #0b1422; --band-2: #12203a; --band-ink: #eef2f8; --band-muted: #93a3bd; --band-line: rgba(255,255,255,.10);
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s-other: #5c6270;
+  --good-ink: #3dd06a; --good-bg: #12301d; --warn-bg: #33270e; --serious-bg: #35201a; --critical-bg: #3a1717; --neutral-bg: #1b2535;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.25);
+} }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --page: #0d0d0d; --surface: #1a1a19; --raised: #222221;
-  --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
-  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
-  --accent: #3987e5;
-  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s-other: #5c5b57;
-  --good-ink: #0ca30c; --good-bg: #13280f; --warn-bg: #2e2510; --serious-bg: #2e1c14; --critical-bg: #2e1515; --neutral-bg: #262624;
+  --page: #0a0f18; --surface: #111a27; --raised: #172233; --sunk: #0e1622;
+  --ink: #eef2f8; --ink-2: #b5c0d2; --muted: #8391a7; --grid: #223048; --axis: #2e3d57; --border: rgba(255,255,255,.09);
+  --accent: #6b9bff; --accent-ink: #0a0f18; --accent-soft: #1a2a48;
+  --band: #0b1422; --band-2: #12203a; --band-ink: #eef2f8; --band-muted: #93a3bd; --band-line: rgba(255,255,255,.10);
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s-other: #5c6270;
+  --good-ink: #3dd06a; --good-bg: #12301d; --warn-bg: #33270e; --serious-bg: #35201a; --critical-bg: #3a1717; --neutral-bg: #1b2535;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.25);
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.5 var(--f-body); }
 a { color: var(--accent); }
-.wrap { max-width: 1280px; margin: 0 auto; padding: 20px 16px 48px; }
-header { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; justify-content: space-between; margin-bottom: 16px; }
-h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
-h2 { font-size: 15px; margin: 0 0 10px; }
-.sub { color: var(--ink-2); font-size: 13px; }
-.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-input, select, button { font: inherit; color: var(--ink); background: var(--raised); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
-button { cursor: pointer; }
-button.primary { background: var(--accent); color: #fff; border-color: transparent; }
-button:disabled { opacity: .6; cursor: progress; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
-.sources { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; }
-.src { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--neutral-bg); }
-.src b { display: block; }
-.src .d { color: var(--ink-2); word-break: break-word; }
-.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
-.kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
-.kpi .l { color: var(--ink-2); font-size: 12px; }
-.kpi .v { white-space: nowrap; font-size: 21px; font-weight: 650; letter-spacing: -0.02em; margin-top: 2px; font-variant-numeric: tabular-nums; }
-.kpi .n { color: var(--muted); font-size: 12px; margin-top: 2px; }
-nav.tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--grid); margin-bottom: 16px; }
-nav.tabs button { border: 0; background: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 12px; color: var(--ink-2); }
-nav.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+h1, h2, h3 { font-family: var(--f-display); letter-spacing: -0.01em; text-wrap: balance; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+[hidden] { display: none !important; }
+
+/* ---- header band ---- */
+.top { background: linear-gradient(180deg, var(--band) 0%, var(--band-2) 100%); color: var(--band-ink); }
+.top-in, .status-in, .wrap { max-width: 1320px; margin: 0 auto; padding-inline: 20px; }
+.top-in { padding-block: 22px 16px; display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: flex-end; justify-content: space-between; }
+.eyebrow { font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--band-muted); }
+.brand h1 { margin: 4px 0 2px; font-size: 28px; font-weight: 700; }
+.tag { color: var(--band-muted); font-size: 13px; }
+.tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.stepper { display: inline-flex; align-items: center; background: rgba(255,255,255,.06); border: 1px solid var(--band-line); border-radius: 10px; }
+.stepper button { font: inherit; font-size: 18px; line-height: 1; color: var(--band-ink); background: none; border: 0; padding: 7px 11px; cursor: pointer; min-height: 38px; }
+.stepper button:hover { background: rgba(255,255,255,.08); }
+.stepper input { font: inherit; color: var(--band-ink); background: transparent; border: 0; padding: 6px 2px; color-scheme: dark; width: 150px; }
+.seg { display: inline-flex; border: 1px solid var(--band-line); border-radius: 10px; overflow: hidden; }
+.seg button { font: inherit; font-size: 13px; font-weight: 600; color: var(--band-muted); background: transparent; border: 0; padding: 9px 12px; cursor: pointer; min-height: 38px; }
+.seg button[aria-pressed="true"] { background: var(--band-ink); color: var(--band); }
+.btn { font: inherit; font-size: 13px; font-weight: 500; color: var(--ink); background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 8px 14px; cursor: pointer; min-height: 38px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.onband { background: rgba(255,255,255,.06); color: var(--band-ink); border-color: var(--band-line); }
+.btn.onband:hover { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.3); }
+.btn.sm { min-height: 30px; padding: 4px 10px; font-size: 12px; border-radius: 8px; }
+.btn:disabled { opacity: .55; cursor: progress; }
+.btn:focus-visible, .chip:focus-visible, .seg button:focus-visible, .stepper button:focus-visible, .link:focus-visible, .num:focus-visible, .how:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible, .tabs button:focus-visible, .zcard:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.menu { position: relative; }
+.menu > summary { list-style: none; }
+.menu > summary::-webkit-details-marker { display: none; }
+.menu-list { position: absolute; right: 0; top: calc(100% + 6px); z-index: 15; min-width: 250px; background: var(--raised); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 6px; display: flex; flex-direction: column; }
+.menu-list button { font: inherit; text-align: left; color: var(--ink); background: none; border: 0; padding: 9px 12px; border-radius: 8px; cursor: pointer; }
+.menu-list button:hover { background: var(--accent-soft); }
+.statusbar { border-top: 1px solid var(--band-line); background: rgba(0,0,0,.12); }
+.status-in { padding-block: 9px; display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; font-size: 12.5px; color: var(--band-muted); }
+.mode { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; color: var(--band-ink); }
+.mode i { width: 8px; height: 8px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 3px rgba(12,163,12,.25); }
+.mode.snap i { background: var(--warn); box-shadow: 0 0 0 3px rgba(250,178,25,.25); }
+.spill { font: inherit; display: inline-flex; align-items: center; gap: 6px; color: var(--band-ink); background: rgba(255,255,255,.05); border: 1px solid var(--band-line); border-radius: 999px; padding: 3px 10px; cursor: pointer; }
+.spill i { width: 7px; height: 7px; border-radius: 50%; }
+.spill.good i { background: var(--good); } .spill.warn i { background: var(--warn); } .spill.critical i { background: var(--critical); } .spill.neutral i { background: var(--band-muted); }
+
+/* ---- page ---- */
+.wrap { padding-block: 18px 56px; display: flex; flex-direction: column; gap: 16px; }
+#body { display: flex; flex-direction: column; gap: 16px; }
+.banner { border-radius: 12px; padding: 12px 16px; font-size: 13.5px; border: 1px solid var(--border); background: var(--surface); }
+.banner.err { border-color: var(--critical); background: var(--critical-bg); }
+.banner.info { background: var(--accent-soft); border-color: transparent; }
+.banner.load { color: var(--ink-2); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { font: inherit; font-size: 13px; font-weight: 500; display: inline-flex; align-items: center; gap: 8px; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 7px 14px; cursor: pointer; min-height: 36px; }
+.chip i { width: 9px; height: 9px; border-radius: 50%; }
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--page); border-color: var(--ink); }
+.chip .n { font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
+.chip[aria-pressed="true"] .n { color: inherit; opacity: .75; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 18px; box-shadow: var(--shadow); min-width: 0; }
+.card h2 { font-size: 16px; margin: 0 0 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.card h2 .acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.kpi { position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 14px 16px 12px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.kpi .l { color: var(--ink-2); font-size: 12.5px; padding-right: 54px; }
+.kpi .v { font-family: var(--f-display); font-size: 25px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.kpi .n { color: var(--muted); font-size: 12px; }
+.kpi .delta { font-size: 12px; font-weight: 600; }
+.kpi .delta.up { color: var(--good-ink); } .kpi .delta.down { color: var(--critical); }
+.kpi svg.spark { width: 100%; height: 30px; margin-top: 6px; display: block; }
+.kpi .bar { margin-top: 8px; }
+.kpi .foot { display: flex; gap: 6px; margin-top: auto; padding-top: 10px; flex-wrap: wrap; }
+.how { position: absolute; top: 12px; right: 12px; font: inherit; font-size: 11px; font-weight: 600; color: var(--accent); background: var(--accent-soft); border: 0; border-radius: 999px; padding: 3px 9px; cursor: pointer; }
+.bar { display: flex; height: 8px; border-radius: 999px; overflow: hidden; background: var(--neutral-bg); gap: 2px; }
+.bar > span { display: block; height: 100%; }
+.bar > span:first-child { border-radius: 999px 0 0 999px; } .bar > span:last-child { border-radius: 0 999px 999px 0; }
+.bar .g { background: var(--good); } .bar .w { background: var(--serious); } .bar .c { background: var(--critical); } .bar .y { background: var(--warn); }
+.legend-s { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--ink-2); margin-top: 6px; }
+.legend-s span { display: inline-flex; align-items: center; gap: 6px; }
+.legend-s i { width: 9px; height: 9px; border-radius: 3px; display: inline-block; }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 5px; box-shadow: var(--shadow); }
+.tabs button { font: inherit; font-size: 13.5px; font-weight: 500; color: var(--ink-2); background: none; border: 0; border-radius: 10px; padding: 8px 14px; cursor: pointer; display: inline-flex; gap: 8px; align-items: center; min-height: 38px; }
+.tabs button:hover { background: var(--sunk); }
+.tabs button[aria-selected="true"] { background: var(--ink); color: var(--page); }
+.tabs .badge { font-family: var(--f-mono); font-size: 11px; background: var(--neutral-bg); color: var(--ink-2); border-radius: 999px; padding: 1px 7px; }
+.tabs button[aria-selected="true"] .badge { background: rgba(255,255,255,.2); color: inherit; }
+.tabs .badge.hot { background: var(--critical); color: #fff; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 1000px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+.zgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.zcard { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 16px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.zcard.dim { opacity: .45; }
+.zcard .zh { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.zcard .zn { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-family: var(--f-display); }
+.zcard .zn i { width: 11px; height: 11px; border-radius: 3px; }
+.zcard .zv { font-family: var(--f-display); font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.zcard .zmeta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; font-size: 11.5px; color: var(--muted); }
+.zcard .zmeta span { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.zcard .zmeta b { font-size: 13px; color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.zcard .zacts { margin-top: auto; }
+.zcard .zmeta b { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 600; }
+.zcard .zacts { display: flex; gap: 6px; flex-wrap: wrap; }
+.aging { display: flex; flex-direction: column; gap: 10px; }
+.aging .row { display: grid; grid-template-columns: 90px minmax(0, 1fr) 120px; gap: 10px; align-items: center; font-size: 13px; }
+.aging .track { height: 12px; background: var(--neutral-bg); border-radius: 999px; overflow: hidden; }
+.aging .track span { display: block; height: 100%; border-radius: 999px; }
+.aging .amt { text-align: right; font-variant-numeric: tabular-nums; }
+.bigstat { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.bigstat b { font-family: var(--f-display); font-size: 30px; }
+.actions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.actions li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--grid); }
+.actions li:last-child { border-bottom: 0; }
+.actions .t { font-weight: 600; font-size: 13.5px; }
+.actions .d { color: var(--ink-2); font-size: 12.5px; overflow-wrap: anywhere; }
 .tablewrap { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
-td:first-child { min-width: 160px; }
-th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
-th { color: var(--ink-2); font-weight: 600; font-size: 12px; white-space: nowrap; position: sticky; top: 0; background: var(--surface); }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { color: var(--ink-2); font-weight: 600; font-size: 12px; white-space: nowrap; background: var(--sunk); position: sticky; top: 0; }
+tbody tr:hover td { background: var(--sunk); }
+td:first-child { min-width: 150px; }
 td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-tr.total td { font-weight: 650; border-top: 1px solid var(--axis); }
-.muted { color: var(--muted); }
-.pill { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px; font-size: 12px; white-space: nowrap; background: var(--neutral-bg); color: var(--ink); }
-.pill i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+tr.total td { font-weight: 700; border-top: 2px solid var(--axis); background: var(--sunk); }
+td.nw { white-space: nowrap; }
+.muted { color: var(--muted); } .small { font-size: 12px; } .mono { font-family: var(--f-mono); }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 500; white-space: nowrap; background: var(--neutral-bg); color: var(--ink); }
+.pill i { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; background: var(--muted); }
 .pill.good { background: var(--good-bg); } .pill.good i { background: var(--good); }
 .pill.warn { background: var(--warn-bg); } .pill.warn i { background: var(--warn); }
 .pill.serious { background: var(--serious-bg); } .pill.serious i { background: var(--serious); }
 .pill.critical { background: var(--critical-bg); } .pill.critical i { background: var(--critical); }
-.pill.neutral i { background: var(--muted); }
 .yes { color: var(--good-ink); } .no { color: var(--critical); }
-.filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; align-items: center; }
-.filters .grow { flex: 1 1 180px; }
-.missing { color: var(--ink-2); font-size: 12px; margin: 2px 0 0; padding-left: 16px; }
-.chart { position: relative; }
-.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
-.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--ink-2); margin: 6px 0 4px; }
-.legend span { display: inline-flex; align-items: center; gap: 6px; }
-.legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
-.tip { position: absolute; pointer-events: none; background: var(--raised); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12); display: none; min-width: 180px; z-index: 5; }
-.tip .row { display: flex; justify-content: space-between; gap: 12px; }
-.tip .row span:first-child { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
-.tip i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
-.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
-@media (max-width: 1600px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
-#app, #body, #panes, .card { min-width: 0; }
-.chart { max-width: 760px; }
-td.nw { white-space: nowrap; }
-.empty { color: var(--muted); padding: 18px 4px; }
-.login { max-width: 360px; margin: 10vh auto; }
-.login label { display: block; font-size: 12px; color: var(--ink-2); margin: 10px 0 4px; }
-.login input { width: 100%; }
-.err { color: var(--critical); margin-top: 8px; font-size: 13px; }
-.hide { display: none !important; }
-small.note { color: var(--muted); display: block; margin-top: 8px; }
-
-.btn { font: inherit; font-size: 13px; color: var(--ink); background: var(--raised); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
-.btn:hover { border-color: var(--accent); }
-.btn.sm { padding: 3px 9px; font-size: 12px; }
-.btn:focus-visible, .link:focus-visible, .num:focus-visible, .how:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.missing { color: var(--ink-2); font-size: 12px; margin: 4px 0 0; padding-left: 16px; }
 .link { font: inherit; background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .num { font: inherit; font-variant-numeric: tabular-nums; background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .num:disabled { color: inherit; text-decoration: none; cursor: default; }
-.small { font-size: 12px; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.kpi { position: relative; }
-.kpi .l { padding-right: 52px; }
-.kpi .how { position: absolute; top: 10px; right: 10px; font: inherit; font-size: 11px; color: var(--accent); background: none; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; cursor: pointer; }
-.fgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px 12px; align-items: end; margin-bottom: 12px; }
+.empty { color: var(--muted); padding: 22px 4px; text-align: center; }
+small.note { color: var(--muted); display: block; margin-top: 10px; font-size: 12px; line-height: 1.5; }
+.chart { position: relative; } .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--ink-2); margin: 0 0 6px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; } .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.tip { position: absolute; pointer-events: none; background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; font-size: 12px; box-shadow: var(--shadow); display: none; min-width: 190px; z-index: 30; }
+.tip .row { display: flex; justify-content: space-between; gap: 12px; }
+.tip .row span:first-child { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
+.tip i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.statusrow { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.statusrow .chip { min-height: 32px; padding: 4px 12px; font-size: 12.5px; }
+.fbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.fbar input[type=search] { flex: 1 1 240px; }
+input, select { font: inherit; color: var(--ink); background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; min-height: 38px; }
+.fgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 10px 12px; align-items: end; margin: 4px 0 12px; padding: 12px; background: var(--sunk); border-radius: 12px; }
 .fgrid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-2); min-width: 0; }
-.fgrid label.wide { grid-column: span 2; }
 .fgrid label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); font-size: 13px; }
 .fgrid select, .fgrid input:not([type=checkbox]) { width: 100%; min-width: 0; }
-.fgrid .btns { display: flex; gap: 8px; flex-wrap: wrap; }
-@media (max-width: 520px) { .fgrid label.wide { grid-column: span 1; } }
-#txCount { margin: 2px 0 8px; }
-.scrim { position: fixed; inset: 0; background: rgba(0,0,0,.28); opacity: 0; pointer-events: none; transition: opacity .15s; z-index: 20; }
+#txCount, .count { font-size: 12.5px; color: var(--ink-2); margin: 2px 0 8px; }
+.scrim { position: fixed; inset: 0; background: rgba(6,12,22,.4); opacity: 0; pointer-events: none; transition: opacity .15s; z-index: 20; }
 .scrim.open { opacity: 1; pointer-events: auto; }
-.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(640px, 100vw); background: var(--surface); border-left: 1px solid var(--border); box-shadow: -8px 0 32px rgba(0,0,0,.18); transform: translateX(100%); transition: transform .18s ease; z-index: 21; display: flex; flex-direction: column; padding-top: env(safe-area-inset-top, 0px); }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(660px, 100vw); background: var(--surface); border-left: 1px solid var(--border); box-shadow: -10px 0 40px rgba(0,0,0,.2); transform: translateX(100%); transition: transform .18s ease; z-index: 21; display: flex; flex-direction: column; padding-top: env(safe-area-inset-top, 0px); }
 .drawer.open { transform: none; }
 @media (prefers-reduced-motion: reduce) { .drawer, .scrim { transition: none; } }
-.drawer > header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--grid); }
-.drawer > header h2 { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
-#drawerBody { overflow: auto; padding: 14px 18px 32px; display: flex; flex-direction: column; gap: 16px; }
+.drawer > header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--grid); }
+.drawer > header h2 { margin: 0; font-size: 18px; overflow-wrap: anywhere; }
+#drawerBody { overflow: auto; padding: 16px 20px 40px; display: flex; flex-direction: column; gap: 18px; }
 .xhead { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .decided { margin: 0; font-weight: 600; }
-.xsec h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); margin: 0 0 8px; display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.xsec h3 { font-family: var(--f-body); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-2); margin: 0 0 8px; display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
 .xsec h3 a { text-transform: none; letter-spacing: 0; font-weight: 500; }
-.xsec h4 { font-size: 13px; margin: 10px 0 6px; }
-dl.kv { display: grid; grid-template-columns: minmax(110px, max-content) 1fr; gap: 6px 14px; margin: 0; }
-dl.kv dt { color: var(--ink-2); font-size: 13px; }
-dl.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-dl.kv.read { margin-bottom: 12px; padding: 10px 12px; background: var(--neutral-bg); border-radius: 8px; }
-ol.checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-ol.checks li { display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: start; }
+.xsec h4 { font-size: 13px; margin: 12px 0 6px; }
+dl.kv { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 7px 16px; margin: 0; }
+dl.kv dt { color: var(--ink-2); font-size: 13px; } dl.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+dl.kv.read { margin-bottom: 12px; padding: 12px 14px; background: var(--sunk); border-radius: 10px; }
+ol.checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+ol.checks li { display: grid; grid-template-columns: 22px 1fr; gap: 9px; align-items: start; }
 ol.checks .mark { width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
 ol.checks li.ok .mark { background: var(--good-bg); color: var(--good-ink); }
 ol.checks li.bad .mark { background: var(--critical-bg); color: var(--critical); }
 ol.checks li.na .mark { background: var(--neutral-bg); color: var(--muted); }
-ul.plain, ol.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
-table.cells td, table.cells th { padding: 5px 8px; }
+ul.plain, ol.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 5px; }
+table.cells td, table.cells th { padding: 6px 8px; }
 table.cells tr.hl td { background: var(--warn-bg); }
-.how-doc h2 { margin-top: 18px; }
-.how-doc h2:first-child { margin-top: 0; }
-.how-doc ol, .how-doc ul { padding-left: 20px; display: flex; flex-direction: column; gap: 6px; max-width: 80ch; }
-.how-doc p { max-width: 80ch; }
-
+.how-doc h2 { margin: 22px 0 10px; } .how-doc h2:first-child { margin-top: 0; }
+.how-doc ol, .how-doc ul { padding-left: 20px; display: flex; flex-direction: column; gap: 6px; max-width: 82ch; }
+.how-doc p { max-width: 82ch; }
 .how-doc td.mono { min-width: 240px; max-width: 460px; white-space: normal; overflow-wrap: anywhere; }
-.how-doc td { overflow-wrap: anywhere; }
+.copybox { width: 100%; min-height: 220px; font: 13px/1.5 var(--f-mono); }
+.steps { counter-reset: s; list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.steps li { counter-increment: s; display: grid; grid-template-columns: 28px 1fr; gap: 10px; }
+.steps li::before { content: counter(s); width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 12px; display: inline-flex; align-items: center; justify-content: center; }
+@media (max-width: 640px) {
+  .brand h1 { font-size: 23px; } .tools { width: 100%; } .stepper input { width: 130px; }
+  .aging .row { grid-template-columns: 70px minmax(0, 1fr) 96px; }
+  dl.kv { grid-template-columns: 1fr; gap: 2px; } dl.kv dd { margin-bottom: 8px; }
+}
+.drawer:not(.open) { visibility: hidden; box-shadow: none; }
 </style>
-<div class="wrap">
 
-  <section id="app">
-    <header>
-      <div>
-        <h1>Free Zone Commissions</h1>
-        <div class="sub">RAK DAO · RAK ICC · Meydan · RAKEZ — read live from the GP reports, commission tracker, Zoho, Renewals sheet and Gmail through your claude.ai connections</div>
-      </div>
-      <div class="controls">
-        <label class="sub" for="month">Month</label><input type="month" id="month">
-        <select id="span" aria-label="History">
-          <option value="3">3 months</option><option value="6" selected>6 months</option><option value="12">12 months</option>
-        </select>
-        <button id="refresh" class="primary">Refresh</button>
-        <a href="https://onelink-funding-backend.onrender.com/" class="sub">OneLink platform</a>
-      </div>
-      <div class="sub" style="flex-basis:100%;text-align:right">Read-only — reads the sources, never writes to them
-      </div>
-    </header>
-    <div id="error" class="card err hide"></div>
-    <div id="body" class="hide">
-      <div class="card"><div class="sources" id="sources"></div><small class="note" id="stamp"></small></div>
-      <div class="kpis" id="kpis"></div>
-      <nav class="tabs" role="tablist" id="tabs"></nav>
-      <div id="panes"></div>
+<header class="top">
+  <div class="top-in">
+    <div class="brand">
+      <div class="eyebrow">Elite OneLink · Finance</div>
+      <h1>Free Zone Commissions</h1>
+      <div class="tag">RAK DAO · RAK ICC · Meydan · RAKEZ — earned, invoiced, collected and still open</div>
     </div>
-    <div id="loading" class="empty">Loading live data…</div>
-  </section>
-</div>
+    <div class="tools" role="toolbar" aria-label="Dashboard controls">
+      <div class="stepper">
+        <button id="prev" type="button" aria-label="Previous month">‹</button>
+        <label class="sr" for="month">Month</label><input type="month" id="month">
+        <button id="next" type="button" aria-label="Next month">›</button>
+      </div>
+      <div class="seg" id="spanSeg" role="group" aria-label="Months loaded">
+        <button type="button" data-span="3">3M</button><button type="button" data-span="6">6M</button><button type="button" data-span="12">12M</button>
+      </div>
+      <button id="refresh" class="btn primary" type="button">↻ Refresh live</button>
+      <button id="save" class="btn onband" type="button" hidden>Save for viewers</button>
+      <details class="menu" id="exportMenu">
+        <summary class="btn onband">Export ▾</summary>
+        <div class="menu-list" role="menu">
+          <button type="button" role="menuitem" data-export="tx">Transactions (CSV)</button>
+          <button type="button" role="menuitem" data-export="txall">Transactions, all months (CSV)</button>
+          <button type="button" role="menuitem" data-export="ex">Exceptions (CSV)</button>
+          <button type="button" role="menuitem" data-export="ren">Renewals (CSV)</button>
+          <button type="button" role="menuitem" data-export="inv">Commission invoices (CSV)</button>
+          <button type="button" role="menuitem" data-export="zones">Summary by free zone (CSV)</button>
+        </div>
+      </details>
+      <button id="copy" class="btn onband" type="button">Copy summary</button>
+      <button id="shareBtn" class="btn onband" type="button">Share</button>
+    </div>
+  </div>
+  <div class="statusbar"><div class="status-in" id="statusbar"></div></div>
+</header>
+
+<main class="wrap">
+  <div id="error" class="banner err" hidden></div>
+  <div id="notice" class="banner info" hidden></div>
+  <div id="loading" class="banner load">Loading…</div>
+  <div id="body" hidden>
+    <nav class="chips" id="zoneChips" aria-label="Free zone"></nav>
+    <section class="kpis" id="kpis" aria-label="Key figures"></section>
+    <nav class="tabs" role="tablist" id="tabs"></nav>
+    <div id="panes"></div>
+  </div>
+</main>
 
 <div class="tip" id="tip"></div>
 <div id="scrim" class="scrim"></div>
@@ -777,7 +874,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const monthLabel = m => m ? MON[+m.slice(5, 7) - 1] + ' ' + m.slice(0, 4) : '—';
   const fmtDate = d => d ? `${+d.slice(8, 10)} ${MON[+d.slice(5, 7) - 1]} ${d.slice(0, 4)}` : '—';
-  // Sheets store dates as day numbers; show the date beside the number, but only in date columns.
+  const fmtWhen = iso => iso ? new Date(iso).toLocaleString('en-GB', { timeZone: 'Asia/Dubai', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
   const cellVal = (v, label) => typeof v === 'number' && /date|expiry|received on|renewed/i.test(label || '') && v > 20000 && v < 80000 ? `${fmtDate(core.parseSheetDate(v).date)} (stored as ${v})` : String(v);
   const SERIES = { RAKDAO: 'var(--s1)', RAKICC: 'var(--s2)', MEYDAN: 'var(--s3)', RAKEZ: 'var(--s4)', OTHER: 'var(--s-other)' };
   const STATUS = {
@@ -789,14 +886,22 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   const pill = (t, kind) => `<span class="pill ${kind || STATUS[t] || 'neutral'}"><i></i>${esc(t)}</span>`;
   const yn = v => v == null ? '<span class="muted">—</span>' : v ? '<span class="yes">✓ Yes</span>' : '<span class="no">✗ No</span>';
   const ext = (url, label) => url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${label}</a>` : '';
+  const show = (id, on) => { $(id).hidden = !on; };
 
-  let data = null, tab = 'overview', drawerOpen = false;
+  // ---- state ----
+  let inputs = null;            // what was read (live or from the saved snapshot)
+  let mode = null;              // 'live' | 'snapshot'
+  let snapMeta = null, snapBy = '';
+  let data = null;              // the dashboard built from inputs for the chosen month/span
+  let tab = 'overview', gz = '', span = 6, drawerOpen = false, busy = false;
+  let db = null, user = null, canWrite = false;
   const now = new Date();
   $('month').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const dubaiToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dubai' }).format(new Date());
+  const step = t => { $('loading').textContent = t; show('loading', true); };
 
   // ---------------------------------------------------------------------------------------------
-  // Live data through the viewer's own claude.ai connectors. Read-only: sheet reads, Drive search,
-  // Zoho Analytics SELECT exports, Gmail search. Nothing is ever written to any source.
+  // Live data through the viewer's own claude.ai connectors (read-only).
   // ---------------------------------------------------------------------------------------------
   const ORG = '926340534', WS = '3241925000000011002', BOOKS_ORG = '898300452';
   const TRACKER = '1E0YrI0wkgpGfgwmzbujIcLxM47ct7hZmPeQOS60-v5w', RENEWALS = '111d7I-jqSHXAIzA4WFEbXEOOrylJhgPXIITb4JqWox0';
@@ -908,26 +1013,23 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
       return { id: t.id, subject: m.subject || '', from: m.sender || '', date: String(m.date || '').slice(0, 10), snippet: m.snippet || '', url: t.viewUrl || m.viewUrl || `https://mail.google.com/mail/u/0/#all/${t.id}` };
     }) };
   }
-  const dubaiToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dubai' }).format(new Date());
-  const step = t => { $('loading').textContent = t; };
 
-  async function loadLive(month, span, fresh) {
-    if (!(await mcpReady)) throw new Error('This page reads your Google and Zoho connections, which only works when it is opened in claude.ai. Open the link while signed in to claude.ai.');
-    const today = dubaiToday(), at = () => new Date().toISOString();
-    const months = Array.from({ length: span }, (_, i) => core.addMonths(month, i - span + 1));
-    const sources = {}, gp = {}, reads = [], links = { gp: {} }, raw = { gp: {} };
+
+
+  async function liveInputs(month, n, fresh) {
+    if (!(await mcpReady)) throw Object.assign(new Error('Refresh live works when the page is opened in claude.ai with Google Sheets, Google Drive and Zoho Analytics connected.'), { code: 'no_mcp' });
+    const at = () => new Date().toISOString();
+    const months = Array.from({ length: n }, (_, i) => core.addMonths(month, i - n + 1));
+    const sources = {}, gp = {}, reads = [], links = { gp: {} };
 
     step('Finding the GP reports in Google Drive…');
     let files = {};
     const driveQuery = "title contains 'GP Report' and mimeType = 'application/vnd.google-apps.spreadsheet'";
     try {
       const p = await call(S_DRIVE, 'search_files', { query: driveQuery, pageSize: 50, excludeContentSnippets: true }, fresh);
-      for (const f of (p && p.files) || []) {
-        const m = core.gpReportMonth(f.title);
-        if (m && (!files[m] || f.modifiedTime > files[m].modifiedTime)) files[m] = f;
-      }
+      for (const f of (p && p.files) || []) { const m = core.gpReportMonth(f.title); if (m && (!files[m] || f.modifiedTime > files[m].modifiedTime)) files[m] = f; }
       reads.push({ source: 'Google Drive', what: 'Monthly GP report files', where: `Drive search: ${driveQuery}`, rows: Object.keys(files).length + ' monthly reports found (copies ignored; newest file per month)', at: at() });
-    } catch (e) { sources.gp = { ok: false, detail: why(e, S_DRIVE) }; }
+    } catch (e) { sources.gp = { ok: false, detail: why(e, S_DRIVE), code: e.code }; }
 
     step('Reading the commission tracker…');
     let tracker = null;
@@ -940,8 +1042,8 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
       links.lines = { id: TRACKER, gid: l.gid, file: l.file, tab: l.tab }; links.checklist = { id: TRACKER, gid: c.gid, file: c.file, tab: c.tab };
       reads.push({ source: 'Google Sheets', what: 'Commission tracker — deal lines (baseline)', file: l.file, tab: l.tab, range: RANGES.lines, url: sheetUrl(TRACKER, l.gid), rows: `${lines.rows.length} lines`, at: at() });
       reads.push({ source: 'Google Sheets', what: 'Commission tracker — commission invoices', file: c.file, tab: c.tab, range: RANGES.checklist, url: sheetUrl(TRACKER, c.gid), rows: `${checklist.rows.length} invoices`, at: at() });
-      sources.tracker = { ok: true, detail: `${lines.rows.length} commission lines, ${checklist.rows.length} commission invoices`, url: sheetUrl(TRACKER, l.gid) };
-    } catch (e) { sources.tracker = { ok: false, detail: e.code ? why(e, S_SHEETS) : 'Commission tracker: ' + e.message }; }
+      sources.tracker = { ok: true, detail: `${lines.rows.length} lines, ${checklist.rows.length} invoices`, url: sheetUrl(TRACKER, l.gid) };
+    } catch (e) { sources.tracker = { ok: false, detail: e.code ? why(e, S_SHEETS) : 'Commission tracker: ' + e.message, code: e.code }; }
 
     if (!sources.gp) {
       step('Reading the GP reports…');
@@ -953,12 +1055,11 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
           const parsed = core.parseGpReport(s.rows, m);
           if (parsed.error) { errs.push(`${m}: ${parsed.error}`); return; }
           gp[m] = parsed.rows; links.gp[m] = { id: f.id, gid: s.gid, file: f.title, tab: s.tab };
-          reads.push({ source: 'Google Sheets', what: `GP report — ${monthLabel(m)}`, file: f.title, tab: s.tab, range: RANGES.gp, url: sheetUrl(f.id, s.gid), rows: `${parsed.rows.length} deal rows`, at: at(), modified: f.modifiedTime });
+          reads.push({ source: 'Google Sheets', what: `GP report — ${monthLabel(m)}`, file: f.title, tab: s.tab, range: RANGES.gp, url: sheetUrl(f.id, s.gid), rows: `${parsed.rows.length} deal rows`, at: at() });
         } catch (e) { errs.push(why(e, S_SHEETS)); }
       }));
       const found = months.filter(m => gp[m]);
-      sources.gp = errs.length && !found.length ? { ok: false, detail: errs[0] }
-        : { ok: true, detail: found.length ? `${found.length} monthly report${found.length > 1 ? 's' : ''} read` : `No GP report found for ${months[0]} – ${month}`, warning: gp[month] ? (errs[0] || '') : `No GP report for ${month}` };
+      sources.gp = errs.length && !found.length ? { ok: false, detail: errs[0] } : { ok: true, detail: found.length ? `${found.length} monthly report${found.length > 1 ? 's' : ''}` : `None for ${monthLabel(months[0])} – ${monthLabel(month)}`, warning: gp[month] ? (errs[0] || '') : `No GP report for ${monthLabel(month)}` };
     }
 
     step('Reading the Renewals sheet…');
@@ -975,30 +1076,130 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     step('Reading invoices from Zoho Analytics…');
     let clientInv = null, zoneInv = null;
     try {
-      const refs = [...(gp[month] || []).filter(g => g.zone).map(g => g.invoice), ...((tracker && tracker.lines) || []).filter(l => l.month === month).map(l => l.ref)];
+      const refs = [...months.flatMap(m => (gp[m] || []).filter(g => g.zone).map(g => g.invoice)), ...((tracker && tracker.lines) || []).filter(l => months.includes(l.month)).map(l => l.ref)];
       const ci = await clientInvoices([...new Set(refs.filter(r => /^INV-\d/.test(r)))], fresh);
-      clientInv = ci.map;
+      clientInv = [...ci.map.entries()];
       const zi = await zoneInvoices(months[0], month, fresh);
       zoneInv = zi.list;
       reads.push({ source: 'Zoho Analytics', what: 'Commission invoices to the four free zones', where: `Workspace "Elite Onelink", table "Invoices": ${zi.sql}`, rows: `${zoneInv.length} invoices`, at: at() });
-      if (ci.sql) reads.push({ source: 'Zoho Analytics', what: `Client invoices for ${monthLabel(month)} deals`, where: `Table "Invoices": ${ci.sql}`, rows: `${[...clientInv.values()].filter(Boolean).length} of ${clientInv.size} found`, at: at() });
-      sources.zoho = { ok: true, detail: `${zoneInv.length} free zone commission invoice${zoneInv.length === 1 ? '' : 's'}; client invoices checked for ${month} (Zoho Analytics)` };
+      if (ci.sql) reads.push({ source: 'Zoho Analytics', what: 'Client invoices for the deals loaded', where: `Table "Invoices": ${ci.sql}`, rows: `${clientInv.filter(e => e[1]).length} of ${clientInv.length} found`, at: at() });
+      sources.zoho = { ok: true, detail: `${zoneInv.length} commission invoices · ${clientInv.length} client invoices checked` };
     } catch (e) { clientInv = null; zoneInv = null; sources.zoho = { ok: false, detail: e.code ? why(e, S_ZOHO) : 'Zoho Analytics: ' + e.message }; }
 
     step('Searching Gmail…');
     let emails = null;
     try {
-      const g = await gmailMessages(core.addDays(month + '-01', -30), core.addDays(core.monthEnd(month), 1), fresh);
+      const g = await gmailMessages(core.addDays(months[0] + '-01', -30), core.addDays(core.monthEnd(month), 1), fresh);
       emails = g.list;
       reads.push({ source: 'Gmail', what: 'Free zone and renewal emails', where: `Search: ${g.query}`, rows: `${emails.length} threads (first 50)`, at: at() });
-      sources.gmail = { ok: true, detail: `${emails.length} free zone threads scanned` };
+      sources.gmail = { ok: true, detail: `${emails.length} threads` };
     } catch (e) { sources.gmail = { ok: false, off: !e.code || e.code === 'server_not_connected', detail: e.code ? why(e, S_GMAIL) : 'Gmail: ' + e.message }; }
 
-    const built = core.buildDashboard({ month, months, gp, tracker, renewals, clientInvoices: clientInv, zoneInvoices: zoneInv, emails, today, windowDays: 60 });
-    raw.lines = tracker ? tracker.lines : []; raw.checklist = tracker ? tracker.checklist : []; raw.gp = gp; raw.renewals = renewals;
-    raw.zone = zoneInv || []; raw.client = clientInv ? [...clientInv.entries()].map(([n, v]) => ({ number: n, ...(v || { status: 'not found' }) })) : []; raw.emails = emails || [];
-    return { ok: true, ...built, sources, reads, links, raw, generatedAt: new Date().toISOString() };
+    return { kind: 'live', month, months, gp, tracker, renewals, clientInv, zoneInv, emails, sources, reads, links, generatedAt: at() };
   }
+
+  // ---------------------------------------------------------------------------------------------
+  // Snapshot for viewers: saved in this page's own storage, readable by everyone it is shared with.
+  // ---------------------------------------------------------------------------------------------
+  const PART = 80000;
+  function slim(inp) {
+    const refs = new Set(((inp.tracker && inp.tracker.lines) || []).map(l => l.ref));
+    const gp = Object.fromEntries(Object.entries(inp.gp).map(([m, rows]) => [m, rows.filter(g => g.zone || refs.has(g.invoice))]));
+    return { ...inp, gp, renewals: inp.renewals.filter(r => r.zone), kind: 'snapshot' };
+  }
+  async function saveSnapshot() {
+    if (!db || !canWrite || !inputs || inputs.kind !== 'live') return false;
+    const ok = inputs.sources.tracker && inputs.sources.tracker.ok && inputs.sources.gp && inputs.sources.gp.ok;
+    if (!ok) { notice('Not saved for viewers: the tracker or the GP reports could not be read this time.'); return false; }
+    try {
+      const s = JSON.stringify(slim(inputs)), parts = [];
+      for (let i = 0; i < s.length; i += PART) parts.push(s.slice(i, i + PART));
+      const ver = Date.now().toString(36), prev = await db.doc('snapshot/current').get().catch(() => null);
+      for (let i = 0; i < parts.length; i++) await db.doc(`snapshot/current/parts/${ver}-${i}`).set({ s: parts[i] });
+      await db.doc('snapshot/current').set({ version: ver, parts: parts.length, savedAt: new Date().toISOString(), by: user ? await user.id() : null, month: inputs.month, months: inputs.months, size: s.length });
+      if (prev && prev.exists) { const p = prev.data(); for (let i = 0; i < (p.parts || 0); i++) await db.doc(`snapshot/current/parts/${p.version}-${i}`).delete().catch(() => {}); }
+      snapMeta = { version: ver, savedAt: new Date().toISOString() };
+      notice(`Saved for viewers — everyone you share this page with now sees these figures (${monthLabel(inputs.months[0])} – ${monthLabel(inputs.month)}).`);
+      return true;
+    } catch (e) { notice('Could not save for viewers: ' + (e.message || e.code)); return false; }
+  }
+  async function loadSnapshot() {
+    if (!db) return null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const cur = await db.doc('snapshot/current').get().catch(() => null);
+      if (!cur || !cur.exists) return null;
+      const m = cur.data();
+      const parts = await Promise.all(Array.from({ length: m.parts }, (_, i) => db.doc(`snapshot/current/parts/${m.version}-${i}`).get().catch(() => null)));
+      if (parts.every(p => p && p.exists)) {
+        try { const inp = JSON.parse(parts.map(p => p.data().s).join('')); inp.kind = 'snapshot'; snapMeta = m; return inp; } catch (e) { /* mid-save: retry */ }
+      }
+      await sleep(1500);
+    }
+    return null;
+  }
+  async function resolveSaver() {
+    snapBy = '';
+    if (user && snapMeta && snapMeta.by) { try { const ps = await user.profiles([snapMeta.by]); snapBy = (ps[snapMeta.by] && ps[snapMeta.by].name) || ''; } catch (e) {} }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Build the dashboard for the chosen month from whatever was read.
+  // ---------------------------------------------------------------------------------------------
+  const covers = (m, n) => inputs && inputs.months.includes(m) && inputs.months.filter(x => x <= m).length >= Math.min(n, inputs.months.indexOf(m) + 1);
+  function build(month, n) {
+    const months = inputs.months.filter(m => m <= month).slice(-n);
+    const gp = Object.fromEntries(months.filter(m => inputs.gp[m]).map(m => [m, inputs.gp[m]]));
+    const built = core.buildDashboard({ month, months, gp, tracker: inputs.tracker, renewals: inputs.renewals,
+      clientInvoices: inputs.clientInv ? new Map(inputs.clientInv) : null, zoneInvoices: inputs.zoneInv ? inputs.zoneInv.filter(i => i.period >= months[0] && i.period <= month) : null,
+      emails: inputs.emails, today: dubaiToday(), windowDays: 60 });
+    const raw = { lines: inputs.tracker ? inputs.tracker.lines : [], checklist: inputs.tracker ? inputs.tracker.checklist : [], gp, renewals: inputs.renewals,
+      zone: inputs.zoneInv || [], client: inputs.clientInv ? inputs.clientInv.map(([n, v]) => ({ number: n, ...(v || { status: 'not found' }) })) : [], emails: inputs.emails || [] };
+    data = { ok: true, ...built, sources: inputs.sources, reads: inputs.reads, links: inputs.links, raw, generatedAt: inputs.generatedAt };
+  }
+  // Latest loaded month that has any free zone deal (the current month is often still empty).
+  function bestMonth(inp, want) {
+    const has = m => ((inp.gp[m] || []).some(g => g.zone)) || ((inp.tracker && inp.tracker.lines) || []).some(l => l.month === m);
+    if (has(want)) return want;
+    return inp.months.filter(m => m <= want).reverse().find(has) || want;
+  }
+  function notice(t) { $('notice').textContent = t; show('notice', !!t); }
+  function errorMsg(t) { $('error').textContent = t; show('error', !!t); }
+
+  async function goLive(fresh, first) {
+    if (busy) return; busy = true; $('refresh').disabled = true; errorMsg('');
+    let month = $('month').value;
+    try {
+      const inp = await liveInputs(month, span, fresh);
+      const allFailed = ['tracker', 'gp', 'renewals', 'zoho'].every(k => !inp.sources[k] || !inp.sources[k].ok);
+      if (allFailed && inputs) { errorMsg('Live refresh could not read any source: ' + (inp.sources.tracker && inp.sources.tracker.detail) + ' Showing the saved snapshot instead.'); }
+      else {
+        inputs = inp; mode = 'live'; if (first) month = bestMonth(inp, month); build(month, span); render();
+        if (canWrite) await saveSnapshot(); else notice('');
+      }
+    } catch (e) {
+      errorMsg(e.code === 'no_mcp' ? (inputs ? 'Live refresh needs the page open in claude.ai with Google Sheets, Google Drive and Zoho Analytics connected. Showing the saved snapshot.' : e.message) : (e.message || String(e)));
+    } finally { busy = false; $('refresh').disabled = false; show('loading', false); }
+  }
+  function setMonth(m) {
+    $('month').value = m;
+    if (inputs && covers(m, 1)) { build(m, span); render(); return; }
+    if (mode === 'snapshot' && !canWrite && inputs) { notice(`The saved snapshot covers ${monthLabel(inputs.months[0])} – ${monthLabel(inputs.month)}. Press Refresh live to read ${monthLabel(m)} (needs your own connections), or ask the owner to save a newer snapshot.`); $('month').value = data ? data.month : m; return; }
+    goLive(false);
+  }
+  $('month').addEventListener('change', () => setMonth($('month').value));
+  $('prev').addEventListener('click', () => setMonth(core.addMonths($('month').value, -1)));
+  $('next').addEventListener('click', () => setMonth(core.addMonths($('month').value, 1)));
+  $('refresh').addEventListener('click', () => goLive(true));
+  $('save').addEventListener('click', async () => { $('save').disabled = true; await saveSnapshot(); $('save').disabled = false; renderStatus(); });
+  $('spanSeg').querySelectorAll('[data-span]').forEach(b => b.onclick = () => {
+    span = +b.dataset.span; paintSpan();
+    if (inputs && inputs.months.filter(x => x <= $('month').value).length >= span) { build($('month').value, span); render(); }
+    else if (mode === 'snapshot' && !canWrite) { build($('month').value, span); render(); notice(`The saved snapshot holds ${inputs.months.length} months; showing all of them.`); }
+    else goLive(false);
+  });
+  const paintSpan = () => $('spanSeg').querySelectorAll('[data-span]').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.span === span)));
+  paintSpan();
+  document.addEventListener('click', e => { const m = $('exportMenu'); if (m.open && !m.contains(e.target)) m.open = false; });
 
   // Links to the exact row of a source sheet.
   const L = {
@@ -1009,28 +1210,18 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   };
   const rowLink = (url, label) => url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(label)} ↗</a>` : esc(label);
 
-  async function load(refresh) {
-    $('refresh').disabled = true; $('loading').classList.remove('hide'); $('error').classList.add('hide');
-    const month = $('month').value, span = Number($('span').value) || 6;
-    try { data = await loadLive(month, span, !!refresh); render(); }
-    catch (e) { $('error').textContent = e.message || String(e); $('error').classList.remove('hide'); }
-    finally { $('refresh').disabled = false; $('loading').classList.add('hide'); $('loading').textContent = 'Loading live data…'; }
-  }
-  $('refresh').addEventListener('click', () => load(true));
-  $('month').addEventListener('change', () => load());
-  $('span').addEventListener('change', () => load());
 
   const zoneName = c => (data.zones.find(z => z.code === c) || (data.rules.zones.find(z => z.code === c)) || {}).name || c || '—';
 
-  // ---------------------------------------------------------------------------------------------
-  // Filters (Transactions, Exceptions, Renewals, Commission invoices, Source data)
-  // ---------------------------------------------------------------------------------------------
-  const TX0 = { scope: 'month', zone: '', type: '', status: '', source: '', trackerStatus: '', ciStatus: '', agent: '', from: '', to: '', min: '', q: '', problems: false };
+  // ---- filters ----
+  const TX0 = { scope: 'month', zone: '', type: '', status: '', source: '', trackerStatus: '', ciStatus: '', agent: '', from: '', to: '', min: '', q: '', problems: false, more: false };
   let fx = { ...TX0 }, fe = { severity: '', kind: '', zone: '', q: '' }, fr = { state: '', zone: '', manager: '', q: '' }, fi = { status: '', zone: '', q: '' }, fs = { set: 'lines', q: '' };
   const OK_STATES = ['Completed', 'No commission', 'Awaiting payment'];
+  const zoneOk = z => !gz || z === gz;
+  function txBase() { return (fx.scope === 'all' ? data.workAll : data.work).filter(w => zoneOk(w.zone)); }
   function txRows() {
     const q = fx.q.toLowerCase(), min = Number(fx.min) || 0;
-    return (fx.scope === 'all' ? data.workAll : data.work).filter(w =>
+    return txBase().filter(w =>
       (!fx.zone || w.zone === fx.zone) && (!fx.type || w.type === fx.type) && (!fx.status || w.status === fx.status) && (!fx.source || w.source === fx.source)
       && (!fx.trackerStatus || (w.trackerStatus || '(none)') === fx.trackerStatus) && (!fx.ciStatus || (w.commissionInvoiceStatus || '(none)') === fx.ciStatus)
       && (!fx.agent || w.agent === fx.agent) && (!fx.from || (w.date || '') >= fx.from) && (!fx.to || (w.date || '') <= fx.to) && (!min || (w.commission || 0) >= min)
@@ -1039,7 +1230,8 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   }
   const uniq = (list, f) => [...new Set(list.map(f).filter(v => v != null && v !== ''))].sort();
   const opts = (list, cur, all) => `<option value="">${esc(all)}</option>` + list.map(v => Array.isArray(v) ? v : [v, v]).map(([v, l]) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(l)}</option>`).join('');
-  function goTx(set) { fx = { ...TX0, ...set }; tab = 'work'; closeDrawer(); render(); window.scrollTo({ top: $('tabs').offsetTop - 8, behavior: 'smooth' }); }
+  const countBy = (list, f) => list.reduce((m, x) => { const k = f(x); m[k] = (m[k] || 0) + 1; return m; }, {});
+  function goTx(set) { fx = { ...TX0, ...set }; if (set.zone) { gz = set.zone; fx.zone = ''; } tab = 'work'; closeDrawer(); render(); window.scrollTo({ top: $('tabs').offsetTop - 10, behavior: 'smooth' }); }
 
   // ---------------------------------------------------------------------------------------------
   // Explain drawer
@@ -1109,93 +1301,222 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   }
   function wireDealLinks(root) { root.querySelectorAll('[data-deal]').forEach(b => b.onclick = () => explainDeal(data.workAll[+b.dataset.deal])); }
 
+
+  // ---- KPI "How?" ----
+  const zt = () => gz ? ` for ${zoneName(gz)}` : '';
   const KPI = {
-    commission: { t: 'Commission earned', f: () => `Sum of the commission on every free zone deal in ${monthLabel(data.month)} — RAK DAO, RAK ICC, Meydan, RAKEZ and other free zones. For each deal the commission tracker's figure (GP Commission Lines, column G) is used when the deal is on the tracker; otherwise the GP report's "Free zone Commission" column.`, go: { scope: 'month' } },
-    uninvoiced: { t: 'Not yet invoiced', f: () => `Sum of the commission on ${monthLabel(data.month)} deals the tracker marks Uninvoiced (or leaves blank), plus GP-report-only deals with no Zoho commission invoice for that free zone and month. The smaller figure underneath adds every month loaded.`, go: { scope: 'month', ciStatus: '' }, filter: w => w.status === 'Pending commission invoice' || (w.missing || []).some(x => /not yet invoiced|not invoiced|partly invoiced/i.test(x)) },
-    missed: { t: 'Commission missed', f: () => `Sum of the commission on ${monthLabel(data.month)} lines whose tracker Status is "Missed".`, go: { status: 'Commission missed' } },
-    toCollect: { t: 'Still to collect', f: () => data.kpis.toCollectSource === 'Invoice Checklist' ? 'Sum of "Still to collect (AED)" on every Invoice Checklist row with Status TO COLLECT — exactly as the tracker computes it. Amounts include 5% VAT.' : 'Sum of the open balances on Zoho commission invoices to the four free zones.' },
-    deals: { t: 'Free zone deals', f: () => `Deals in ${monthLabel(data.month)} for RAK DAO, RAK ICC, Meydan and RAKEZ (tracker lines joined to GP report rows, plus GP-report-only deals). Complete = Completed, No commission or Awaiting payment.`, go: { scope: 'month', source: '' } },
-    renewals: { t: 'Renewals pending', f: () => `Renewals sheet rows for the four free zones that are Not started, Overdue or In progress: due within ${data.windowDays} days or already expired, with no renewal on the GP report or tracker.` },
-    exceptions: { t: 'Exceptions', f: () => 'Everything the checks flag across all loaded months — see the Exceptions tab for each one and its source rows.' }
+    commission: { t: 'Commission earned', f: () => `Sum of the commission on every free zone deal in ${monthLabel(data.month)}${zt()}${gz ? '' : ' — RAK DAO, RAK ICC, Meydan, RAKEZ and other free zones'}. For each deal the commission tracker's figure (GP Commission Lines, column G) is used when the deal is on the tracker; otherwise the GP report's "Free zone Commission" column.`, go: { scope: 'month' } },
+    uninvoiced: { t: 'Not yet invoiced', f: () => `Sum of the commission on ${monthLabel(data.month)} deals${zt()} the tracker marks Uninvoiced (or leaves blank), plus GP-report-only deals with no Zoho commission invoice for that free zone and month. The smaller figure underneath adds every month loaded.`, go: { scope: 'month', status: 'Pending commission invoice' }, filter: w => w.status === 'Pending commission invoice' || (w.missing || []).some(x => /not yet invoiced|not invoiced|partly invoiced/i.test(x)) },
+    missed: { t: 'Commission missed', f: () => `Sum of the commission on ${monthLabel(data.month)} lines${zt()} whose tracker Status is "Missed".`, go: { scope: 'all', status: 'Commission missed' } },
+    toCollect: { t: 'Still to collect', f: () => `Sum of "Still to collect (AED)" on every Invoice Checklist row${zt()} with Status TO COLLECT — exactly as the tracker computes it. Amounts include 5% VAT. The coloured bar splits it by how many days each invoice has been outstanding.` },
+    deals: { t: 'Free zone deals', f: () => `Deals in ${monthLabel(data.month)}${zt() || ' for RAK DAO, RAK ICC, Meydan and RAKEZ'} (tracker lines joined to GP report rows, plus GP-report-only deals). Complete = Completed, No commission or Awaiting payment.`, go: { scope: 'month' } },
+    renewals: { t: 'Renewals due', f: () => `Renewals sheet rows${zt()} that are Not started, Overdue or In progress: due within ${data.windowDays} days or already expired, with no renewal on the GP report or tracker.` }
   };
   function explainKpi(key) {
-    const k = KPI[key], v = data.kpis;
+    const k = KPI[key], v = kpiVals();
     let html = sec('Formula', `<p>${esc(k.f())}</p>`);
     if (key === 'toCollect') {
-      const rows = (data.commissionInvoices || []).filter(c => c.status === 'TO COLLECT');
+      const rows = v.coll;
       html += sec(`Invoice Checklist rows (${rows.length})`, `<div class="tablewrap"><table><thead><tr><th>Invoice</th><th>Free zone</th><th>Date</th><th class="r">Still to collect</th><th class="r">Days</th></tr></thead><tbody>${rows.map(c => `<tr><td>${rowLink(L.checklist(c.sheetRow), c.number)}</td><td>${esc(zoneName(c.zone))}</td><td>${fmtDate(c.date)}</td><td class="r">${aedFull(c.toCollect)}</td><td class="r">${c.daysOutstanding ?? '—'}</td></tr>`).join('')}<tr class="total"><td colspan="3">Total</td><td class="r">${aedFull(v.toCollect)}</td><td></td></tr></tbody></table></div>`);
+      html += `<button class="btn" id="kgo" type="button">Open commission invoices</button>`;
     } else if (key === 'renewals') {
-      html += `<button class="btn" id="kgo">Show the renewals</button>`;
-    } else if (key === 'exceptions') {
-      html += `<button class="btn" id="kgo">Open the exceptions</button>`;
+      html += `<button class="btn" id="kgo" type="button">Show the renewals</button>`;
     } else {
-      const rows = data.work.filter(w => w.source !== 'Renewals sheet').filter(k.filter || (key === 'missed' ? (w => w.status === 'Commission missed') : (() => true)));
+      const rows = data.work.filter(w => w.source !== 'Renewals sheet' && zoneOk(w.zone)).filter(k.filter || (key === 'missed' ? (w => w.status === 'Commission missed') : (() => true)));
       const sum = rows.reduce((a, w) => a + (w.commission || 0), 0);
-      html += sec(`Contributing deals (${rows.length})`, `<div class="tablewrap"><table><thead><tr><th>Deal</th><th>Free zone</th><th>From</th><th class="r">AED</th></tr></thead><tbody>${rows.map(w => `<tr><td><button class="link" data-deal="${data.workAll.indexOf(w)}">${esc(w.name)}</button></td><td>${esc(zoneName(w.zone))}</td><td class="muted">${w.trackerRow ? 'tracker row ' + w.trackerRow : ''}${w.trackerRow && w.gpRow ? ' · ' : ''}${w.gpRow ? 'GP row ' + w.gpRow : ''}</td><td class="r">${aedFull(w.commission)}</td></tr>`).join('')}<tr class="total"><td colspan="3">Total of these rows</td><td class="r">${aedFull(sum)}</td></tr></tbody></table></div>${key === 'commission' ? `<p class="muted small">Tracked free zones only are listed; the tile also includes other free zones (Dubai South, IFZA…): AED ${aedFull(data.summary.find(s => s.month === data.month).zones.OTHER.commission)}.</p>` : ''}`);
-      if (k.go) html += `<button class="btn" id="kgo">Show these in Transactions</button>`;
+      html += sec(`Contributing deals (${rows.length})`, `<div class="tablewrap"><table><thead><tr><th>Deal</th><th>Free zone</th><th>From</th><th class="r">AED</th></tr></thead><tbody>${rows.map(w => `<tr><td><button class="link" type="button" data-deal="${data.workAll.indexOf(w)}">${esc(w.name)}</button></td><td>${esc(zoneName(w.zone))}</td><td class="muted">${w.trackerRow ? 'tracker row ' + w.trackerRow : ''}${w.trackerRow && w.gpRow ? ' · ' : ''}${w.gpRow ? 'GP row ' + w.gpRow : ''}</td><td class="r">${aedFull(w.commission)}</td></tr>`).join('')}<tr class="total"><td colspan="3">Total of these rows</td><td class="r">${aedFull(sum)}</td></tr></tbody></table></div>`);
+      if (k.go) html += `<button class="btn" id="kgo" type="button">Show these in Transactions</button>`;
     }
-    openDrawer(k.t, html);
+    openDrawer(k.t + (gz ? ' · ' + zoneName(gz) : ''), html);
     wireDealLinks($('drawerBody'));
-    const b = $('kgo'); if (b) b.onclick = () => { if (key === 'renewals') { tab = 'renewals'; closeDrawer(); render(); } else if (key === 'exceptions') { tab = 'exceptions'; closeDrawer(); render(); } else goTx(k.go); };
+    const b = $('kgo'); if (b) b.onclick = () => { if (key === 'renewals' || key === 'toCollect') { tab = key === 'renewals' ? 'renewals' : 'invoices'; closeDrawer(); render(); } else goTx(k.go); };
   }
+
+
+  function explainZone(code) {
+    const sel = data.summary.find(s => s.month === data.month), z = sel.zones[code], deals = data.work.filter(w => w.zone === code && w.source !== 'Renewals sheet');
+    let html = `<div class="xhead">${sel.state !== 'No data' ? pill(sel.state) : ''} <span class="muted">${monthLabel(data.month)} · baseline: ${esc(sel.baseline || '—')}</span></div>`;
+    html += sec('Figures', `<dl class="kv"><dt>Total commission</dt><dd><b>AED ${aedFull(z.commission)}</b><div class="muted">Sum of the commission on the ${z.count} deals below (tracker figure where the deal is on the tracker, else the GP report)</div></dd>
+      <dt>New</dt><dd>${z.newCount} deals · AED ${aedFull(z.newCommission)}</dd><dt>Renewals</dt><dd>${z.renewalCount} deals · AED ${aedFull(z.renewalCommission)}</dd>
+      <dt>Invoiced</dt><dd>AED ${aedFull(z.invoicedLines)}<div class="muted">Lines the tracker marks Invoiced</div></dd><dt>Not yet invoiced</dt><dd>AED ${aedFull(z.uninvoiced)}</dd><dt>Missed</dt><dd>AED ${aedFull(z.missed)}</dd>
+      <dt>Gross fees</dt><dd>AED ${aedFull(z.fees)}<div class="muted">Fee paid to the free zone, from the GP report fee columns</div></dd>
+      <dt>GP report check</dt><dd>AED ${aedFull(z.gpCommission)} on the GP report vs AED ${aedFull(z.trackerCommission)} on the tracker ${Math.abs(z.gpCommission - z.trackerCommission) <= 1 ? pill('Matches', 'good') : pill('Differs', 'serious')}</dd>
+      ${data.zoneInvoices ? `<dt>Zoho invoiced</dt><dd>AED ${aedFull(z.invoiced)} ex VAT${z.invoices.length ? ' · ' + z.invoices.map(esc).join(', ') : ''}</dd>` : ''}</dl>`);
+    if (code !== 'OTHER') html += sec(`Deals (${deals.length})`, deals.length ? `<div class="tablewrap"><table><thead><tr><th>Deal</th><th>Type</th><th>Status</th><th class="r">AED</th></tr></thead><tbody>${deals.map(w => `<tr><td><button class="link" data-deal="${data.workAll.indexOf(w)}">${esc(w.name)}</button></td><td>${esc(w.type)}</td><td>${pill(w.status)}</td><td class="r">${aedFull(w.commission)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No deals.</p>') + `<button class="btn" id="kgo" type="button">Open in Transactions</button>`;
+    openDrawer(code === 'OTHER' ? 'Other free zones' : zoneName(code), html);
+    wireDealLinks($('drawerBody'));
+    const b = $('kgo'); if (b) b.onclick = () => goTx({ zone: code, scope: 'month' });
+  }
+
+  function shareHelp() {
+    openDrawer('Share this dashboard', `
+      <p><b>Sending the link is not enough</b> — a claude.ai page is private until you give people access in its Share menu.</p>
+      <ol class="steps">
+        <li><div>On this page in claude.ai, click <b>Share</b> (top right of the page).</div></li>
+        <li><div>Under <b>General access</b>, choose your organisation — or type your colleagues' emails to add them one by one.</div></li>
+        <li><div>Give them <b>Viewer</b> to see the figures, or <b>Editor</b> if they should also refresh and save new figures.</div></li>
+        <li><div>Click <b>Copy link</b> and send it. They open it signed in to claude.ai.</div></li>
+      </ol>
+      ${sec('What they will see', `<ul class="plain"><li>The figures you last saved (${snapMeta && snapMeta.savedAt ? 'saved ' + esc(fmtWhen(snapMeta.savedAt)) : 'saved automatically each time you open the page'}), with every month, filter and Explain panel — no Google or Zoho connection needed on their side.</li><li>"Refresh live" works for anyone who has Google Sheets, Google Drive and Zoho Analytics connected in their own claude.ai.</li><li>Because the page reads your Google and Zoho connections, it can be shared with people in your organisation or invited by email, not by a public link.</li></ul>`)}
+      ${sec('Status of this page', `<ul class="plain"><li>You ${canWrite ? '<b>can</b>' : 'cannot'} save figures for viewers here.</li><li>${snapMeta ? `A snapshot is saved: ${esc(monthLabel(snapMeta.months ? snapMeta.months[0] : ''))} – ${esc(monthLabel(snapMeta.month))}${snapBy ? ' by ' + esc(snapBy) : ''}.` : 'No snapshot saved yet — open the page and press Refresh live once.'}</li></ul>`)}`);
+  }
+  $('shareBtn').addEventListener('click', shareHelp);
+
+  function summaryText() {
+    const sel = data.summary.find(s => s.month === data.month), k = kpiVals();
+    const lines = [`Free zone commissions — ${monthLabel(data.month)}${gz ? ' — ' + zoneName(gz) : ''}`, '',
+      `Commission earned: AED ${aedFull(k.commission)}`, `Not yet invoiced: AED ${aedFull(k.uninvoiced)} (all loaded months: AED ${aedFull(k.uninvoicedAll)})`,
+      `Commission missed: AED ${aedFull(k.missed)}`, `Still to collect: AED ${aedFull(k.toCollect)} across ${k.toCollectCount} invoices`, `Deals: ${k.deals} (${k.completed} complete, ${k.deals - k.completed} pending)`, `Renewals due: ${k.renewals} (${k.overdue} overdue)`, '',
+      'By free zone:', ...data.zones.filter(z => zoneOk(z.code)).map(z => `- ${z.name}: AED ${aedFull(sel.zones[z.code].commission)} (not yet invoiced AED ${aedFull(sel.zones[z.code].uninvoiced)})`), '',
+      'Top actions:', ...exList().slice(0, 6).map(e => `- [${e.severity}] ${e.kind}: ${e.detail}`), '',
+      `Source: ${mode === 'live' ? 'read live ' + fmtWhen(data.generatedAt) : 'snapshot saved ' + fmtWhen(snapMeta && snapMeta.savedAt)} (Dubai).`];
+    return lines.join('\n');
+  }
+  $('copy').addEventListener('click', async () => {
+    if (!data) return;
+    const t = summaryText();
+    try { await navigator.clipboard.writeText(t); notice('Summary copied — paste it into an email or chat.'); }
+    catch (e) { openDrawer('Copy summary', `<p class="muted">Select all and copy:</p><textarea class="copybox" id="copyBox" readonly>${esc(t)}</textarea>`); const b = $('copyBox'); b.focus(); b.select(); }
+  });
+
+  // ---- exports ----
+  async function saveCsv(filename, rows) {
+    const csv = rows.map(r => r.map(v => { const s = String(v ?? ''); return /[",\n]/.test(s) || /^[=+\-@]/.test(s) ? '"' + (/^[=+\-@]/.test(s) ? "'" : '') + s.replace(/"/g, '""') + '"' : s; }).join(',')).join('\n');
+    const dl = window.claude && window.claude.use ? await window.claude.use('downloads').catch(() => null) : null;
+    if (!dl) { errorMsg('Saving files is not available in this view.'); return; }
+    try { await dl.save({ filename, data: csv }); } catch (e) { if (e && e.code === 'unavailable') errorMsg('Saving files is not available in this view.'); }
+  }
+  const TXHEAD = ['Month', 'Date', 'Client/Company', 'Client', 'Free zone', 'Type', 'Services', 'Agent', 'Found on', 'Commission from', 'Tracker row', 'GP report row', 'Renewals row', 'How matched', 'Tracker status', 'Client invoice', 'Client invoice status', 'Gross fee AED', 'Commission AED', 'Commission %', 'Commission invoice', 'Commission invoice status', 'Renewals sheet', 'Email found', 'Status', 'Decided by', 'Missing'];
+  const txLine = w => [w.month, w.date, w.name, w.client, zoneName(w.zone), w.type, w.services, w.agent, w.source, w.commissionFrom, w.trackerRow, w.gpRow, w.renewal && w.renewal.sheetRow, w.joinedBy, w.trackerStatus, w.invoice, w.invoiceStatus, w.fee, w.commission, w.commissionPct, w.commissionInvoice, w.commissionInvoiceStatus, w.renewalStatus, w.email == null ? '' : w.email ? 'Yes' : 'No', w.status, w.decidedBy, w.missing.join('; ')];
+  document.querySelectorAll('[data-export]').forEach(b => b.onclick = () => {
+    $('exportMenu').open = false; if (!data) return;
+    const k = b.dataset.export, sel = data.summary.find(s => s.month === data.month), tag = (gz ? zoneName(gz).replace(/\s+/g, '-') + '-' : '') + data.month;
+    if (k === 'tx') saveCsv(`free-zone-transactions-${tag}.csv`, [TXHEAD, ...data.work.filter(w => zoneOk(w.zone)).map(txLine)]);
+    if (k === 'txall') saveCsv(`free-zone-transactions-all-months-${tag}.csv`, [TXHEAD, ...data.workAll.filter(w => zoneOk(w.zone)).map(txLine)]);
+    if (k === 'ex') saveCsv(`free-zone-exceptions-${tag}.csv`, [['Severity', 'What', 'Free zone', 'Detail', 'AED'], ...exList().map(e => [e.severity, e.kind, zoneName(e.zone), e.detail, e.amount])]);
+    if (k === 'ren') saveCsv(`free-zone-renewals-${tag}.csv`, [['Company', 'Free zone', 'Expiry', 'Days', 'State', 'Why', 'Sheet status', 'Progress', 'Remarks', 'Manager', 'Renewals row'], ...data.renewals.filter(r => zoneOk(r.zone)).map(r => [r.company, zoneName(r.zone), r.expiry, r.daysLeft, r.state, r.reason, r.status, r.progress, r.remarks, r.manager, r.sheetRow])]);
+    if (k === 'inv') saveCsv(`free-zone-commission-invoices-${tag}.csv`, [['Invoice', 'Free zone', 'Date', 'Amount', 'Tracker status', 'Received on', 'Still to collect', 'Days outstanding', 'Zoho status', 'Zoho balance', 'Bills month', 'Checklist row', 'Notes'], ...(data.commissionInvoices || []).filter(c => zoneOk(c.zone)).map(c => [c.number, zoneName(c.zone), c.date, c.amount, c.status, c.receivedOn, c.toCollect, c.daysOutstanding, c.zoho && c.zoho.status, c.zoho && c.zoho.balance, c.zoho && c.zoho.period, c.sheetRow, c.notes])]);
+    if (k === 'zones') saveCsv(`free-zone-summary-${data.month}.csv`, [['Month', 'Free zone', 'Deals', 'New', 'New commission', 'Renewals', 'Renewal commission', 'Gross fees', 'Commission', 'Invoiced', 'Not yet invoiced', 'Missed', 'GP report commission', 'Zoho invoiced', 'Month status'], ...data.summary.flatMap(s => data.zones.map(z => { const c = s.zones[z.code]; return [s.month, z.name, c.count, c.newCount, c.newCommission, c.renewalCount, c.renewalCommission, c.fees, c.commission, c.invoicedLines, c.uninvoiced, c.missed, c.gpCommission, c.invoiced, s.state]; }))]);
+  });
 
   // ---------------------------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------------------------
-  function render() {
-    $('body').classList.remove('hide');
-    const S = data.sources, src = (k, label) => {
-      const s = S[k] || {}, kind = s.ok ? (s.warning ? 'warn' : 'good') : s.off ? 'neutral' : 'critical';
-      const sym = s.ok ? (s.warning ? '!' : '✓') : s.off ? '–' : '✗';
-      return `<div class="src"><span class="pill ${kind}" aria-label="${kind}"><i></i>${sym}</span><div><b>${label}</b><span class="d">${esc(s.detail || '')}${s.warning ? ' · ' + esc(s.warning) : ''}${s.url ? ` · <a href="${esc(s.url)}" target="_blank" rel="noopener">open</a>` : ''}</span></div></div>`;
-    };
-    $('sources').innerHTML = src('tracker', 'Commission tracker') + src('gp', 'GP reports') + src('zoho', 'Zoho') + src('renewals', 'Renewals sheet') + src('gmail', 'Gmail');
-    $('stamp').innerHTML = `Read live at ${esc(new Date(data.generatedAt).toLocaleString('en-GB', { timeZone: 'Asia/Dubai', dateStyle: 'medium', timeStyle: 'short' }))} Dubai · today ${fmtDate(data.today)} · <button class="link" id="howlink">How every figure is calculated</button> · <button class="link" id="srclink">See the source rows</button>`;
+  function kpiVals() {
+    const sel = data.summary.find(s => s.month === data.month), z = gz ? sel.zones[gz] : sel.total;
+    const deals = data.work.filter(w => w.source !== 'Renewals sheet' && zoneOk(w.zone));
+    const coll = (data.commissionInvoices || []).filter(c => c.status === 'TO COLLECT' && zoneOk(c.zone));
+    const ren = data.renewals.filter(r => zoneOk(r.zone) && ['Not started', 'Overdue', 'In progress'].includes(r.state));
+    return { commission: z.commission, uninvoiced: z.uninvoiced, missed: z.missed,
+      uninvoicedAll: data.summary.reduce((a, s) => a + (gz ? s.zones[gz].uninvoiced : s.total.uninvoiced), 0),
+      toCollect: data.commissionInvoices ? coll.reduce((a, c) => a + (c.toCollect || 0), 0) : null, toCollectCount: coll.length, coll,
+      deals: deals.length, completed: deals.filter(w => OK_STATES.includes(w.status)).length, renewals: ren.length, overdue: ren.filter(r => r.state === 'Overdue').length };
+  }
+  function spark(values, color) {
+    const W = 160, H = 30, max = Math.max(1, ...values), n = values.length;
+    if (n < 2) return '';
+    const pts = values.map((v, i) => [i * (W - 4) / (n - 1) + 2, H - 3 - (v / max) * (H - 8)]);
+    const d = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+    const last = pts[pts.length - 1];
+    return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><path d="${d} L${last[0]},${H} L${pts[0][0]},${H} Z" fill="${color}" opacity=".12"/><path d="${d}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/><circle cx="${last[0]}" cy="${last[1]}" r="3" fill="${color}"/></svg>`;
+  }
+  const agingBuckets = coll => [['0–30 days', 0, 30, 'g'], ['31–60 days', 31, 60, 'y'], ['61–90 days', 61, 90, 'w'], ['Over 90 days', 91, 1e9, 'c']].map(([l, a, b, cls]) => { const r = coll.filter(c => (c.daysOutstanding ?? 0) >= a && (c.daysOutstanding ?? 0) <= b); return { l, cls, n: r.length, amt: r.reduce((s, c) => s + (c.toCollect || 0), 0) }; });
+
+  function renderStatus() {
+    const S = data.sources, sp = (k, label) => { const s = S[k] || {}, kind = s.ok ? (s.warning ? 'warn' : 'good') : s.off ? 'neutral' : 'critical'; return `<button class="spill ${kind}" type="button" data-src="${k}" title="${esc(s.detail || '')}${s.warning ? ' · ' + esc(s.warning) : ''}"><i></i>${label}</button>`; };
+    const modeHtml = mode === 'live' ? `<span class="mode"><i></i>Live · read ${esc(fmtWhen(data.generatedAt))}</span>` : `<span class="mode snap"><i></i>Saved snapshot · ${esc(fmtWhen(snapMeta && snapMeta.savedAt))}${snapBy ? ' by ' + esc(snapBy) : ''}</span>`;
+    $('statusbar').innerHTML = `${modeHtml}<span>Sources:</span>${sp('tracker', 'Commission tracker')}${sp('gp', 'GP reports')}${sp('zoho', 'Zoho')}${sp('renewals', 'Renewals')}${sp('gmail', 'Gmail')}<button class="link" style="color:var(--band-ink)" id="howlink" type="button">How every figure is calculated</button>`;
+    $('statusbar').querySelectorAll('[data-src]').forEach(b => b.onclick = () => { const map = { tracker: 'lines', gp: 'gp:' + data.month, zoho: 'zone', renewals: 'renewals', gmail: 'emails' }; fs = { set: map[b.dataset.src], q: '' }; tab = 'source'; render(); });
     $('howlink').onclick = () => { tab = 'how'; render(); };
-    $('srclink').onclick = () => { tab = 'source'; render(); };
+    $('save').hidden = !(canWrite && mode === 'live');
+  }
 
-    const k = data.kpis, m = monthLabel(data.month);
+  function render() {
+    show('body', true); show('loading', false);
+    $('month').value = data.month;
+    renderStatus();
+    const sel = data.summary.find(s => s.month === data.month);
+    $('zoneChips').innerHTML = `<button class="chip" type="button" data-z="" aria-pressed="${!gz}">All free zones <span class="n">${aed(sel.total.commission)}</span></button>` + data.zones.filter(z => z.code !== 'OTHER').map(z => `<button class="chip" type="button" data-z="${z.code}" aria-pressed="${gz === z.code}"><i style="background:${SERIES[z.code]}"></i>${esc(z.name)} <span class="n">${aed(sel.zones[z.code].commission)}</span></button>`).join('');
+    $('zoneChips').querySelectorAll('[data-z]').forEach(b => b.onclick = () => { gz = b.dataset.z; render(); });
+
+    const k = kpiVals(), series = key => data.summary.map(s => gz ? s.zones[gz][key] : s.total[key]);
+    const prev = data.summary[data.summary.findIndex(s => s.month === data.month) - 1], prevV = prev ? (gz ? prev.zones[gz].commission : prev.total.commission) : null;
+    const delta = prevV ? Math.round((k.commission - prevV) / prevV * 100) : null;
+    const ag = agingBuckets(k.coll), agTot = Math.max(1, ag.reduce((a, b) => a + b.amt, 0));
+    const done = k.deals ? Math.round(k.completed / k.deals * 100) : 0;
     const tiles = [
-      ['commission', 'Commission earned', aed(k.commission), `${m} · ${data.baseline || 'no data'}`],
-      ['uninvoiced', 'Not yet invoiced', aed(k.uninvoiced), `${m} · ${aed(k.uninvoicedAll)} across ${data.months.length} months`],
-      ['missed', 'Commission missed', aed(k.missed), `${m} · marked Missed on the tracker`],
-      ['toCollect', 'Still to collect', aed(k.toCollect), k.toCollect == null ? 'Tracker and Zoho not connected' : `${k.toCollectCount} invoice${k.toCollectCount === 1 ? '' : 's'} · ${k.toCollectSource}`],
-      ['deals', 'Free zone deals', String(k.deals), `${k.completed} complete · ${k.pending} pending`],
-      ['renewals', 'Renewals pending', String(k.renewalsDue), `${k.renewalsOverdue} overdue`],
-      ['exceptions', 'Exceptions', String(k.exceptions), 'Where commission or work may be missed']
+      ['commission', 'Commission earned', aed(k.commission), `${monthLabel(data.month)}${delta != null ? ` · <span class="delta ${delta >= 0 ? 'up' : 'down'}">${delta >= 0 ? '▲' : '▼'} ${Math.abs(delta)}% vs ${MON[+prev.month.slice(5, 7) - 1]}</span>` : ''}`, spark(series('commission'), 'var(--accent)'), { scope: 'month' }],
+      ['uninvoiced', 'Not yet invoiced', aed(k.uninvoiced), `All ${data.months.length} months: ${aed(k.uninvoicedAll)}`, spark(series('uninvoiced'), 'var(--serious)'), { scope: 'month', status: 'Pending commission invoice' }],
+      ['missed', 'Commission missed', aed(k.missed), 'Marked Missed on the tracker', spark(series('missed'), 'var(--critical)'), { scope: 'all', status: 'Commission missed' }],
+      ['toCollect', 'Still to collect', aed(k.toCollect), k.toCollect == null ? 'Tracker not connected' : `${k.toCollectCount} invoices · Invoice Checklist`, `<div class="bar" aria-label="Aging">${ag.filter(b => b.amt).map(b => `<span class="${b.cls}" style="width:${b.amt / agTot * 100}%" title="${b.l}: AED ${aedFull(b.amt)}"></span>`).join('')}</div>`, null],
+      ['deals', 'Free zone deals', String(k.deals), `${k.completed} complete · ${k.deals - k.completed} pending`, `<div class="bar"><span class="g" style="width:${done}%"></span><span class="w" style="width:${100 - done}%"></span></div>`, { scope: 'month' }],
+      ['renewals', 'Renewals due', String(k.renewals), `${k.overdue} overdue · within ${data.windowDays} days`, '', null]
     ];
-    $('kpis').innerHTML = tiles.map(([key, l, v, n]) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="n">${esc(n)}</div><button class="how" data-kpi="${key}" aria-label="How is ${esc(l)} calculated?">How?</button></div>`).join('');
+    $('kpis').innerHTML = tiles.map(([key, l, v, n, viz, go], i) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="n">${n}</div>${viz || ''}<div class="foot">${go ? `<button class="btn sm" type="button" data-kgo="${i}">View deals</button>` : key === 'toCollect' ? '<button class="btn sm" type="button" data-ktab="invoices">View invoices</button>' : key === 'renewals' ? '<button class="btn sm" type="button" data-ktab="renewals">View renewals</button>' : ''}</div><button class="how" type="button" data-kpi="${key}" aria-label="How is ${esc(l)} calculated?">How?</button></div>`).join('');
     $('kpis').querySelectorAll('[data-kpi]').forEach(b => b.onclick = () => explainKpi(b.dataset.kpi));
+    $('kpis').querySelectorAll('[data-kgo]').forEach(b => b.onclick = () => goTx(tiles[+b.dataset.kgo][6]));
+    $('kpis').querySelectorAll('[data-ktab]').forEach(b => b.onclick = () => { tab = b.dataset.ktab; render(); });
 
-    const tabs = [['overview', 'By free zone'], ['work', `Transactions (${data.work.length})`], ['renewals', `Renewals (${data.renewals.length})`], ['exceptions', `Exceptions (${data.exceptions.length})`], ['invoices', 'Commission invoices'], ...(data.emails ? [['emails', `Emails (${data.emails.length})`]] : []), ['source', 'Source data'], ['how', 'How it\'s calculated']];
+    const exN = exList().length, exHigh = exList().filter(e => e.severity === 'high').length;
+    const tabs = [['overview', 'Overview'], ['work', 'Transactions', txBase().length], ['exceptions', 'Exceptions', exN, exHigh], ['renewals', 'Renewals', data.renewals.filter(r => zoneOk(r.zone)).length], ['invoices', 'Commission invoices', (data.commissionInvoices || []).filter(c => zoneOk(c.zone)).length], ...(data.emails ? [['emails', 'Emails', data.emails.length]] : []), ['source', 'Source data'], ['how', 'How it\'s calculated']];
     if (!tabs.some(t => t[0] === tab)) tab = 'overview';
-    $('tabs').innerHTML = tabs.map(([id, l]) => `<button role="tab" data-tab="${id}" aria-selected="${id === tab}">${l}</button>`).join('');
+    $('tabs').innerHTML = tabs.map(([id, l, n, hot]) => `<button role="tab" type="button" data-tab="${id}" aria-selected="${id === tab}">${l}${n != null ? ` <span class="badge ${hot ? 'hot' : ''}">${n}</span>` : ''}</button>`).join('');
     $('tabs').querySelectorAll('button').forEach(b => b.onclick = () => { tab = b.dataset.tab; render(); });
     $('panes').innerHTML = ({ overview, work, renewals, exceptions, invoices, emails, source, how })[tab]();
     ({ overview: wireOverview, work: wireWork, renewals: wireRenewals, exceptions: wireExceptions, invoices: wireInvoices, source: wireSource })[tab]?.();
   }
 
-  // ---- By free zone ----
+  // ---- Overview ----
+  function exList() { return data.exceptions.filter(e => zoneOk(e.zone)); }
   function overview() {
-    const sel = data.summary.find(s => s.month === data.month), zi = data.zoneInvoices != null;
-    const go = (z, extra, v, fmt = aedFull) => `<button class="num" data-go='${esc(JSON.stringify({ zone: z === 'OTHER' ? '' : z, scope: 'month', ...extra }))}' ${z === 'OTHER' ? 'disabled title="Other free zones are not in the transaction log"' : ''}>${fmt(v)}</button>`;
-    const row = (code, label, z, cls = '') => `<tr class="${cls}"><td>${label}</td><td class="r">${code ? go(code, {}, z.count, String) : z.count}</td><td class="r">${code ? go(code, { type: 'New' }, z.newCommission) : aedFull(z.newCommission)} <span class="muted">(${z.newCount})</span></td><td class="r">${code ? go(code, { type: 'Renewal' }, z.renewalCommission) : aedFull(z.renewalCommission)} <span class="muted">(${z.renewalCount})</span></td>
-      <td class="r">${aedFull(z.fees)}</td><td class="r"><b>${aedFull(z.commission)}</b></td><td class="r">${code ? go(code, { trackerStatus: 'Invoiced' }, z.invoicedLines) : aedFull(z.invoicedLines)}</td><td class="r">${code ? go(code, { status: 'Pending commission invoice' }, z.uninvoiced) : aedFull(z.uninvoiced)}</td><td class="r">${code ? go(code, { status: 'Commission missed' }, z.missed) : aedFull(z.missed)}</td>
-      <td class="r">${sel.hasReport ? aedFull(z.gpCommission) : '—'}</td>${zi ? `<td class="r">${aedFull(z.invoiced)}</td>` : ''}</tr>`;
-    const zoneTable = !sel.total.count ? `<div class="empty">No commission tracker lines or GP report for ${monthLabel(data.month)} yet.</div>` : `<div class="tablewrap"><table>
-      <thead><tr><th>Free zone</th><th class="r">Deals</th><th class="r">New (count)</th><th class="r">Renewals (count)</th><th class="r">Gross fees</th><th class="r">Total commission</th><th class="r">Invoiced</th><th class="r">Not yet invoiced</th><th class="r">Missed</th><th class="r">GP report (check)</th>${zi ? '<th class="r">Zoho invoiced</th>' : ''}</tr></thead>
-      <tbody>${data.zones.map(z => row(z.code, `<span class="pill neutral" style="background:none;padding:0"><i style="background:${SERIES[z.code]}"></i>${esc(z.name)}</span>`, sel.zones[z.code])).join('')}
-      ${row(null, 'Total', sel.total, 'total')}</tbody></table></div>`;
-    const hist = `<div class="tablewrap"><table><thead><tr><th>Month</th><th>Status</th>${data.zones.map(z => `<th class="r">${esc(z.name)}</th>`).join('')}<th class="r">Total</th><th class="r">Not yet invoiced</th><th class="r">Missed</th></tr></thead><tbody>
-      ${data.summary.slice().reverse().map(s => `<tr><td class="nw">${monthLabel(s.month)}<div class="muted">${esc(s.baseline || 'no data')}</div></td><td>${s.state === 'No data' ? '<span class="muted">—</span>' : pill(s.state)}${s.state === 'Under review' ? `<div class="muted">${s.open} open${s.reconciled ? '' : ' · GP ≠ tracker'}</div>` : ''}</td>
-        ${data.zones.map(z => `<td class="r">${s.total.count ? aedFull(s.zones[z.code].commission) : '—'}</td>`).join('')}<td class="r"><b>${s.total.count ? aedFull(s.total.commission) : '—'}</b></td><td class="r">${s.total.count ? aedFull(s.total.uninvoiced) : '—'}</td><td class="r">${s.total.count ? aedFull(s.total.missed) : '—'}</td></tr>`).join('')}
-      </tbody></table></div>`;
-    return `<div class="card"><h2>${monthLabel(data.month)} — commission by free zone and type ${sel.state !== 'No data' ? pill(sel.state) : ''}</h2>${zoneTable}
-      <small class="note">Click any blue figure to see the deals behind it, then "Explain" on a deal for its source rows. Baseline: ${esc(sel.baseline || '—')}. Commission, Invoiced, Not yet invoiced and Missed come from the commission tracker (ex VAT) where it covers the month (from ${data.trackerFrom ? monthLabel(data.trackerFrom) : '—'}), otherwise from the GP report. "GP report (check)" is the GP report's Free zone Commission for the same deals. Finalized = every commission line invoiced or confirmed, and tracker = GP report.</small></div>
-      <div class="grid2"><div class="card"><h2>Commission per month</h2><div class="legend">${data.zones.map(z => `<span><i style="background:${SERIES[z.code]}"></i>${esc(z.name)}</span>`).join('')}</div><div class="chart" id="chart"></div></div>
-      <div class="card"><h2>Monthly history (AED)</h2>${hist}</div></div>`;
+    const sel = data.summary.find(s => s.month === data.month);
+    const cards = data.zones.map(z => {
+      const c = sel.zones[z.code], tot = Math.max(c.commission, 0.01);
+      const ok = Math.abs(c.gpCommission - c.trackerCommission) <= 1 || !sel.hasReport || !sel.onTracker;
+      return `<div class="zcard ${gz && gz !== z.code ? 'dim' : ''}">
+        <div class="zh"><span class="zn"><i style="background:${SERIES[z.code]}"></i>${esc(z.name)}</span>${c.count ? (ok ? pill('GP ✓', 'good') : pill('GP ≠ tracker', 'serious')) : ''}</div>
+        <div class="zv">${aed(c.commission)}</div>
+        <div class="bar" aria-label="Invoiced, not yet invoiced and missed">${c.invoicedLines ? `<span class="g" style="width:${c.invoicedLines / tot * 100}%"></span>` : ''}${c.uninvoiced ? `<span class="w" style="width:${c.uninvoiced / tot * 100}%"></span>` : ''}${c.missed ? `<span class="c" style="width:${c.missed / tot * 100}%"></span>` : ''}</div>
+        <div class="zmeta"><span>Invoiced <b>${aed(c.invoicedLines)}</b></span><span>Not yet <b>${aed(c.uninvoiced)}</b></span><span>Deals <b>${c.count}</b></span><span>New / Renewal <b>${c.newCount} / ${c.renewalCount}</b></span><span>Gross fees <b>${aed(c.fees)}</b></span><span>Missed <b>${aed(c.missed)}</b></span></div>
+        <div class="zacts">${z.code !== 'OTHER' ? `<button class="btn sm" type="button" data-zdeals="${z.code}">Deals</button>` : ''}<button class="btn sm" type="button" data-zx="${z.code}">Explain</button>${z.code !== 'OTHER' ? `<button class="btn sm" type="button" data-zfocus="${z.code}">${gz === z.code ? 'Show all' : 'Focus'}</button>` : ''}</div>
+      </div>`;
+    }).join('');
+    const ci = (data.commissionInvoices || []).filter(c => c.inTracker && zoneOk(c.zone));
+    const inv = ci.filter(c => c.status !== 'CANCELLED').reduce((a, c) => a + c.amount, 0), rec = ci.filter(c => c.status === 'RECEIVED').reduce((a, c) => a + c.amount, 0);
+    const coll = ci.filter(c => c.status === 'TO COLLECT'), ag = agingBuckets(coll), agMax = Math.max(1, ...ag.map(b => b.amt));
+    const pct = inv ? Math.round(rec / inv * 1000) / 10 : 0;
+    const acts = exList().slice(0, 6);
+    const hist = data.summary.slice().reverse().map(s => { const c = gz ? s.zones[gz] : s.total; return `<tr><td class="nw"><button class="link" data-month="${s.month}" type="button">${monthLabel(s.month)}</button><div class="muted small">${esc(s.baseline || 'no data')}</div></td><td>${s.state === 'No data' ? '<span class="muted">—</span>' : pill(s.state)}</td><td class="r">${s.total.count ? aedFull(c.commission) : '—'}</td><td class="r">${s.total.count ? aedFull(c.invoicedLines) : '—'}</td><td class="r">${s.total.count ? aedFull(c.uninvoiced) : '—'}</td><td class="r">${s.total.count ? aedFull(c.missed) : '—'}</td></tr>`; }).join('');
+    return `<div class="zgrid">${cards}</div>
+      <div class="legend-s"><span><i style="background:var(--good)"></i>Invoiced</span><span><i style="background:var(--serious)"></i>Not yet invoiced</span><span><i style="background:var(--critical)"></i>Missed</span></div>
+      <div class="grid2">
+        <div class="card"><h2>Commission per month <span class="acts"><button class="btn sm" type="button" data-export2="zones">Export</button></span></h2><div class="legend">${data.zones.map(z => `<span><i style="background:${SERIES[z.code]}"></i>${esc(z.name)}</span>`).join('')}</div><div class="chart" id="chart"></div></div>
+        <div class="card"><h2>Collections <span class="acts"><button class="btn sm" type="button" data-ktab="invoices">All invoices</button></span></h2>
+          <div class="bigstat"><b>${pct}%</b><span class="muted">collected · AED ${aedFull(rec)} of ${aedFull(inv)} invoiced</span></div>
+          <div class="bar"><span class="g" style="width:${pct}%"></span><span class="y" style="width:${100 - pct}%"></span></div>
+          <h3 style="font-size:13px;margin:16px 0 10px">Still to collect by age</h3>
+          <div class="aging">${ag.map(b => `<div class="row"><span>${b.l}</span><div class="track"><span class="${b.cls === 'g' ? 'g' : b.cls}" style="width:${b.amt / agMax * 100}%;background:var(--${{ g: 'good', y: 'warn', w: 'serious', c: 'critical' }[b.cls]})"></span></div><span class="amt">${aed(b.amt)} <span class="muted">(${b.n})</span></span></div>`).join('')}</div>
+        </div>
+      </div>
+      <div class="grid2">
+        <div class="card"><h2>Action centre <span class="acts"><button class="btn sm" type="button" data-ktab="exceptions">All ${exList().length}</button></span></h2>
+          ${acts.length ? `<ul class="actions">${acts.map(e => `<li>${pill(e.severity, STATUS[e.severity])}<div><div class="t">${esc(e.kind)}${e.amount ? ' · ' + aed(e.amount) : ''}</div><div class="d">${esc(e.detail)}</div></div><button class="btn sm" type="button" data-act="${data.exceptions.indexOf(e)}">${e.ref && e.ref.kind === 'group' ? 'Show deals' : 'Explain'}</button></li>`).join('')}</ul>` : '<div class="empty">Nothing needs action.</div>'}
+        </div>
+        <div class="card"><h2>Monthly history${gz ? ' · ' + esc(zoneName(gz)) : ''}</h2><div class="tablewrap"><table><thead><tr><th>Month</th><th>Status</th><th class="r">Commission</th><th class="r">Invoiced</th><th class="r">Not yet</th><th class="r">Missed</th></tr></thead><tbody>${hist}</tbody></table></div>
+          <small class="note">Click a month to open it. Finalized = every commission line invoiced or confirmed, and the tracker total equals the GP report.</small></div>
+      </div>`;
   }
-  function wireOverview() { drawChart(); $('panes').querySelectorAll('[data-go]').forEach(b => b.onclick = () => goTx(JSON.parse(b.dataset.go))); }
+  function wireOverview() {
+    drawChart();
+    const P = $('panes');
+    P.querySelectorAll('[data-zdeals]').forEach(b => b.onclick = () => goTx({ zone: b.dataset.zdeals, scope: 'month' }));
+    P.querySelectorAll('[data-zx]').forEach(b => b.onclick = () => explainZone(b.dataset.zx));
+    P.querySelectorAll('[data-zfocus]').forEach(b => b.onclick = () => { gz = gz === b.dataset.zfocus ? '' : b.dataset.zfocus; render(); });
+    P.querySelectorAll('[data-ktab]').forEach(b => b.onclick = () => { tab = b.dataset.ktab; render(); });
+    P.querySelectorAll('[data-act]').forEach(b => b.onclick = () => openRef(data.exceptions[+b.dataset.act]));
+    P.querySelectorAll('[data-month]').forEach(b => b.onclick = () => setMonth(b.dataset.month));
+    P.querySelectorAll('[data-export2]').forEach(b => b.onclick = () => document.querySelector('[data-export="zones"]').click());
+  }
 
   function drawChart() {
     const el = $('chart'); if (!el) return;
@@ -1237,99 +1558,97 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
 
   // ---- Transactions ----
   function work() {
-    const base = fx.scope === 'all' ? data.workAll : data.work;
-    return `<div class="card">
-      <div class="fgrid" role="group" aria-label="Filter transactions">
-        <label>Months<select id="f_scope"><option value="month" ${fx.scope === 'month' ? 'selected' : ''}>${monthLabel(data.month)} only</option><option value="all" ${fx.scope === 'all' ? 'selected' : ''}>All ${data.months.length} loaded months</option></select></label>
-        <label>Free zone<select id="f_zone">${opts(data.zones.filter(z => z.code !== 'OTHER').map(z => [z.code, z.name]), fx.zone, 'All')}</select></label>
+    const base = txBase(), counts = countBy(base, w => w.status);
+    const chips = `<div class="statusrow"><button class="chip" type="button" data-st="" aria-pressed="${!fx.status}">All <span class="n">${base.length}</span></button>${Object.keys(counts).sort((a, b) => counts[b] - counts[a]).map(s => `<button class="chip" type="button" data-st="${esc(s)}" aria-pressed="${fx.status === s}">${pill(s)} <span class="n">${counts[s]}</span></button>`).join('')}</div>`;
+    return `<div class="card">${chips}
+      <div class="fbar">
+        <input type="search" id="f_q" value="${esc(fx.q)}" placeholder="Search client, company, invoice no., agent" aria-label="Search">
+        <div class="seg" style="border-color:var(--border)" role="group" aria-label="Months"><button type="button" class="btn sm" id="f_m1" aria-pressed="${fx.scope === 'month'}" style="${fx.scope === 'month' ? 'background:var(--ink);color:var(--page)' : 'color:var(--ink)'}">${monthLabel(data.month)}</button><button type="button" class="btn sm" id="f_m2" aria-pressed="${fx.scope === 'all'}" style="${fx.scope === 'all' ? 'background:var(--ink);color:var(--page)' : 'color:var(--ink)'}">All ${data.months.length} months</button></div>
+        <button class="btn sm" type="button" id="f_more" aria-expanded="${fx.more}">${fx.more ? 'Fewer filters' : 'More filters'}</button>
+        <label class="btn sm" style="cursor:pointer"><input type="checkbox" id="f_problems" ${fx.problems ? 'checked' : ''} style="min-height:auto"> Needs action</label>
+        <button class="btn sm" type="button" id="f_reset">Reset</button>
+        <button class="btn sm" type="button" id="csv">Export CSV</button>
+      </div>
+      <div class="fgrid" ${fx.more ? '' : 'hidden'}>
         <label>Type<select id="f_type">${opts(['New', 'Renewal', 'Other'], fx.type, 'All')}</select></label>
-        <label>Status<select id="f_status">${opts(uniq(base, w => w.status), fx.status, 'All')}</select></label>
         <label>Found on<select id="f_source">${opts(uniq(base, w => w.source), fx.source, 'All')}</select></label>
         <label>Tracker status<select id="f_tstatus">${opts(uniq(base, w => w.trackerStatus || '(none)'), fx.trackerStatus, 'All')}</select></label>
         <label>Commission invoice<select id="f_ci">${opts(uniq(base, w => w.commissionInvoiceStatus || '(none)'), fx.ciStatus, 'All')}</select></label>
         <label>Agent<select id="f_agent">${opts(uniq(base, w => w.agent), fx.agent, 'All')}</select></label>
         <label>From<input type="date" id="f_from" value="${esc(fx.from)}"></label>
         <label>To<input type="date" id="f_to" value="${esc(fx.to)}"></label>
-        <label>Min. commission<input type="number" id="f_min" min="0" step="100" value="${esc(fx.min)}" placeholder="AED"></label>
-        <label class="wide">Search<input id="f_q" value="${esc(fx.q)}" placeholder="Client, company, invoice no., agent"></label>
-        <label class="check"><input type="checkbox" id="f_problems" ${fx.problems ? 'checked' : ''}> Only items needing action</label>
-        <div class="btns"><button class="btn" id="f_reset" type="button">Reset filters</button><button class="btn" id="csv" type="button">Download CSV</button></div>
+        <label>Min. commission (AED)<input type="number" id="f_min" min="0" step="100" value="${esc(fx.min)}"></label>
       </div>
-      <div id="txCount" class="muted small"></div>
+      <div id="txCount"></div>
       <div class="tablewrap" id="workTable"></div>
-      <small class="note">Each tracker line is joined to its GP report row by client invoice no., else by company + free zone + date within 7 days. "Explain" shows the exact cells read, the match, and every status check.</small></div>`;
+      <small class="note">${gz ? `Showing ${esc(zoneName(gz))} only — choose "All free zones" above to widen. ` : ''}Each tracker line is joined to its GP report row by client invoice no., else by company + free zone + date within 7 days. "Explain" shows the cells read, the match and every status check.</small></div>`;
   }
   function workTable() {
     const rows = txRows();
     $('txCount').textContent = `${rows.length} row${rows.length === 1 ? '' : 's'} · commission AED ${aedFull(rows.reduce((a, w) => a + (w.commission || 0), 0))}`;
     if (!rows.length) return '<div class="empty">Nothing matches these filters.</div>';
-    return `<table><thead><tr><th>Client / company</th><th>Status</th><th>Free zone</th><th>Type</th><th>Date</th><th class="r">Commission</th><th>From</th><th>Commission invoice</th><th>Source rows</th><th></th></tr></thead><tbody>
-      ${rows.map(w => `<tr><td><b>${esc(w.name)}</b>${w.client && w.client !== w.name ? `<div class="muted">${esc(w.client)}</div>` : ''}<div class="muted">${esc(w.services)}${w.agent ? ' · ' + esc(w.agent) : ''}</div></td>
+    const base = fx.scope === 'all' ? data.workAll : data.work;
+    return `<table><thead><tr><th>Client / company</th><th>Status</th><th>Free zone</th><th>Type</th><th>Date</th><th class="r">Commission</th><th>Commission invoice</th><th>Source rows</th><th></th></tr></thead><tbody>
+      ${rows.map(w => `<tr><td><b>${esc(w.name)}</b>${w.client && w.client !== w.name ? `<div class="muted">${esc(w.client)}</div>` : ''}<div class="muted small">${esc(w.services)}${w.agent ? ' · ' + esc(w.agent) : ''}</div></td>
         <td style="min-width:190px">${pill(w.status)}${w.missing.length ? `<ul class="missing">${w.missing.slice(0, 2).map(x => `<li>${esc(x)}</li>`).join('')}${w.missing.length > 2 ? `<li>+${w.missing.length - 2} more</li>` : ''}</ul>` : ''}</td>
-        <td>${esc(zoneName(w.zone))}</td><td>${esc(w.type)}</td><td class="nw">${fmtDate(w.date)}</td>
-        <td class="r">${w.source === 'Renewals sheet' ? '—' : `<b>${aedFull(w.commission)}</b>${w.commissionPct != null ? `<div class="muted">${w.commissionPct}% of ${aedFull(w.fee)}</div>` : ''}`}</td>
-        <td class="muted nw">${w.source === 'Renewals sheet' ? 'Renewals sheet' : w.commissionFrom === 'tracker' ? 'Tracker' : 'GP report'}</td>
+        <td class="nw"><span class="pill neutral" style="background:none;padding:0"><i style="background:${SERIES[w.zone] || 'var(--s-other)'}"></i>${esc(zoneName(w.zone))}</span></td><td>${esc(w.type)}</td><td class="nw">${fmtDate(w.date)}</td>
+        <td class="r">${w.source === 'Renewals sheet' ? '—' : `<b>${aedFull(w.commission)}</b><div class="muted small">${w.commissionFrom === 'tracker' ? 'tracker' : 'GP report'}${w.commissionPct != null ? ` · ${w.commissionPct}%` : ''}</div>`}</td>
         <td class="nw">${w.commissionInvoice ? esc(w.commissionInvoice) : ''}${w.commissionInvoiceStatus ? `<div>${pill(w.commissionInvoiceStatus)}</div>` : w.commissionInvoice ? '' : '<span class="muted">—</span>'}</td>
         <td class="nw small">${[w.trackerRow && rowLink(L.line(w.trackerRow), 'Tracker ' + w.trackerRow), w.gpRow && rowLink(L.gp(w.month, w.gpRow), 'GP ' + w.gpRow), w.renewal && rowLink(L.renewal(w.renewal.sheetRow), 'Renewals ' + w.renewal.sheetRow)].filter(Boolean).join('<br>') || '—'}</td>
-        <td><button class="btn sm" data-x="${(fx.scope === 'all' ? data.workAll : data.work).indexOf(w)}">Explain</button></td></tr>`).join('')}
+        <td><button class="btn sm" type="button" data-x="${base.indexOf(w)}">Explain</button></td></tr>`).join('')}
       </tbody></table>`;
   }
   function wireWork() {
     const base = () => fx.scope === 'all' ? data.workAll : data.work;
     const redraw = () => { $('workTable').innerHTML = workTable(); $('workTable').querySelectorAll('[data-x]').forEach(b => b.onclick = () => explainDeal(base()[+b.dataset.x])); };
-    const bind = (id, key, ev = 'change', re = false) => { $(id).addEventListener(ev, e => { fx[key] = e.target.type === 'checkbox' ? e.target.checked : e.target.value; if (re) render(); else redraw(); }); };
-    bind('f_scope', 'scope', 'change', true); bind('f_zone', 'zone'); bind('f_type', 'type'); bind('f_status', 'status'); bind('f_source', 'source'); bind('f_tstatus', 'trackerStatus'); bind('f_ci', 'ciStatus');
-    bind('f_agent', 'agent'); bind('f_from', 'from'); bind('f_to', 'to'); bind('f_min', 'min', 'input'); bind('f_q', 'q', 'input'); bind('f_problems', 'problems');
+    const bind = (id, key, ev = 'change') => { $(id).addEventListener(ev, e => { fx[key] = e.target.type === 'checkbox' ? e.target.checked : e.target.value; redraw(); }); };
+    bind('f_type', 'type'); bind('f_source', 'source'); bind('f_tstatus', 'trackerStatus'); bind('f_ci', 'ciStatus'); bind('f_agent', 'agent'); bind('f_from', 'from'); bind('f_to', 'to'); bind('f_min', 'min', 'input'); bind('f_q', 'q', 'input'); bind('f_problems', 'problems');
+    $('panes').querySelectorAll('[data-st]').forEach(b => b.onclick = () => { fx.status = b.dataset.st; render(); });
+    $('f_m1').onclick = () => { fx.scope = 'month'; render(); }; $('f_m2').onclick = () => { fx.scope = 'all'; render(); };
+    $('f_more').onclick = () => { fx.more = !fx.more; render(); };
     $('f_reset').onclick = () => { fx = { ...TX0 }; render(); };
-    $('csv').onclick = () => {
-      const head = ['Month', 'Date', 'Client/Company', 'Client', 'Free zone', 'Type', 'Services', 'Agent', 'Found on', 'Commission from', 'Tracker row', 'GP report row', 'Renewals row', 'How matched', 'Tracker status', 'Client invoice', 'Client invoice status', 'Gross fee AED', 'Commission AED', 'Commission %', 'Commission invoice', 'Commission invoice status', 'Renewals sheet', 'Email found', 'Status', 'Decided by', 'Missing'];
-      const rows = txRows().map(w => [w.month, w.date, w.name, w.client, zoneName(w.zone), w.type, w.services, w.agent, w.source, w.commissionFrom, w.trackerRow, w.gpRow, w.renewal && w.renewal.sheetRow, w.joinedBy, w.trackerStatus, w.invoice, w.invoiceStatus, w.fee, w.commission, w.commissionPct, w.commissionInvoice, w.commissionInvoiceStatus, w.renewalStatus, w.email == null ? '' : w.email ? 'Yes' : 'No', w.status, w.decidedBy, w.missing.join('; ')]);
-      saveCsv(`free-zone-transactions-${fx.scope === 'all' ? 'all-months' : data.month}.csv`, [head, ...rows]);
-    };
+    $('csv').onclick = () => saveCsv(`free-zone-transactions-${fx.scope === 'all' ? 'all-months' : data.month}.csv`, [TXHEAD, ...txRows().map(txLine)]);
     redraw();
-  }
-  async function saveCsv(filename, rows) {
-    const csv = rows.map(r => r.map(v => { const s = String(v ?? ''); return /[",\n]/.test(s) || /^[=+\-@]/.test(s) ? '"' + (/^[=+\-@]/.test(s) ? "'" : '') + s.replace(/"/g, '""') + '"' : s; }).join(',')).join('\n');
-    const dl = window.claude && window.claude.use ? await window.claude.use('downloads').catch(() => null) : null;
-    if (!dl) { $('error').textContent = 'Saving files is not available in this view.'; $('error').classList.remove('hide'); return; }
-    try { await dl.save({ filename, data: csv }); } catch (e) { if (e && e.code === 'unavailable') { $('error').textContent = 'Saving files is not available in this view.'; $('error').classList.remove('hide'); } }
   }
 
   // ---- Renewals ----
+  const REN_STATES = ['Overdue', 'Not started', 'In progress', 'Completed', 'Not due', 'Lapsed', 'Closed'];
+  const renBase = () => data.renewals.filter(r => zoneOk(r.zone));
+  function renRows() { const q = fr.q.toLowerCase(); return renBase().filter(r => (!fr.state || r.state === fr.state) && (!fr.manager || r.manager === fr.manager) && (!q || r.company.toLowerCase().includes(q))); }
   function renewals() {
-    const c = data.renewalCounts;
-    return `<div class="card"><div class="filters">${['Overdue', 'Not started', 'In progress', 'Completed', 'Not due', 'Lapsed', 'Closed'].map(s => pill(s + ' · ' + (c[s] || 0), STATUS[s] || 'neutral')).join(' ')}</div>
-      <div class="fgrid">
-        <label>State<select id="r_state">${opts(uniq(data.renewals, r => r.state), fr.state, 'All')}</select></label>
-        <label>Free zone<select id="r_zone">${opts(data.zones.filter(z => z.code !== 'OTHER').map(z => [z.code, z.name]), fr.zone, 'All')}</select></label>
-        <label>Account manager<select id="r_mgr">${opts(uniq(data.renewals, r => r.manager), fr.manager, 'All')}</select></label>
-        <label class="wide">Search<input id="r_q" value="${esc(fr.q)}" placeholder="Company"></label>
-      </div><div class="tablewrap" id="renTable"></div>
-      <small class="note">Listed: due within ${data.windowDays} days or overdue, plus renewals completed in ${monthLabel(data.month)}. "Explain" shows the sheet row and why it has its state.</small></div>`;
+    const base = renBase(), c = countBy(base, r => r.state);
+    return `<div class="card"><div class="statusrow"><button class="chip" type="button" data-rs="" aria-pressed="${!fr.state}">All <span class="n">${base.length}</span></button>${REN_STATES.filter(s => c[s]).map(s => `<button class="chip" type="button" data-rs="${esc(s)}" aria-pressed="${fr.state === s}">${pill(s)} <span class="n">${c[s]}</span></button>`).join('')}</div>
+      <div class="fbar"><input type="search" id="r_q" value="${esc(fr.q)}" placeholder="Search company" aria-label="Search"><select id="r_mgr" aria-label="Account manager">${opts(uniq(base, r => r.manager), fr.manager, 'Every account manager')}</select><button class="btn sm" type="button" id="r_reset">Reset</button><button class="btn sm" type="button" id="r_csv">Export CSV</button></div>
+      <div id="renCount" class="count"></div><div class="tablewrap" id="renTable"></div>
+      <small class="note">Listed: due within ${data.windowDays} days or overdue, plus renewals completed in ${monthLabel(data.month)}${gz ? ` — ${esc(zoneName(gz))} only` : ''}. "Explain" shows the sheet row and why it has its state.</small></div>`;
   }
   function wireRenewals() {
     const draw = () => {
-      const q = fr.q.toLowerCase(), rows = data.renewals.filter(r => (!fr.state || r.state === fr.state) && (!fr.zone || r.zone === fr.zone) && (!fr.manager || r.manager === fr.manager) && (!q || r.company.toLowerCase().includes(q)));
+      const rows = renRows();
+      $('renCount').textContent = `${rows.length} renewal${rows.length === 1 ? '' : 's'}`;
       $('renTable').innerHTML = !rows.length ? '<div class="empty">Nothing matches.</div>' : `<table><thead><tr><th>Company</th><th>State</th><th>Free zone</th><th>Expiry</th><th class="r">Days</th><th>Sheet status</th><th>Progress / remarks</th><th>Manager</th><th>Row</th><th></th></tr></thead><tbody>
-        ${rows.map(r => `<tr><td><b>${esc(r.company)}</b></td><td>${pill(r.state)}<div class="muted small">${esc(r.reason)}</div></td><td>${esc(zoneName(r.zone))}</td><td class="nw">${fmtDate(r.expiry)}${r.dateAmbiguous ? ' <span class="pill warn"><i></i>check date</span>' : ''}</td><td class="r">${r.daysLeft ?? '—'}</td><td>${esc(r.status || '—')}</td><td>${esc([r.progress, r.remarks].filter(Boolean).join(' · ') || '—')}</td><td>${esc(r.manager || '—')}</td><td class="nw">${rowLink(L.renewal(r.sheetRow), 'Row ' + r.sheetRow)}</td><td><button class="btn sm" data-r="${data.renewals.indexOf(r)}">Explain</button></td></tr>`).join('')}</tbody></table>`;
+        ${rows.map(r => `<tr><td><b>${esc(r.company)}</b></td><td>${pill(r.state)}<div class="muted small">${esc(r.reason)}</div></td><td>${esc(zoneName(r.zone))}</td><td class="nw">${fmtDate(r.expiry)}${r.dateAmbiguous ? ' <span class="pill warn"><i></i>check date</span>' : ''}</td><td class="r">${r.daysLeft ?? '—'}</td><td>${esc(r.status || '—')}</td><td>${esc([r.progress, r.remarks].filter(Boolean).join(' · ') || '—')}</td><td>${esc(r.manager || '—')}</td><td class="nw small">${rowLink(L.renewal(r.sheetRow), 'Row ' + r.sheetRow)}</td><td><button class="btn sm" type="button" data-r="${data.renewals.indexOf(r)}">Explain</button></td></tr>`).join('')}</tbody></table>`;
       $('renTable').querySelectorAll('[data-r]').forEach(b => b.onclick = () => explainRenewal(data.renewals[+b.dataset.r]));
     };
-    [['r_state', 'state', 'change'], ['r_zone', 'zone', 'change'], ['r_mgr', 'manager', 'change'], ['r_q', 'q', 'input']].forEach(([id, k, ev]) => $(id).addEventListener(ev, e => { fr[k] = e.target.value; draw(); }));
+    $('panes').querySelectorAll('[data-rs]').forEach(b => b.onclick = () => { fr.state = b.dataset.rs; render(); });
+    $('r_mgr').onchange = e => { fr.manager = e.target.value; draw(); };
+    $('r_q').oninput = e => { fr.q = e.target.value; draw(); };
+    $('r_reset').onclick = () => { fr = { state: '', zone: '', manager: '', q: '' }; render(); };
+    $('r_csv').onclick = () => document.querySelector('[data-export="ren"]').click();
     draw();
   }
 
+
   // ---- Exceptions ----
   function exceptions() {
-    if (!data.exceptions.length) return '<div class="card empty">No exceptions — everything reconciles.</div>';
-    return `<div class="card"><div class="fgrid">
-        <label>Severity<select id="e_sev">${opts(['high', 'medium', 'low'], fe.severity, 'All')}</select></label>
-        <label>What<select id="e_kind">${opts(uniq(data.exceptions, e => e.kind), fe.kind, 'All')}</select></label>
-        <label>Free zone<select id="e_zone">${opts(uniq(data.exceptions, e => e.zone).map(z => [z, zoneName(z)]), fe.zone, 'All')}</select></label>
-        <label class="wide">Search<input id="e_q" value="${esc(fe.q)}" placeholder="Name, invoice no., row"></label>
-        <div class="btns"><button class="btn" id="e_csv" type="button">Download CSV</button></div>
-      </div><div class="tablewrap" id="exTable"></div></div>`;
+    const list = exList();
+    if (!list.length) return '<div class="card empty">No exceptions — everything reconciles.</div>';
+    const c = countBy(list, e => e.severity);
+    return `<div class="card"><div class="statusrow">${[['', 'All', list.length], ['high', 'High', c.high || 0], ['medium', 'Medium', c.medium || 0], ['low', 'Low', c.low || 0]].map(([v, l, n]) => `<button class="chip" type="button" data-sev="${v}" aria-pressed="${fe.severity === v}">${v ? pill(l, STATUS[v]) : l} <span class="n">${n}</span></button>`).join('')}</div>
+      <div class="fbar"><input type="search" id="e_q" value="${esc(fe.q)}" placeholder="Search name, invoice no., row" aria-label="Search"><select id="e_kind" aria-label="What">${opts(uniq(list, e => e.kind), fe.kind, 'Every kind')}</select><button class="btn sm" type="button" id="e_csv">Export CSV</button></div>
+      <div id="exCount" class="count"></div><div class="tablewrap" id="exTable"></div></div>`;
   }
-  function exRows() { const q = fe.q.toLowerCase(); return data.exceptions.filter(e => (!fe.severity || e.severity === fe.severity) && (!fe.kind || e.kind === fe.kind) && (!fe.zone || e.zone === fe.zone) && (!q || e.detail.toLowerCase().includes(q))); }
+  function exRows() { const q = fe.q.toLowerCase(); return exList().filter(e => (!fe.severity || e.severity === fe.severity) && (!fe.kind || e.kind === fe.kind) && (!q || e.detail.toLowerCase().includes(q))); }
   function openRef(e) {
     const r = e.ref || {};
     if (r.kind === 'deal') { const w = data.workAll.find(w => w.month === r.month && w.name === r.name && w.trackerRow === r.trackerRow && w.gpRow === r.gpRow); if (w) return explainDeal(w); }
@@ -1341,47 +1660,62 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   function wireExceptions() {
     const draw = () => {
       const rows = exRows();
+      $('exCount').textContent = `${rows.length} item${rows.length === 1 ? '' : 's'} · AED ${aedFull(rows.reduce((a, e) => a + (e.amount || 0), 0))}`;
       $('exTable').innerHTML = !rows.length ? '<div class="empty">Nothing matches.</div>' : `<table><thead><tr><th>Severity</th><th>What</th><th>Free zone</th><th>Detail</th><th class="r">AED</th><th></th></tr></thead><tbody>
-        ${rows.map(e => `<tr><td>${pill(e.severity, STATUS[e.severity])}</td><td>${esc(e.kind)}</td><td>${esc(zoneName(e.zone))}</td><td>${esc(e.detail)}</td><td class="r">${e.amount ? aedFull(e.amount) : ''}</td><td><button class="btn sm" data-e="${data.exceptions.indexOf(e)}">${e.ref && e.ref.kind === 'group' ? 'Show deals' : 'Explain'}</button></td></tr>`).join('')}</tbody></table>`;
+        ${rows.map(e => `<tr><td>${pill(e.severity, STATUS[e.severity])}</td><td>${esc(e.kind)}</td><td class="nw">${esc(zoneName(e.zone))}</td><td>${esc(e.detail)}</td><td class="r">${e.amount ? aedFull(e.amount) : ''}</td><td><button class="btn sm" type="button" data-e="${data.exceptions.indexOf(e)}">${e.ref && e.ref.kind === 'group' ? 'Show deals' : 'Explain'}</button></td></tr>`).join('')}</tbody></table>`;
       $('exTable').querySelectorAll('[data-e]').forEach(b => b.onclick = () => openRef(data.exceptions[+b.dataset.e]));
     };
-    [['e_sev', 'severity', 'change'], ['e_kind', 'kind', 'change'], ['e_zone', 'zone', 'change'], ['e_q', 'q', 'input']].forEach(([id, k, ev]) => $(id).addEventListener(ev, e => { fe[k] = e.target.value; draw(); }));
+    $('panes').querySelectorAll('[data-sev]').forEach(b => b.onclick = () => { fe.severity = b.dataset.sev; render(); });
+    $('e_kind').onchange = e => { fe.kind = e.target.value; draw(); };
+    $('e_q').oninput = e => { fe.q = e.target.value; draw(); };
     $('e_csv').onclick = () => saveCsv('free-zone-exceptions.csv', [['Severity', 'What', 'Free zone', 'Detail', 'AED'], ...exRows().map(e => [e.severity, e.kind, zoneName(e.zone), e.detail, e.amount])]);
     draw();
   }
 
   // ---- Commission invoices ----
+  const invBase = () => (data.commissionInvoices || []).filter(c => zoneOk(c.zone));
+  function invRows() { const q = fi.q.toLowerCase(); return invBase().filter(c => (!fi.status || (c.inTracker ? c.status : 'Not on tracker') === fi.status) && (!q || c.number.toLowerCase().includes(q) || String(c.notes || '').toLowerCase().includes(q))); }
   function invoices() {
-    const list = data.commissionInvoices || [];
-    if (!list.length) return `<div class="card empty">${esc(data.sources.tracker && data.sources.tracker.ok ? 'No commission invoices.' : (data.sources.tracker && data.sources.tracker.detail) || 'Commission tracker not connected')}</div>`;
-    return `<div class="card"><div class="fgrid">
-        <label>Tracker status<select id="i_status">${opts(uniq(list, c => c.status || 'Not on tracker'), fi.status, 'All')}</select></label>
-        <label>Free zone<select id="i_zone">${opts(uniq(list, c => c.zone).map(z => [z, zoneName(z)]), fi.zone, 'All')}</select></label>
-        <label class="wide">Search<input id="i_q" value="${esc(fi.q)}" placeholder="Invoice no."></label>
-      </div><div class="tablewrap" id="invTable"></div>
+    const all = data.commissionInvoices || [];
+    if (!all.length) return `<div class="card empty">${esc(data.sources.tracker && data.sources.tracker.ok ? 'No commission invoices.' : (data.sources.tracker && data.sources.tracker.detail) || 'Commission tracker not connected')}</div>`;
+    const base = invBase(), c = countBy(base, x => x.inTracker ? x.status : 'Not on tracker');
+    const tot = s => base.filter(x => (x.inTracker ? x.status : 'Not on tracker') === s).reduce((a, x) => a + (s === 'TO COLLECT' ? (x.toCollect || 0) : (x.amount || 0)), 0);
+    const mismatch = base.filter(x => x.zoho && x.inTracker && ((x.status === 'TO COLLECT' && x.zoho.status === 'paid') || (x.status === 'RECEIVED' && x.zoho.balance > 0.5)));
+    return `<div class="card"><div class="statusrow"><button class="chip" type="button" data-is="" aria-pressed="${!fi.status}">All <span class="n">${base.length}</span></button>${Object.keys(c).sort().map(s => `<button class="chip" type="button" data-is="${esc(s)}" aria-pressed="${fi.status === s}">${pill(s)} <span class="n">${c[s]} · ${aed(tot(s))}</span></button>`).join('')}</div>
+      ${mismatch.length ? `<div class="banner info" style="margin:0 0 12px">${mismatch.length} invoice${mismatch.length > 1 ? 's' : ''} where Zoho and the tracker disagree: ${mismatch.map(x => `<b>${esc(x.number)}</b>`).join(', ')} — Zoho shows ${mismatch[0].zoho.status === 'paid' ? 'paid' : 'a balance'} while the tracker says ${esc(mismatch[0].status)}.</div>` : ''}
+      <div class="fbar"><input type="search" id="i_q" value="${esc(fi.q)}" placeholder="Invoice no. or note" aria-label="Search"><button class="btn sm" type="button" id="i_reset">Reset</button><button class="btn sm" type="button" id="i_csv">Export CSV</button></div>
+      <div id="invCount" class="count"></div><div class="tablewrap" id="invTable"></div>
       <small class="note">Every commission invoice from the tracker's Invoice Checklist (status exactly as the sheet computes it), checked against Zoho by invoice number. Amounts include 5% VAT; commission lines are ex VAT.</small></div>`;
   }
   function wireInvoices() {
+    if (!(data.commissionInvoices || []).length) return;
     const zi = data.zoneInvoices != null;
     const draw = () => {
-      const q = fi.q.toLowerCase(), rows = (data.commissionInvoices || []).filter(c => (!fi.status || (c.status || 'Not on tracker') === fi.status) && (!fi.zone || c.zone === fi.zone) && (!q || c.number.toLowerCase().includes(q)));
-      $('invTable').innerHTML = `<table><thead><tr><th>Invoice</th><th>Free zone</th><th>Date</th><th class="r">Amount</th><th>Tracker</th><th>Received on</th><th class="r">To collect</th><th class="r">Days</th>${zi ? '<th>Zoho</th><th>Bills month</th>' : ''}<th></th></tr></thead><tbody>
-        ${rows.map(i => `<tr><td class="nw">${esc(i.number)}${i.sheetRow ? `<div class="small">${rowLink(L.checklist(i.sheetRow), 'Checklist row ' + i.sheetRow)}</div>` : ''}</td><td>${esc(zoneName(i.zone))}</td><td class="nw">${fmtDate(i.date)}</td><td class="r">${aedFull(i.amount)}</td>
+      const rows = invRows();
+      $('invCount').textContent = `${rows.length} invoice${rows.length === 1 ? '' : 's'} · AED ${aedFull(rows.reduce((a, c) => a + (c.amount || 0), 0))} invoiced · AED ${aedFull(rows.reduce((a, c) => a + (c.toCollect || 0), 0))} to collect`;
+      $('invTable').innerHTML = !rows.length ? '<div class="empty">Nothing matches.</div>' : `<table><thead><tr><th>Invoice</th><th>Free zone</th><th>Date</th><th class="r">Amount</th><th>Tracker</th><th>Received on</th><th class="r">To collect</th><th class="r">Days</th>${zi ? '<th>Zoho</th><th>Bills month</th>' : ''}<th></th></tr></thead><tbody>
+        ${rows.map(i => `<tr><td class="nw"><b>${esc(i.number)}</b>${i.sheetRow ? `<div class="small">${rowLink(L.checklist(i.sheetRow), 'Checklist row ' + i.sheetRow)}</div>` : ''}</td><td>${esc(zoneName(i.zone))}</td><td class="nw">${fmtDate(i.date)}</td><td class="r">${aedFull(i.amount)}</td>
           <td>${i.inTracker ? pill(i.status) : pill('Not on tracker')}</td><td class="nw">${fmtDate(i.receivedOn)}</td><td class="r">${i.toCollect ? aedFull(i.toCollect) : '—'}</td><td class="r">${i.daysOutstanding ?? '—'}</td>
-          ${zi ? `<td class="nw">${i.zoho ? `${pill(i.zoho.status)}<div class="muted">balance ${aedFull(i.zoho.balance)}</div>` : (i.date && i.date < data.months[0] + '-01' ? '<span class="muted">before period</span>' : '<span class="no">✗ not found</span>')}</td><td class="nw">${i.zoho ? `${monthLabel(i.zoho.period)}<div class="muted">${esc(i.zoho.periodBasis)}</div>` : '—'}</td>` : ''}
-          <td><button class="btn sm" data-i="${(data.commissionInvoices || []).indexOf(i)}">Explain</button></td></tr>`).join('')}</tbody></table>`;
+          ${zi ? `<td class="nw">${i.zoho ? `${pill(i.zoho.status)}<div class="muted small">balance ${aedFull(i.zoho.balance)}</div>` : (i.date && i.date < data.months[0] + '-01' ? '<span class="muted">before period</span>' : '<span class="no">✗ not found</span>')}</td><td class="nw">${i.zoho ? `${monthLabel(i.zoho.period)}<div class="muted small">${esc(i.zoho.periodBasis)}</div>` : '—'}</td>` : ''}
+          <td><button class="btn sm" type="button" data-i="${(data.commissionInvoices || []).indexOf(i)}">Explain</button></td></tr>`).join('')}</tbody></table>`;
       $('invTable').querySelectorAll('[data-i]').forEach(b => b.onclick = () => explainChecklist(data.commissionInvoices[+b.dataset.i]));
     };
-    [['i_status', 'status', 'change'], ['i_zone', 'zone', 'change'], ['i_q', 'q', 'input']].forEach(([id, k, ev]) => $(id).addEventListener(ev, e => { fi[k] = e.target.value; draw(); }));
+    $('panes').querySelectorAll('[data-is]').forEach(b => b.onclick = () => { fi.status = b.dataset.is; render(); });
+    $('i_q').oninput = e => { fi.q = e.target.value; draw(); };
+    $('i_reset').onclick = () => { fi = { status: '', zone: '', q: '' }; render(); };
+    $('i_csv').onclick = () => document.querySelector('[data-export="inv"]').click();
     draw();
   }
 
+
   function emails() {
-    if (!data.emails.length) return '<div class="card empty">No free zone emails in this period.</div>';
+    const list = data.emails.filter(e => zoneOk(e.zone));
+    if (!list.length) return '<div class="card empty">No free zone emails in this period.</div>';
     return `<div class="card"><div class="tablewrap"><table><thead><tr><th>Date</th><th>From</th><th>Subject</th><th>Free zone</th><th>Type</th><th>Linked to</th></tr></thead><tbody>
-      ${data.emails.map(e => `<tr><td>${fmtDate(e.date)}</td><td>${esc(e.from)}</td><td><a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.subject || '(no subject)')}</a>${e.commission ? ' ' + pill('commission', 'neutral') : ''}</td><td>${esc(zoneName(e.zone))}</td><td>${esc(e.type)}</td><td>${e.companies.length ? esc(e.companies.join(', ')) : '<span class="muted">—</span>'}</td></tr>`).join('')}
+      ${list.map(e => `<tr><td class="nw">${fmtDate(e.date)}</td><td>${esc(e.from)}</td><td><a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.subject || '(no subject)')} ↗</a>${e.commission ? ' ' + pill('commission', 'neutral') : ''}</td><td>${esc(zoneName(e.zone))}</td><td>${esc(e.type)}</td><td>${e.companies.length ? esc(e.companies.join(', ')) : '<span class="muted">—</span>'}</td></tr>`).join('')}
       </tbody></table></div><small class="note">Free zone from the sender's domain (or a free zone named in the subject); linked when a company name from the GP report, tracker or Renewals sheet appears in the subject or preview.</small></div>`;
   }
+
 
   // ---- Source data: rows exactly as read ----
   function sets() {
@@ -1418,12 +1752,14 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     draw();
   }
 
+
+
   // ---- How it's calculated ----
   function how() {
     const R = data.rules;
     return `<div class="card how-doc">
-      <h2>Read-only</h2><p>This page only reads. It opens your sheets, searches Drive and Gmail, and runs SELECT reports in Zoho Analytics through your own claude.ai connections. It never writes to any of them. Everything below is worked out in your browser each time the page loads.</p>
-      <h2>What was read just now</h2>
+      <h2>Read-only</h2><p>This page only reads. It opens your sheets, searches Drive and Gmail, and runs SELECT reports in Zoho Analytics through your own claude.ai connections. It never writes to any of them. Everything below is worked out in your browser from what was read${mode === 'snapshot' ? ' — here, the snapshot saved ' + esc(fmtWhen(snapMeta && snapMeta.savedAt)) : ''}.</p>
+      <h2>What was read${mode === 'snapshot' ? ' for the saved snapshot' : ' just now'}</h2>
       <div class="tablewrap"><table><thead><tr><th>Source</th><th>What</th><th>File · tab</th><th>Range / query</th><th>Result</th></tr></thead><tbody>
         ${data.reads.map(r => `<tr><td>${esc(r.source)}</td><td>${esc(r.what)}</td><td>${r.file ? esc(r.file) + (r.tab ? ' · ' + esc(r.tab) : '') + ' ' + ext(r.url, '↗') : '—'}</td><td class="mono small">${esc(r.range || r.where || '')}</td><td>${esc(r.rows)}</td></tr>`).join('')}
       </tbody></table></div>
@@ -1466,6 +1802,33 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     </div>`;
   }
 
-  load();
+
+
+  // ---------------------------------------------------------------------------------------------
+  // Start: show the saved snapshot at once; owners and editors then refresh it live and save it.
+  // ---------------------------------------------------------------------------------------------
+  (async () => {
+    step('Loading…');
+    const [dbNs, userNs] = await Promise.all([
+      window.claude && window.claude.use ? window.claude.use('db').catch(() => null) : null,
+      window.claude && window.claude.use ? window.claude.use('user').catch(() => null) : null
+    ]);
+    db = dbNs; user = userNs;
+    canWrite = user ? !!(await user.canEdit().catch(() => false)) : false;
+    step('Loading the saved figures…');
+    const snap = await loadSnapshot().catch(() => null);
+    if (snap) {
+      inputs = snap; mode = 'snapshot'; await resolveSaver();
+      span = Math.min(12, Math.max(3, snap.months.length)); paintSpan();
+      build(bestMonth(snap, snap.month), snap.months.length); render();
+      if (!canWrite) notice(`You are seeing the figures saved ${fmtWhen(snapMeta.savedAt)}${snapBy ? ' by ' + snapBy : ''}. Press "Refresh live" to read the sources yourself (needs Google Sheets, Google Drive and Zoho Analytics connected in your claude.ai).`);
+    }
+    if (db) db.doc('snapshot/current').onSnapshot(async s => {
+      if (mode !== 'snapshot' || !s.exists || !snapMeta || s.data().version === snapMeta.version) return;
+      const fresh = await loadSnapshot().catch(() => null); if (fresh) { inputs = fresh; await resolveSaver(); build(data ? data.month : fresh.month, fresh.months.length); render(); notice('Newer figures were just saved — the page has updated.'); }
+    }, () => {});
+    if (canWrite || !snap) { $('month').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`; await goLive(false, true); }
+    show('loading', false);
+  })();
 })();
 </script>
