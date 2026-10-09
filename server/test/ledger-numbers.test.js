@@ -112,3 +112,34 @@ test('purged history removed by a reset under this version stays gone, also when
     assert.deepEqual(s.requests.map(x => x.id), ['FR-528'], 'only the live request; purged history never comes back');
   } finally { await srv.stop(); }
 });
+
+test('an open history request already raised again on the platform is imported voided (duplicate), others are not', async () => {
+  const dir = mkTmp('ledger-dup'), lf = path.join(dir, 'ledger.json');
+  const open = (id, company, requested, status = 'NEW', date = '8 Oct') => H(id, { company, person: company + ' Person', requested, approved: null, credited: 0, status, date });
+  fs.writeFileSync(lf, JSON.stringify({ requests: [H('FR-527'), open('FR-541', 'Nova Brands', 14010), open('FR-542', 'ETD Global', 1000), open('FR-543', 'Noble One', 700, 'ACTION'), open('FR-544', 'ETD Global', 1400, 'ACTION', '9 Oct')], chat: [], notifications: [], audit: [] }));
+  fs.writeFileSync(path.join(dir, 'platform.json'), JSON.stringify({ rev: 1, requests: [
+    LIVE('FR-528', { company: 'NOVA BRANDS', requested: 14010, createdAt: '2026-10-09T05:30:00.000Z' }),     // re-entered today → FR-541 duplicate
+    LIVE('FR-529', { company: 'ETD Global', requested: 999, createdAt: '2026-10-09T05:40:00.000Z' }),         // other amount → FR-542 stays open
+    LIVE('FR-530', { company: 'Other', person: 'x', zohoClient: 'Noble One', requested: 700, createdAt: '2026-10-07T05:00:00.000Z' }), // created before the history day → stays
+    LIVE('FR-531', { company: 'ETD Global', requested: 1400, createdAt: '2026-10-09T08:00:00.000Z', status: 'VOID' }), // voided live → FR-544 stays
+    H('FR-527')], chat: [], notifications: [], audit: [] }));
+  const env = { LEDGER_FILE: lf };
+  let srv = await startServer({ dir, fixture: fixture(), env });
+  try {
+    assert.match(srv.out(), /Ledger: FR-541 \(Nova Brands, 14010\) is already on the platform as FR-528 — imported as voided\./);
+    assert.match(srv.out(), /\(1 voided as duplicates of live requests\)/);
+    const s = (await call(srv.base, await login(srv.base, 'sven', MASTER_PW), 'GET', '/api/sync/snapshot')).json, by = id => s.requests.find(r => r.id === id);
+    assert.equal(by('FR-541').status, 'VOID');
+    assert.deepEqual(by('FR-541').voided, { ...by('FR-541').voided, by: 'system', byName: 'System', reason: 'Duplicate — raised again on the platform as FR-528', prevStatus: 'NEW' });
+    assert.match(by('FR-541').timeline.at(-1).text, /Voided by the system — Duplicate — raised again on the platform as FR-528/);
+    assert.equal(by('FR-542').status, 'NEW');
+    assert.equal(by('FR-543').status, 'ACTION');
+    assert.equal(by('FR-544').status, 'ACTION');
+    assert.equal(by('FR-528').status, 'NEW', 'the live request is untouched');
+    await srv.stop();
+    srv = await startServer({ dir, env });
+    assert.match(srv.out(), /Ledger: server already up to date\./);
+    const s2 = (await call(srv.base, await login(srv.base, 'sven', MASTER_PW), 'GET', '/api/sync/snapshot')).json;
+    assert.equal(s2.requests.find(r => r.id === 'FR-541').status, 'VOID', 'stays voided after a restart');
+  } finally { await srv.stop(); }
+});

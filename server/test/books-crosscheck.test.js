@@ -58,20 +58,25 @@ describe('evaluateBooksCrossCheck — shape and balance', () => {
     assert.equal(f.available, 5500);
     assert.match(chk(f, 'CFD').items[0].detail, /1 unsynced Books movement AED 2,500\.00/);
   });
-  test('a synced line is never counted twice (matched by Transaction ID or by Entity ID)', () => {
+  test('a synced entity is compared, never counted twice (found by Transaction ID or by Entity ID)', () => {
     const viaEntity = evaluateBooksCrossCheck(plus([credit('X', 2500, { categorized_transaction_id: 'E9' })]));
-    assert.equal(viaEntity.available, 3000, 'E9 is an Analytics Entity ID (another customer) — synced already');
-    const viaTxn = evaluateBooksCrossCheck(plus([credit('T1', 2500)]));
-    assert.equal(viaTxn.available, 3000);
+    assert.equal(viaEntity.available, 3000, 'E9 is another customer\'s entity in Analytics — never money for this client');
+    const same = evaluateBooksCrossCheck(base({ books: { cfdTx: ok(base().books.cfdTx.rows.map(t => ({ ...t, transaction_id: '', categorized_transaction_id: t.transaction_id === 'T1' ? 'E1' : t.transaction_id }))) } }));
+    assert.equal(same.available, 3000, 'matched through the Entity ID: unchanged');
+    const added = evaluateBooksCrossCheck(plus([credit('T1', 2500)]));
+    assert.equal(added.available, 5500, 'a credit line tagged to the client added to a synced entity counts');
   });
   test('a movement tagged to another customer is never this client\'s, whatever its text says', () => {
     const f = evaluateBooksCrossCheck(plus([credit('T3', 2500, { customer_id: '42', description: 'Payment for Acme Trading' })]));
     assert.equal(f.available, 3000);
     assert.equal(chk(f, 'CFD').ok, false);
   });
-  test('an untagged movement is matched by the client name as whole words only', () => {
+  test('an untagged movement matched by name never adds money, counts as untagged, and its debits still count', () => {
     const named = evaluateBooksCrossCheck(plus([credit('T3', 2500, { customer_id: '', description: 'Deposit ACME trading fzco 12/10' })]));
-    assert.equal(named.available, 5500);
+    assert.equal(named.available, 3000, 'credit matched only by name is not counted');
+    assert.equal(chk(named, 'COGS').code, 'COGS_UNMAPPED');
+    const debit = evaluateBooksCrossCheck(plus([credit('T3', 6000), { transaction_id: 'T4', customer_id: '', payee: 'Acme Trading', transaction_date: DAY, debit_amount: 1500, credit_amount: 0 }]));
+    assert.equal(debit.available, 7500, '3,000 + 6,000 tagged − 1,500 name-matched debit');
     const partial = evaluateBooksCrossCheck(plus([credit('T3', 2500, { customer_id: undefined, payee: 'Acme Tradingworks' })]));
     assert.equal(partial.available, 3000, 'no match inside another word');
     const short = evaluateBooksCrossCheck(plus([credit('T3', 2500, { customer_id: '', payee: 'Acme' })], { names: ['Acme'] }));
@@ -126,6 +131,51 @@ describe('evaluateBooksCrossCheck — shape and balance', () => {
     assert.equal(chk(f, 'CFD').code, 'BOOKS_UNAVAILABLE');
     assert.equal(chk(f, 'CFD').message, BOOKS_FAIL + '.');
     assert.equal(f.available, null);
+  });
+});
+
+describe('evaluateBooksCrossCheck — edits after the sync (reviewer scenarios)', () => {
+  const B = () => base().books.cfdTx.rows;
+  const T3 = credit('T3', 2500);
+  test('one untagged row naming two clients passes neither', () => {
+    const row = { transaction_id: 'T3', transaction_type: 'deposit', transaction_date: DAY, customer_id: '', description: 'Acme Trading transfer to Beta Global', credit_amount: 2500, debit_amount: 0 };
+    const acme = evaluateBooksCrossCheck(base({ books: { cfdTx: ok(B().concat(row)) } }));
+    const beta = evaluateBooksCrossCheck(base({ contact: { contactId: '12', contactName: 'Beta Global', companyName: 'Beta Global LLC', outstanding: 0 }, ids: ['12'], names: ['Beta Global'],
+      recent: { lines: base().recent.lines.map(l => ({ ...l, customer: l.customer === '11' ? '12' : l.customer })), watermark: DAY }, books: { cfdTx: ok(B().map(t => ({ ...t, customer_id: t.customer_id === '11' ? '12' : t.customer_id })).concat(row)) } }));
+    for (const f of [acme, beta]) { assert.equal(f.ok, false); assert.equal(f.available, 3000); }
+  });
+  test('a synced credit edited down in Books comes off', () => {
+    const f = evaluateBooksCrossCheck(base({ books: { cfdTx: ok([{ ...B()[0], credit_amount: 400 }, B()[1], B()[2], T3]) } }));
+    assert.equal(f.available, 1900);
+    assert.match(chk(f, 'CFD').items[0].detail, /E1: Analytics AED 4,000\.00, Books AED 400\.00, counted AED -3,600\.00/);
+  });
+  test('a synced credit re-tagged to another customer comes off', () => {
+    assert.equal(evaluateBooksCrossCheck(base({ books: { cfdTx: ok([{ ...B()[0], customer_id: '99' }, B()[1], B()[2], T3]) } })).available, 1500);
+  });
+  test('a debit line added to a synced journal comes off; JOURNALS lists the change', () => {
+    const f = evaluateBooksCrossCheck(base({ books: { cfdTx: ok(B().concat({ transaction_id: 'T1', transaction_type: 'journal', transaction_date: DAY, customer_id: '11', credit_amount: 0, debit_amount: 3000 }, T3)) } }));
+    assert.equal(f.available, 2500);
+    assert.match(chk(f, 'JOURNALS').items[1].detail, /E1 changed/);
+  });
+  test('an Analytics debit re-tagged to this client from another customer never adds money; an increase partly from a name match is capped', () => {
+    const toUs = evaluateBooksCrossCheck(base({ books: { cfdTx: ok(B().map(t => t.transaction_id === 'T9' ? { ...t, customer_id: '11' } : t)) } }));
+    assert.equal(toUs.available, 3000, 'E9 belongs to customer 99 in Analytics');
+    const mixed = evaluateBooksCrossCheck(base({ books: { cfdTx: ok(B().concat({ transaction_id: 'T1', customer_id: '', payee: 'Acme Trading', transaction_date: DAY, credit_amount: 900, debit_amount: 0 })) } }));
+    assert.equal(mixed.available, 3000, 'the extra credit on a synced entity is matched only by name');
+  });
+  test('an unsynced row with no positive amount on either side is unknown → not completed', () => {
+    const f = evaluateBooksCrossCheck(plus([{ transaction_id: 'T4', transaction_type: 'expense', transaction_date: DAY, customer_id: '11', credit_amount: 0, debit_amount: '', amount: 3000 }, T3]));
+    assert.equal(chk(f, 'CFD').code, 'BOOKS_UNAVAILABLE');
+    assert.equal(f.ok, false);
+  });
+  test('per-customer lists: rows of another customer are ignored', () => {
+    const f = evaluateBooksCrossCheck(base({ books: {
+      creditnotes: ok([{ creditnote_id: 'CN9', creditnote_number: 'CN-9', customer_id: '99', status: 'open', total: 2500, balance: 2500 }, { creditnote_id: 'CN8', customer_id: '99', status: 'draft', balance: 1 }]),
+      invoices: ok([{ invoice_id: 'I9', customer_id: '99', type: 'invoice', status: 'overdue', balance: 50 }]),
+      payments: ok([{ payment_id: 'P1', customer_id: '11', amount: 4000 }, { payment_id: 'P9', customer_id: '99', amount: 1 }]) } }));
+    assert.equal(f.available, 3000, 'the other customer\'s credit note is not added');
+    assert.equal(chk(f, 'NOTES').ok, true, 'nor its draft');
+    assert.equal(chk(f, 'INVOICES').ok, true, 'nor its open invoice');
   });
 });
 

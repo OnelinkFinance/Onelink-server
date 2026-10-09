@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { startServer, mkTmp, call, login, findKeys, TEAM_PW, MASTER_PW, OPS_INSUFFICIENT, SECRET, sleep } from './helpers.mjs';
-import { fixture, C } from './fixtures.mjs';
+import { fixture, C, CFD, COGS } from './fixtures.mjs';
 import { ledgerHash } from '../ledger-hash.js';
 
 const PAID = 'Yes — in full';
@@ -181,6 +181,25 @@ describe('connection verification', () => {
       const cached = await A.precheck('sven', C.bravo);
       assert.equal(cached.status, 200);
       assert.equal(zlog(dir).filter(e => e.kind === 'workspace' && e.status === 500).length, 1, 'no new probe while the success is fresh');
+    } finally { await srv.stop(); }
+  });
+  test('a token without the Analytics metadata scope (workspace 401/403) is verified by a balance-table read instead', async () => {
+    const dir = mkTmp('r2-scope'), fx = fixture(); fx.fail = { workspace: 403 };
+    const srv = await startServer({ dir, fixture: fx });
+    try {
+      const T = {}; await signIn(srv, T, ['maram']); const A = client(srv, T);
+      const ok = await A.precheck('maram', C.alpha);
+      assert.equal(ok.status, 200, JSON.stringify(ok.json).slice(0, 300));
+      assert.equal(ok.json.finance.connections.analytics, true);
+      // the fallback read must itself succeed: a failing balance export still blocks
+      const srv2dir = mkTmp('r2-scope2'), srv2 = await startServer({ dir: srv2dir, fixture: { ...fixture(), fail: { workspace: 401, balances: 500 } } });
+      try {
+        const T2 = {}; await signIn(srv2, T2, ['maram']); const B = client(srv2, T2);
+        const bad = await B.precheck('maram', C.alpha);
+        assert.equal(bad.status, 503, JSON.stringify(bad.json).slice(0, 300));
+        assert.equal(bad.json.reason, 'ZOHO_CONNECTION_FAILED');
+        assert.equal(bad.json.connections.analytics.ok, false);
+      } finally { await srv2.stop(); }
     } finally { await srv.stop(); }
   });
   test('an OAuth failure fails both connections (and nothing is decided)', async () => {
@@ -370,7 +389,11 @@ describe('history ledger refresh on boot, and legacy escalations', () => {
     fs.writeFileSync(path.join(dir, 'platform.json'), JSON.stringify(platform));
     const srv = await startServer({ dir, fixture: fixture(), env: { LEDGER_FILE: path.join(dir, 'ledger.json') } });
     try {
-      assert.match(srv.out(), /Ledger: updated 1 history requests \(2 left as edited on the platform\)\./);
+      // FR-903 is held by a live request: its history comes in under a fresh number, voided as a duplicate of that live
+      // request (same company and amount, raised on/after the history day); a voided import counts as edited.
+      assert.match(srv.out(), /Ledger: FR-903 is taken by a live request — imported the history as FR-951\./);
+      assert.match(srv.out(), /Ledger: FR-951 \(Co FR-903, 1000\) is already on the platform as FR-903 — imported as voided\./);
+      assert.match(srv.out(), /Ledger: updated 1 history requests \(3 left as edited on the platform\)\./);
       const T = {}; await signIn(srv, T, ['maram', 'amina', 'adnan']); const A = client(srv, T);
       const rs = (await A.snap('sven')).requests, by = id => rs.find(r => r.id === id);
       assert.equal(by('FR-901').status, 'APPROVED', 'untouched → new ledger version');
@@ -378,6 +401,9 @@ describe('history ledger refresh on boot, and legacy escalations', () => {
       assert.equal(by('FR-902').status, 'NEW', 'edited on the platform → kept');
       assert.equal(by('FR-902').notes, 'edited on the platform');
       assert.equal(by('FR-903').status, 'NEW', 'a live request is never replaced');
+      assert.equal(by('FR-951').status, 'VOID');
+      assert.deepEqual([by('FR-951').voided.by, by('FR-951').voided.reason, by('FR-951').voided.prevStatus], ['system', 'Duplicate — raised again on the platform as FR-903', 'APPROVED']);
+      assert.match(by('FR-951').timeline.at(-1).text, /^Voided by the system — Duplicate — raised again on the platform as FR-903$/);
       assert.equal(by('FR-904'), undefined, 'purged stays purged');
       assert.equal(by('FR-905').status, 'NEW', 'a record carrying platform fields counts as edited');
       assert.ok(by('FR-907'), 'new ledger requests are still added');
@@ -445,6 +471,83 @@ describe('Zoho Analytics resilience', () => {
       assert.ok(fails >= 1 && fails <= 2, 'six concurrent pre-loads share one refresh: ' + fails + ' failure lines');
       assert.equal(attempts, fails * 2, 'every refresh tried the export twice (one retry)');
       assert.doesNotMatch(srv.out(), /pre-load failed/);
+    } finally { await srv.stop(); }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+describe('review round 2 regressions', () => {
+  const pre = async (srv, who, c) => { const T = { [who]: await login(srv.base, who, who === 'sven' ? MASTER_PW : TEAM_PW) }; return client(srv, T).precheck(who, c); };
+  test('a Books entry booked late but dated weeks back is read (Books from the 45-day floor, not the watermark)', async () => {
+    const fx = fixture();
+    const d = new Date(Date.now() - 20 * 86400e3).toLocaleDateString('en-CA', { timeZone: 'Asia/Dubai' });
+    fx.books.transactions[CFD].push({ transaction_id: '4001999', transaction_type: 'expense', transaction_date: d, customer_id: C.bk1.id, payee: C.bk1.name, credit_amount: 0, debit_amount: 2000 });
+    const dir = mkTmp('r2-backdated'), srv = await startServer({ dir, fixture: fx });
+    try {
+      const p = await pre(srv, 'sven', C.bk1);
+      assert.equal(p.status, 422, 'available 3,000 + 2,500 − 2,000 = 3,500 < 5,000');
+      assert.match(p.json.finance.checks[0].items[0].detail, /Available AED 3,500\.00/);
+      const q = zlog(dir).find(e => e.kind === 'transactions');
+      const floor = new Date(Date.now() - 45 * 86400e3).toLocaleDateString('en-CA', { timeZone: 'Asia/Dubai' });
+      assert.ok(Math.abs(Date.parse(q.query['date.start']) - Date.parse(floor)) <= 86400e3, 'Books read from ' + q.query['date.start']);
+    } finally { await srv.stop(); }
+  });
+  test('a Books list answering 404 fails its checks (never "nothing")', async () => {
+    const fx = fixture(); fx.fail = { creditnotes: 404 };
+    const srv = await startServer({ dir: mkTmp('r2-404'), fixture: fx });
+    try {
+      const p = await pre(srv, 'sven', C.bk1);
+      assert.equal(p.status, 422);
+      assert.deepEqual(p.json.failed.map(f => f.key), ['CFD', 'NOTES']);
+      assert.equal(p.json.finance.checks.find(c => c.key === 'NOTES').code, 'BOOKS_UNAVAILABLE');
+    } finally { await srv.stop(); }
+  });
+  test('a cross-check needing more than 25 Books calls fails closed and stops calling', async () => {
+    const fx = fixture(), today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dubai' });
+    for (let i = 0; i < 1000; i++) fx.books.transactions[COGS].push({ transaction_id: 'G' + i, transaction_type: 'expense', transaction_date: today, customer_id: '9998', credit_amount: 0, debit_amount: 1 });
+    for (let i = 0; i < 600; i++) fx.books.transactions[CFD].push({ transaction_id: 'K' + i, transaction_type: 'expense', transaction_date: today, customer_id: '9998', credit_amount: 0, debit_amount: 1 });
+    for (let i = 0; i < 1000; i++) fx.books.journals.push({ journal_id: String(5000000 + i), entry_number: 'JE-' + i, journal_date: today, status: i < 12 ? 'draft' : 'published', total: 1 });
+    for (let i = 0; i < 12; i++) fx.books.journalDetails[String(5000000 + i)] = { journal_id: String(5000000 + i), line_items: [{ customer_id: '9998' }] };
+    const dir = mkTmp('r2-cap'), srv = await startServer({ dir, fixture: fx });
+    try {
+      const p = await pre(srv, 'sven', C.bk1);
+      assert.equal(p.status, 422, JSON.stringify(p.json).slice(0, 300));
+      assert.ok(p.json.finance.checks.some(c => c.code === 'BOOKS_UNAVAILABLE' && /more than 25 Zoho Books calls/.test(c.detail)), JSON.stringify(p.json.finance.checks.map(c => [c.key, c.code, c.detail])));
+      const calls = zlog(dir).filter(e => ['transactions', 'creditnotes', 'booksInvoices', 'customerpayments', 'journals', 'journal'].includes(e.kind)).length;
+      assert.ok(calls <= 25, calls + ' Books calls');
+    } finally { await srv.stop(); }
+  });
+  test('a justification written by a member of management reaches no Operations user (history line, audit)', async () => {
+    const srv = await startServer({ dir: mkTmp('r2-mgmtjust'), fixture: fixture() });
+    try {
+      const T = {}; await signIn(srv, T, ['amina', 'maram', 'adnan', 'ahmed']); const A = client(srv, T);
+      const p = await A.precheck('adnan', C.kilo);
+      const e = await A.api('adnan', 'POST', '/api/requests/escalate', { escalateToken: p.json.escalate.token, clientName: p.v.clientName, justification: 'MGMT-SECRET board minute 77 about this client', to: ['ahmed'],
+        request: { company: C.kilo.name + ' FZCO', person: C.kilo.name, purpose: 'Visa', zone: 'IFZA', requested: 5000, date: '9 Oct', notes: '', docs: [] } });
+      assert.equal(e.status, 200);
+      assert.doesNotMatch(JSON.stringify(await A.snap('amina')), /MGMT-SECRET/);
+      const sv = await A.snap('sven');
+      assert.ok(sv.audit.some(a => a.action === 'ESCALATION_CREATED' && a.detail.includes('MGMT-SECRET')), 'Sven keeps it');
+      assert.equal(sv.requests.find(r => r.id === e.json.id).escalation.justification, 'MGMT-SECRET board minute 77 about this client');
+    } finally { await srv.stop(); }
+  });
+  test("'ALL' goes to active managers only; with none active (but the raiser) it is refused", async () => {
+    const dir = mkTmp('r2-allactive'), srv = await startServer({ dir, fixture: fixture() });
+    try {
+      const T = {}; await signIn(srv, T, ['maram', 'adnan']); const A = client(srv, T);
+      assert.equal((await A.api('sven', 'POST', '/api/admin/users/ahmed/active', { active: false })).status, 200);
+      const p = await A.precheck('maram', C.kilo);
+      const body = (tok, c) => ({ escalateToken: tok, clientName: c.name, justification: 'Client paid by bank transfer today.', request: { company: c.name + ' FZCO', purpose: 'Visa', zone: 'IFZA', requested: 5000, date: '9 Oct', docs: [] } });
+      const e = await A.api('maram', 'POST', '/api/requests/escalate', body(p.json.escalate.token, C.kilo));
+      assert.equal(e.status, 200);
+      assert.deepEqual(e.json.item.escalation.to.map(t => t.key), ['adnan', 'eduard']);
+      assert.equal(e.json.item.escalation.routing, 'ALL');
+      assert.equal((await A.api('sven', 'POST', '/api/admin/users/eduard/active', { active: false })).status, 200);
+      const q = await A.precheck('adnan', C.lima);
+      const r = await A.api('adnan', 'POST', '/api/requests/escalate', body(q.json.escalate.token, C.lima));
+      assert.equal(r.status, 422);
+      assert.equal(r.json.reason, 'NO_ACTIVE_MANAGEMENT');
+      assert.equal(r.json.error, 'No active management account can decide this — Sven must activate one in Master Control → Users.');
     } finally { await srv.stop(); }
   });
 });

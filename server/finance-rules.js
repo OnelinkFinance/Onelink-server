@@ -160,7 +160,8 @@ export function parseDay(v) {
   return null;
 }
 const addDays = (day, n) => { const d = new Date(day + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
-// Books window: the day of the Analytics watermark (newest "Last Modified Time") less two days, at most 45 days back.
+// The day of the Analytics watermark (newest "Last Modified Time") less two days, at most 45 days back. Not used for the
+// Books window any more (entries are often dated back): the server always reads Books from the 45-day floor.
 export function crossCheckWindow(watermark, today) {
   const floor = addDays(today, -45), w = parseDay(watermark);
   if (!w) return floor;
@@ -176,7 +177,7 @@ export function crossCheckWindow(watermark, today) {
 //   accounts: { cfd, cogs } Books account ids
 //   recent:   { lines: [{ customer, account, entityId, txnId, type, credit, debit, date }], watermark } | null — Analytics
 //             "CFD Customer Resolved" lines of the last 45 days (every customer), customer already canonical
-//   windowStart: 'YYYY-MM-DD' — the Books transactions below start here
+//   windowStart: 'YYYY-MM-DD' — the Books transactions below start here (the server passes today − 45 days)
 //   books: { cfdTx, cogsTx, creditnotes, invoices, payments: { ok, rows, truncated }, journals: { ok, rows, truncated, details: { id: line_items } } }
 // }
 export function evaluateBooksCrossCheck(a) {
@@ -192,49 +193,93 @@ export function evaluateBooksCrossCheck(a) {
   const lines = a.recent && Array.isArray(a.recent.lines) ? a.recent.lines : null;
   const checks = [];
 
-  // A Books row is this client's when its customer is one of the client's contacts. Only a row with no customer at all
-  // is matched by name (payee / reference / description) — a row tagged to another customer is never this client's.
+  // A Books row is this client's when its customer is one of the client's contacts ('tag'). Only a row with no customer at
+  // all is matched by name (payee / reference / description, whole words — 'name'); a row tagged to another customer is
+  // never this client's. A name match is not proof of whose money it is (one row can name two clients): it never adds
+  // money — its credits are ignored, its debits count — and it counts as an entry not tagged to the client.
   const belongs = t => {
-    if (!t || typeof t !== 'object') return false;
+    if (!t || typeof t !== 'object') return '';
     const c = idk(t.customer_id);
-    if (c) return ids.has(c);
-    if (!names.length) return false;
+    if (c) return ids.has(c) ? 'tag' : '';
+    if (!names.length) return '';
     const text = ' ' + words([t.payee, t.reference_number, t.description].join(' ')) + ' ';
-    return names.some(n => text.includes(' ' + n + ' '));
+    return names.some(n => text.includes(' ' + n + ' ')) ? 'name' : '';
   };
   const ledgerIds = new Set();
-  for (const l of lines || []) for (const x of [l.entityId, l.txnId]) if (idk(x)) ledgerIds.add(idk(x));
+  // Analytics lines are grouped per entity (its Entity ID, else its Transaction ID); either id on a Books row finds it.
+  const keyOfId = new Map(), typeOfKey = new Map();
+  const lineKey = l => idk(l.entityId) || idk(l.txnId);
+  for (const l of lines || []) {
+    const k = lineKey(l);
+    for (const x of [l.entityId, l.txnId]) if (idk(x)) { ledgerIds.add(idk(x)); if (!keyOfId.has(idk(x))) keyOfId.set(idk(x), k); }
+    if (k && !typeOfKey.has(k)) typeOfKey.set(k, String(l.type || ''));
+  }
   const txIds = t => [idk(t.transaction_id), idk(t.categorized_transaction_id)].filter(Boolean);
   const cr = t => Math.max(0, amt(t.credit_amount) || 0), dr = t => Math.max(0, amt(t.debit_amount) || 0);
+  const bookKey = t => { for (const x of txIds(t)) if (keyOfId.has(x)) return keyOfId.get(x); return null; };
 
-  // One account (CFD or COGS): Books movements Analytics has not synced, and Analytics lines Books no longer has.
+  // One account (CFD or COGS), Books live against the Analytics lines:
+  // · unsynced: the client's Books rows whose ids Analytics does not have at all;
+  // · synced entities: per entity, the client's net (credit − debit) in Books against Analytics. A difference is an edit
+  //   after the sync (amount changed, line re-tagged, line added or removed, entity deleted) and is booked as a movement:
+  //   a decrease always counts; an increase only when every Books line behind it is tagged to the client and Analytics has
+  //   no line of that entity on this account for another customer (never money Analytics gives someone else).
   function account(s, accountId) {
     if (!lines) return { ok: false, why: 'the Zoho Analytics ledger lines could not be read' };
     if (!readable(s)) return { ok: false, why: 'the Zoho Books account transactions could not be read' + (s && s.error ? ' (' + s.error + ')' : '') };
     if (s.truncated) return { ok: false, why: 'Zoho Books returned more transactions than one check reads — deletions and unsynced movements cannot be confirmed' };
-    const mine = s.rows.filter(belongs);
-    const unsynced = mine.filter(t => !txIds(t).some(x => ledgerIds.has(x)));
-    const unknown = unsynced.filter(t => amt(t.credit_amount) === null && amt(t.debit_amount) === null);
-    if (unknown.length) return { ok: false, why: plural(unknown.length, 'unsynced transaction has', 'unsynced transactions have') + ' no amount in Zoho Books' };
-    const inBooks = new Set(s.rows.flatMap(t => (t && typeof t === 'object' ? txIds(t) : [])));
+    const acc = idk(accountId);
+    const rows = s.rows.filter(t => t && typeof t === 'object');
+    const mine = rows.map(t => ({ t, k: belongs(t) })).filter(x => x.k);
+    // A row of the client without a positive amount on either side is unknown money: nothing is decided on it.
+    const unknown = mine.filter(({ t }) => !(cr(t) > 0 || dr(t) > 0));
+    if (unknown.length) return { ok: false, why: plural(unknown.length, 'transaction of this client has', 'transactions of this client have') + ' no amount in Zoho Books' };
+    const unsyncedX = mine.filter(({ t }) => !txIds(t).some(x => ledgerIds.has(x)));
+    const unsynced = unsyncedX.map(x => x.t), nameOnly = unsyncedX.filter(x => x.k === 'name');
+    const inU = sum(unsyncedX.filter(x => x.k === 'tag'), x => cr(x.t)), outU = sum(unsynced, dr);
+    const A = new Map(), other = new Set(), outside = new Set();
     let undated = 0;
-    const deleted = lines.filter(l => idk(l.account) === idk(accountId) && ids.has(idk(l.customer))).filter(l => {
+    for (const l of lines) {
+      if (idk(l.account) !== acc) continue;
+      const k = lineKey(l);
+      if (!k) continue;
+      if (!ids.has(idk(l.customer))) { other.add(k); continue; }
       const d = parseDay(l.date);
-      if (!d) { undated++; return false; }
-      if (d < since) return false;
-      const own = [idk(l.entityId), idk(l.txnId)].filter(Boolean);
-      return own.length > 0 && !own.some(x => inBooks.has(x));
-    });
-    return { ok: true, mine, unsynced, deleted, undated,
-      inU: sum(unsynced, cr), outU: sum(unsynced, dr), inD: sum(deleted, l => Math.max(0, n0(l.credit))), outD: sum(deleted, l => Math.max(0, n0(l.debit))) };
+      if (!d) { undated++; outside.add(k); continue; }
+      if (d < since) { outside.add(k); continue; } // Books is read from `since`: an older entity cannot be compared
+      A.set(k, (A.get(k) || 0) + n0(l.credit) - n0(l.debit));
+    }
+    const present = new Set(), Bt = new Map(), Bn = new Map();
+    for (const t of rows) {
+      const k = bookKey(t);
+      if (!k) continue;
+      present.add(k);
+      const kind = belongs(t);
+      if (kind) { const m = kind === 'tag' ? Bt : Bn; m.set(k, (m.get(k) || 0) + cr(t) - dr(t)); }
+    }
+    let adj = 0;
+    const changed = [], deleted = [];
+    for (const k of new Set([...A.keys(), ...Bt.keys(), ...Bn.keys()])) {
+      if (outside.has(k)) continue;
+      const a = A.get(k) || 0, bt = Bt.get(k) || 0, bn = Bn.get(k) || 0, delta = Math.round((bt + bn - a) * 100) / 100;
+      if (Math.abs(delta) <= EPS) continue;
+      const applied = delta < 0 ? delta : other.has(k) ? 0 : bn ? Math.max(0, Math.min(delta, bt - a)) : delta;
+      adj += applied;
+      (present.has(k) ? changed : deleted).push({ key: k, type: typeOfKey.get(k) || '', analytics: Math.round(a * 100) / 100, books: Math.round((bt + bn) * 100) / 100, applied: Math.round(applied * 100) / 100 });
+    }
+    adj = Math.round(adj * 100) / 100;
+    return { ok: true, mine, unsynced, nameOnly: nameOnly.length, changed, deleted, undated, inU, outU, adj };
   }
+  const why_ = x => (x && x.error ? ` (${x.error})` : x && x.truncated ? ' (more than one check reads)' : '');
   const unavailable = (key, why) => ({ key, label: CROSS_CHECKS[key], ok: false, code: 'BOOKS_UNAVAILABLE', message: BOOKS_FAIL + '.', detail: why, items: [item('Zoho Books cross-verification', false, BOOKS_FAIL, why)] });
 
   const C = account(src.cfdTx, acc.cfd), G = account(src.cogsTx, acc.cogs);
   const cnOk = readable(src.creditnotes) && !src.creditnotes.truncated, ivOk = readable(src.invoices) && !src.invoices.truncated, pyOk = readable(src.payments);
   // Credit notes already posted to the CFD / COGS ledger (Analytics, or the Books window) are in the balance — never added twice.
   const posted = new Set([...ledgerIds, ...(readable(src.cfdTx) ? src.cfdTx.rows.flatMap(t => (t ? txIds(t) : [])) : []), ...(readable(src.cogsTx) ? src.cogsTx.rows.flatMap(t => (t ? txIds(t) : [])) : [])]);
-  const cns = cnOk ? src.creditnotes.rows.filter(x => x && typeof x === 'object') : [];
+  // Per-customer lists: a row naming another customer is dropped, in case Books ignored the customer filter.
+  const ours = x => x && typeof x === 'object' && (!idk(x.customer_id) || ids.has(idk(x.customer_id)));
+  const cns = cnOk ? src.creditnotes.rows.filter(ours) : [];
   const cnOpenAll = cns.filter(c => low(c.status) === 'open' && (amt(c.balance) || 0) > EPS);
   // …matched by id, or by the credit-note number on a Books account row (a row's own id may be a different one).
   const postedNums = new Set([src.cfdTx, src.cogsTx].filter(readable).flatMap(x => x.rows).filter(t => t && typeof t === 'object')
@@ -244,7 +289,7 @@ export function evaluateBooksCrossCheck(a) {
   const cnOpenRows = cnOpenAll.filter(c => !isPosted(c));
   const cnOpen = sum(cnOpenRows, c => amt(c.balance));
   const cnPending = cns.filter(c => PENDING.includes(low(c.status)));
-  const ivs = ivOk ? src.invoices.rows.filter(x => x && typeof x === 'object') : [];
+  const ivs = ivOk ? src.invoices.rows.filter(ours) : [];
   const isDN = r => low(r.type) === 'debit_note';
   const dns = ivs.filter(isDN), invs = ivs.filter(r => !isDN(r)); // a row without a type counts as an invoice (a due), never as a note
   const dnPending = dns.filter(r => PENDING.includes(low(r.status)));
@@ -261,22 +306,25 @@ export function evaluateBooksCrossCheck(a) {
   let available = null;
   {
     const ready = C.ok && cnOk && ivOk && !dnUnknown;
-    if (!ready) checks.push(unavailable('CFD', !C.ok ? 'CFD account: ' + C.why : !cnOk ? 'Credit notes could not be read from Zoho Books.' : !ivOk ? 'Invoices / debit notes could not be read from Zoho Books.' : 'A debit note has no balance in Zoho Books.'));
+    if (!ready) checks.push(unavailable('CFD', !C.ok ? 'CFD account: ' + C.why : !cnOk ? 'Credit notes could not be read from Zoho Books' + why_(src.creditnotes) + '.' : !ivOk ? 'Invoices / debit notes could not be read from Zoho Books' + why_(src.invoices) + '.' : 'A debit note has no balance in Zoho Books.'));
     else {
       // The Analytics ledger balance: the lower of the balance table and the ledger lines read with the recent lines
       // (the same snapshot), so a movement synced in between is never counted from Analytics and Books both.
       const splitNet = n0(cfdA.credits) - n0(cfdA.debits), ledger = Math.min(rec ? n0(rec.available) : 0, splitNet);
-      const net = Math.round((ledger + (C.inU - C.outU) - (C.inD - C.outD) + cnOpen - dnOpen - held) * 100) / 100;
+      const net = Math.round((ledger + (C.inU - C.outU) + C.adj + cnOpen - dnOpen - held) * 100) / 100;
       available = net;
       const enough = net > 0 && net + EPS >= amount;
       const disb = n0(cfdA.debits) + C.outU;
       const items = [
         item('Funds available (Zoho Books live)', enough, enough ? 'Sufficient' : 'Not sufficient',
           `Available ${aed(net)} = Analytics ledger ${aed(ledger)}` + (rec ? '' : ' (no CFD Customer Balances record)') + ` + ${plural(C.unsynced.length, 'unsynced Books movement', 'unsynced Books movements')} ${aed(C.inU - C.outU)}`
-          + ` − ${plural(C.deleted.length, 'Analytics line', 'Analytics lines')} deleted in Books ${aed(C.inD - C.outD)} + open credit notes ${aed(cnOpen)} − open debit notes ${aed(dnOpen)}`
+          + ` + ${plural(C.changed.length + C.deleted.length, 'synced entry', 'synced entries')} changed or deleted in Books since ${aed(C.adj)} + open credit notes ${aed(cnOpen)} − open debit notes ${aed(dnOpen)}`
+          + (C.nameOnly ? ` · ${plural(C.nameOnly, 'untagged Books movement', 'untagged Books movements')} matched only by name: credits not counted` : '')
+          + (C.changed.length || C.deleted.length ? ' · ' + [...C.changed, ...C.deleted].slice(0, 5).map(x => `${x.key}: Analytics ${aed(x.analytics)}, Books ${aed(x.books)}, counted ${aed(x.applied)}`).join('; ') : '')
           + (held ? ` − ${aed(held)} already approved on ${plural(heldN, 'request', 'requests')}` : '') + ` · requested ${aed(amount)}`
           + (rec && Math.abs(n0(rec.available) - splitNet) > EPS ? ` · balance table ${aed(rec.available)}, ledger lines ${aed(splitNet)}` : '')
-          + (C.undated ? ` · ${plural(C.undated, 'Analytics line', 'Analytics lines')} without a readable date skipped for deletion checks` : '')),
+          + (C.undated ? ` · ${plural(C.undated, 'Analytics line', 'Analytics lines')} without a readable date skipped for deletion checks` : '')
+          + (a.recent && a.recent.watermark ? ` · Analytics synced to ${a.recent.watermark}` : '') + ` · Books read from ${since}`),
         item('Disbursements made for the client', true, disb > EPS ? 'Disbursements are recorded for this client' : 'No disbursement recorded yet',
           `Debits ${aed(cfdA.debits)} in Zoho Analytics + ${aed(C.outU)} not yet synced`),
         item('No unpaid disbursements', !dues, !dues ? 'Zoho Books shows no outstanding receivable' : 'Zoho Books shows an outstanding receivable for this client',
@@ -292,9 +340,9 @@ export function evaluateBooksCrossCheck(a) {
   // B — Cost of Goods Sold account, with the unsynced Books movements
   if (!(C.ok && G.ok)) checks.push(unavailable('COGS', !C.ok ? 'CFD account: ' + C.why : 'COGS account: ' + G.why));
   else {
-    const received = (split ? n0(cfdA.credits) : rec ? n0(rec.allocated) : 0) + C.inU - C.inD;
-    const cogsNet = n0(cogsA.debits) - n0(cogsA.credits) + (G.outU - G.inU) - (G.outD - G.inD);
-    const untagged = n0(cfdA.untagged) + n0(cogsA.untagged);
+    const received = (split ? n0(cfdA.credits) : rec ? n0(rec.allocated) : 0) + C.inU + Math.min(0, C.adj); // edits only ever lower it here
+    const cogsNet = n0(cogsA.debits) - n0(cogsA.credits) + (G.outU - G.inU) - G.adj;
+    const untagged = n0(cfdA.untagged) + n0(cogsA.untagged) + C.nameOnly + G.nameOnly;
     const items = [
       item('Client paid for the goods / services', received > EPS, received > EPS ? 'Client funds received into the CFD account' : 'No client payment recorded in the CFD account', `Received ${aed(received)} (incl. ${aed(C.inU)} not yet synced)`),
       (() => {
@@ -312,11 +360,11 @@ export function evaluateBooksCrossCheck(a) {
     const first = order.find(([i]) => !items[i].ok);
     checks.push({ key: 'COGS', label: CROSS_CHECKS.COGS, ok: !first, code: first ? first[1] : 'COGS_OK',
       message: !first ? 'Client payment received and the costs booked to COGS are covered (Zoho Books live).' : items[first[0]].text + '.',
-      detail: `CFD credits ${aed(received)} · COGS net ${aed(cogsNet)} · unsynced COGS movements ${G.unsynced.length}, deleted ${G.deleted.length}.`, items });
+      detail: `CFD credits ${aed(received)} · COGS net ${aed(cogsNet)} · unsynced COGS movements ${G.unsynced.length}, changed ${G.changed.length}, deleted ${G.deleted.length}.`, items });
   }
 
   // C — credit notes / debit notes
-  if (!cnOk || !ivOk) checks.push(unavailable('NOTES', !cnOk ? 'Credit notes could not be read from Zoho Books' + (src.creditnotes && src.creditnotes.truncated ? ' (more than one check reads)' : '') + '.' : 'Invoices / debit notes could not be read from Zoho Books' + (src.invoices && src.invoices.truncated ? ' (more than one check reads)' : '') + '.'));
+  if (!cnOk || !ivOk) checks.push(unavailable('NOTES', !cnOk ? 'Credit notes could not be read from Zoho Books' + why_(src.creditnotes) + '.' : 'Invoices / debit notes could not be read from Zoho Books' + why_(src.invoices) + '.'));
   else {
     const pend = cnPending.length + dnPending.length;
     const items = [
@@ -340,19 +388,20 @@ export function evaluateBooksCrossCheck(a) {
     const pend = jRows.filter(j => PENDING.includes(low(j.status)));
     const details = (J && J.details) || {};
     const unread = pend.filter(j => !Array.isArray(details[idk(j.journal_id)]));
-    if (!readable(J) || J.truncated) checks.push(unavailable('JOURNALS', 'Journals could not be read from Zoho Books' + (J && J.truncated ? ' (more than one check reads)' : '') + '.'));
+    if (!readable(J) || J.truncated) checks.push(unavailable('JOURNALS', 'Journals could not be read from Zoho Books' + why_(J) + '.'));
     else if (unread.length) checks.push(unavailable('JOURNALS', `${plural(unread.length, 'draft journal', 'draft journals')} could not be inspected in Zoho Books.`));
     else if (!(C.ok && G.ok)) checks.push(unavailable('JOURNALS', !C.ok ? 'CFD account: ' + C.why : 'COGS account: ' + G.why));
     else {
       const affecting = pend.filter(j => details[idk(j.journal_id)].some(belongs));
       const isJ = v => /journal/i.test(String(v || ''));
       const delJ = [...C.deleted, ...G.deleted].filter(l => isJ(l.type));
+      const chJ = [...C.changed, ...G.changed].filter(l => isJ(l.type));
       const unsyncedJ = [...C.unsynced, ...G.unsynced].filter(t => isJ(t.transaction_type));
       const items = [
         item('No journal awaiting approval', !affecting.length, affecting.length ? plural(affecting.length, 'journal for this client is', 'journals for this client are') + ' in draft / pending approval' : 'No draft or pending journal for this client',
           affecting.length ? affecting.slice(0, 5).map(j => j.entry_number || j.journal_id).join(', ') : ''),
         item('Journals match Zoho Analytics', !delJ.length, delJ.length ? 'A journal line in Zoho Analytics was deleted or reversed in Zoho Books' : 'No journal difference left unexplained',
-          delJ.length ? delJ.slice(0, 5).map(l => `${l.entityId || l.txnId} credit ${aed(l.credit)} debit ${aed(l.debit)}`).join(', ') : ''),
+          delJ.length || chJ.length ? [...delJ.map(l => `${l.key} deleted (Analytics ${aed(l.analytics)})`), ...chJ.map(l => `${l.key} changed (Analytics ${aed(l.analytics)}, Books ${aed(l.books)}, counted ${aed(l.applied)})`)].slice(0, 6).join(', ') : ''),
         item('Journal movements not yet in Zoho Analytics', true, unsyncedJ.length ? plural(unsyncedJ.length, 'journal movement is', 'journal movements are') + ' counted from Zoho Books' : 'None',
           unsyncedJ.length ? unsyncedJ.slice(0, 5).map(t => `${t.reference_number || t.transaction_id} ${t.transaction_date || ''} credit ${aed(cr(t))} debit ${aed(dr(t))}`).join(', ') : '')
       ];
@@ -364,10 +413,10 @@ export function evaluateBooksCrossCheck(a) {
   }
 
   // E — invoice payment verification, Books live
-  if (!ivOk || !pyOk) checks.push(unavailable('INVOICES', !ivOk ? 'Invoices could not be read from Zoho Books.' : 'Customer payments could not be read from Zoho Books.'));
+  if (!ivOk || !pyOk) checks.push(unavailable('INVOICES', !ivOk ? 'Invoices could not be read from Zoho Books' + why_(src.invoices) + '.' : 'Customer payments could not be read from Zoho Books' + why_(src.payments) + '.'));
   else {
     const answer = String(paid || '').trim();
-    const pays = src.payments.rows.filter(x => x && typeof x === 'object');
+    const pays = src.payments.rows.filter(ours);
     const bCount = pays.length, bReceived = sum(pays, p => Math.max(0, amt(p.amount) || 0)), bUnused = sum(pays, p => Math.max(0, amt(p.unused_amount) || 0));
     const aCount = pay ? n0(pay.payments) : 0, refunded = pay ? n0(pay.refunded) : 0;
     const deletedPay = !src.payments.truncated && bCount < aCount;

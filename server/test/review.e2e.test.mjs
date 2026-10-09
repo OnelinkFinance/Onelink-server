@@ -50,7 +50,7 @@ test('the client type-ahead never carries the Zoho Books receivable', async () =
   for (const c of r.json.clients) assert.equal('outstanding' in c, false, JSON.stringify(c));
 });
 
-test('management can add notes but cannot change the amount, the client or the history of a request', async () => {
+test('management cannot change the amount, the client, the notes or the history of a request; lines they add stay away from Operations', async () => {
   const id = await escalate('maram', C.kilo);
   assert.equal((await decide('ahmed', id, 'APPROVE')).status, 200);
   const r = await reqOf('adnan', id);
@@ -60,8 +60,12 @@ test('management can add notes but cannot change the amount, the client or the h
   assert.equal(after.requested, 5000);
   assert.equal(after.approved, null);
   assert.equal(after.zohoClientId, C.kilo.id);
-  assert.equal(after.notes, 'Seen by Adnan');
+  assert.equal(after.notes, r.notes, 'notes go through the escalation endpoints');
   assert.ok(after.timeline.length >= r.timeline.length, 'history lines were dropped');
+  const line = await put('adnan', { ...after, timeline: after.timeline.concat([{ at: '9 Oct · 12:00', text: 'Board view: credit risk MN-42' }]) });
+  assert.equal(line.status, 200);
+  assert.ok((await reqOf('sven', id)).timeline.some(t => /MN-42/.test(t.text)), 'kept, signed');
+  for (const who of ['maram', 'amina']) assert.doesNotMatch(JSON.stringify(await reqOf(who, id)), /MN-42/, who + ' sees a management line');
   assert.equal((await api('maram', 'POST', '/api/zoho/validate-client', { contactId: C.kilo.id })).status, 409, 'Kilo must stay locked');
 });
 
