@@ -6,9 +6,10 @@
   "engines": { "node": ">=18" },
   "scripts": {
     "start": "node server.js",
+    "start:commissions": "node commissions-server.js",
     "dev": "node --watch server.js",
     "test:check": "node scripts/test-check.js",
-    "test": "node --test test/finance-rules.test.mjs test/api.e2e.test.mjs test/reset.e2e.test.mjs test/review.e2e.test.mjs && node test/ui/check-patch.mjs && node test/ui/smoke.mjs",
+    "test": "node --test test/*.test.js test/finance-rules.test.mjs test/api.e2e.test.mjs test/reset.e2e.test.mjs test/review.e2e.test.mjs && node test/ui/check-patch.mjs && node test/ui/smoke.mjs",
     "test:browser": "node test/ui/browser.e2e.mjs"
   },
   "dependencies": {
