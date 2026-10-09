@@ -5,11 +5,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { startServer, mkTmp, call, login, TEAM_PW, MASTER_PW } from './helpers.mjs';
+import { startServer, mkTmp, call, login, TEAM_PW, MASTER_PW, REPO } from './helpers.mjs';
 import { fixture, C } from './fixtures.mjs';
 
 const PAID = 'Yes — in full';
 const numOf = id => Number(String(id).replace(/\D/g, '')) || 0;
+// The history in ledger.json (its size changes whenever the ledger is refreshed).
+const HIST = JSON.parse(fs.readFileSync(path.join(REPO, 'ledger.json'), 'utf8')).requests.length;
 let srv, dir, T = {};
 const api = (who, method, p, body) => call(srv.base, T[who], method, p, body);
 const snap = async who => (await api(who, 'GET', '/api/sync/snapshot')).json;
@@ -48,7 +50,7 @@ test('i. preview lists only live-created requests; permissions; confirm', async 
   const pv = await api('sven', 'GET', '/api/admin/reset/preview');
   assert.equal(pv.status, 200);
   assert.deepEqual(pv.json.live.map(r => r.id).sort(), [L1, L2].sort());
-  assert.equal(pv.json.history.requests, 236);
+  assert.equal(pv.json.history.requests, HIST);
   assert.equal(pv.json.live.find(r => r.id === L1).byName, 'Maram');
   assert.equal((await api('maram', 'GET', '/api/admin/reset/preview')).status, 403);
   assert.equal((await api('adnan', 'GET', '/api/admin/reset/preview')).status, 403);
@@ -67,9 +69,9 @@ test('i. reset selected live requests: backup, removal of tied records, audit ke
   BK1 = r.json.backupId;
   assert.match(BK1, /^BK-/);
   assert.equal(r.json.removed.requests, 2, 'history id FR-527 ignored without includeHistory');
-  assert.equal(r.json.kept.requests, 236);
+  assert.equal(r.json.kept.requests, HIST);
   assert.ok(fs.existsSync(path.join(dir, 'backups', BK1 + '.json')), 'backup file written');
-  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'backups', BK1 + '.json'), 'utf8')).db.requests.length, 238);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'backups', BK1 + '.json'), 'utf8')).db.requests.length, HIST + 2);
   const s = await snap('sven');
   const ids = new Set(s.requests.map(x => x.id));
   assert.ok(!ids.has(L1) && !ids.has(L2) && ids.has('FR-527'));
@@ -97,14 +99,14 @@ test('i. restart: removed requests do not come back from ledger.json', async () 
   assert.ok(!ids.has(L1), 'old L1 not resurrected');
   assert.ok(!ids.has(L2));
   assert.ok(ids.has(N1) && ids.has(N2));
-  assert.equal(s.requests.length, 238);
+  assert.equal(s.requests.length, HIST + 2);
 });
 
 test('i. includeHistory: history gone, stays gone after restart, snapshot not empty; restore brings it back', async () => {
   const r = await api('sven', 'POST', '/api/admin/reset', { ids: [], includeHistory: true, clearNotifications: true, reason: 'Remove the history too', confirm: 'RESET' });
   assert.equal(r.status, 200, JSON.stringify(r.json));
   BK2 = r.json.backupId;
-  assert.equal(r.json.removed.requests, 236);
+  assert.equal(r.json.removed.requests, HIST);
   assert.equal(r.json.kept.requests, 2);
   let s = await snap('sven');
   assert.deepEqual(s.requests.map(x => x.id).sort(), [N1, N2].sort());
@@ -130,12 +132,12 @@ test('i. includeHistory: history gone, stays gone after restart, snapshot not em
   const rs = await api('sven', 'POST', '/api/admin/reset/restore', { backupId: BK2, confirm: 'RESTORE' });
   assert.equal(rs.status, 200, JSON.stringify(rs.json));
   s = await snap('sven');
-  assert.equal(s.requests.length, 238);
+  assert.equal(s.requests.length, HIST + 2);
   assert.ok(s.requests.some(x => x.id === 'FR-527'));
   assert.ok(s.audit.some(a => a.action === 'PLATFORM_RESTORED'));
   await restart();
   s = await snap('sven');
-  assert.equal(s.requests.length, 238, 'restored data persisted');
+  assert.equal(s.requests.length, HIST + 2, 'restored data persisted');
   // after a restore the old numbers are still not handed out again
   const p = await precheck('maram', C.bravo);
   const put = await api('maram', 'POST', '/api/sync/put', { col: 'requests', item: item(L2, C.bravo, p.json.submitToken) });

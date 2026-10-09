@@ -236,8 +236,12 @@ export function evaluateBooksCrossCheck(a) {
   const posted = new Set([...ledgerIds, ...(readable(src.cfdTx) ? src.cfdTx.rows.flatMap(t => (t ? txIds(t) : [])) : []), ...(readable(src.cogsTx) ? src.cogsTx.rows.flatMap(t => (t ? txIds(t) : [])) : [])]);
   const cns = cnOk ? src.creditnotes.rows.filter(x => x && typeof x === 'object') : [];
   const cnOpenAll = cns.filter(c => low(c.status) === 'open' && (amt(c.balance) || 0) > EPS);
-  const cnPosted = cnOpenAll.filter(c => posted.has(idk(c.creditnote_id)));
-  const cnOpenRows = cnOpenAll.filter(c => !posted.has(idk(c.creditnote_id)));
+  // …matched by id, or by the credit-note number on a Books account row (a row's own id may be a different one).
+  const postedNums = new Set([src.cfdTx, src.cogsTx].filter(readable).flatMap(x => x.rows).filter(t => t && typeof t === 'object')
+    .flatMap(t => [t.reference_number, t.transaction_number, t.entry_number, t.entity_number]).map(low).filter(Boolean));
+  const isPosted = c => posted.has(idk(c.creditnote_id)) || (!!low(c.creditnote_number) && postedNums.has(low(c.creditnote_number)));
+  const cnPosted = cnOpenAll.filter(isPosted);
+  const cnOpenRows = cnOpenAll.filter(c => !isPosted(c));
   const cnOpen = sum(cnOpenRows, c => amt(c.balance));
   const cnPending = cns.filter(c => PENDING.includes(low(c.status)));
   const ivs = ivOk ? src.invoices.rows.filter(x => x && typeof x === 'object') : [];

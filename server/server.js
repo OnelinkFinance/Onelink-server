@@ -1051,6 +1051,7 @@ const hideAmounts = t => String(t ?? '')
   .replace(/,? ?AED [\d,]+(?:\.\d+)? in Zoho Analytics/gi, '');
 // Management decision notes are not for Operations. Lines written before this rule carried the note after the decision
 // words ('… rejected the escalation — <note>'): Operations get them without it.
+const hideRejectNote = n => /^Escalation rejected by /.test(n) ? n.replace(/^(Escalation rejected by .+?) — [\s\S]*$/, '$1') : n;
 const hideDecisionNote = t => String(t ?? '').replace(/((?:approved the escalation — proceed|rejected the escalation))(?: — [\s\S]*)$/, '$1');
 let mgmtKeys = { at: 0, set: new Set() };
 const managementKeys = () => { if (Date.now() - mgmtKeys.at > 5000) { try { mgmtKeys = { at: Date.now(), set: new Set(loadUsers().filter(x => x.dept === 'MANAGEMENT').map(x => x.key)) }; } catch {} } return mgmtKeys.set; };
@@ -1060,7 +1061,8 @@ function escalationForOps(u, e) {
   if (!e || typeof e !== 'object') return e;
   const out = { ...e };
   if (Array.isArray(e.log)) out.log = e.log.map(x => { if (!x || typeof x !== 'object' || x.who === u.key) return x; const { note, ...rest } = x; return rest; });
-  if (e.decision && typeof e.decision === 'object' && e.decision.by !== u.key) { const { note, ...d } = e.decision; out.decision = d; }
+  // A legacy "needs info" decision holds management's question to the requester — like infoRequest, it stays.
+  if (e.decision && typeof e.decision === 'object' && e.decision.by !== u.key && e.decision.action !== 'INFO') { const { note, ...d } = e.decision; out.decision = d; }
   if (e.by !== u.key && managementKeys().has(e.by)) delete out.justification;
   return out;
 }
@@ -1071,7 +1073,7 @@ function redact(u, col, item) {
     if (Array.isArray(r.timeline)) r.timeline = r.timeline.map(t => ({ ...t, text: hideDecisionNote(hideAmounts(t.text)) }));
     for (const k of ['finance', 'financeLatest']) if (r[k]) r[k] = M_finance.forOps(r[k]); // every financial check record
     if (r.escalation) r.escalation = escalationForOps(u, r.escalation);
-    if (typeof r.notes === 'string' && /^Escalation rejected by /.test(r.notes)) r.notes = r.notes.replace(/^(Escalation rejected by .+?) — [\s\S]*$/, '$1');
+    if (typeof r.notes === 'string') r.notes = hideRejectNote(r.notes);
     return r;
   }
   if (col === 'chat' && item.zoho) { const { zoho, ...c } = item; return { ...c, text: hideAmounts(c.text) }; }
@@ -1088,6 +1090,7 @@ function redact(u, col, item) {
 // An Operations browser only holds the stripped copy: when it saves a request, put the hidden parts back.
 function restoreHidden(item, prev) {
   if (prev.zohoBalance !== undefined && item.zohoBalance === undefined) item.zohoBalance = prev.zohoBalance;
+  if (typeof prev.notes === 'string' && item.notes === hideRejectNote(prev.notes)) item.notes = prev.notes; // unchanged, as they received it
   if (Array.isArray(item.timeline) && Array.isArray(prev.timeline))
     item.timeline = item.timeline.map((t, i) => { const o = prev.timeline[i]; return o && t.at === o.at && t.text === hideAmounts(o.text) ? o : t; });
 }
@@ -1673,7 +1676,7 @@ function mount(app) {
         if (prev.flagged) item.flagged = true;
         // History is append-only for them: every stored line stays as stored; lines they add go after it.
         if (Array.isArray(prev.timeline)) {
-          const stored = new Set(prev.timeline.flatMap(t => [t.at + '|' + t.text, t.at + '|' + hideAmounts(t.text)]));
+          const stored = new Set(prev.timeline.flatMap(t => [t.at + '|' + t.text, t.at + '|' + hideAmounts(t.text), t.at + '|' + hideDecisionNote(hideAmounts(t.text))])); // as stored, or as they received it
           item.timeline = prev.timeline.concat((item.timeline || []).filter(t => !stored.has(t.at + '|' + t.text)).map(t => authored(t, q.user)));
         }
       }

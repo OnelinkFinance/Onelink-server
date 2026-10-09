@@ -75,7 +75,7 @@ describe('A — CFD', () => {
     assert.equal(c.ok, false); assert.equal(c.code, 'CFD_INSUFFICIENT');
     assert.equal(itm(f, 'CFD', 'Available balance covers the request').text, 'Not sufficient');
     assert.equal(f.ok, false);
-    assert.equal(f.opsError, 'Client does not have sufficient balance to request funds. Please contact Sven.');
+    assert.equal(f.opsError, 'Client does not have sufficient balance. You may escalate to Management.');
     assert.deepEqual(f.failed.map(x => x.key), ['CFD']);
     assert.match(f.staffError, /AED 4,999\.99/);
   });

@@ -216,9 +216,10 @@ test('d. management decisions: INFO → reply → APPROVE → Sven final approva
 
   const info = await decide('adnan', ESC1, 'INFO', 'Send the bank transfer proof');
   assert.equal(info.status, 200);
-  assert.equal(info.json.item.status, 'MGMT_INFO');
-  assert.equal(info.json.item.escalation.decision.action, 'INFO');
-  assert.ok((await notesFor('maram', ESC1)).some(n => /Management needs more information/.test(n.text)));
+  assert.equal(info.json.item.status, 'ESCALATED', 'an information request keeps Awaiting Management Decision');
+  assert.equal(info.json.item.escalation.decision, null);
+  assert.deepEqual([info.json.item.escalation.infoRequest.by, info.json.item.escalation.infoRequest.note], ['adnan', 'Send the bank transfer proof']);
+  assert.ok((await notesFor('maram', ESC1)).some(n => /Management needs more information/.test(n.text) && /Send the bank transfer proof/.test(n.text)));
 
   assert.equal((await api('anastasiya', 'POST', `/api/requests/${ESC1}/escalation/reply`, { note: 'Here it is' })).status, 403);
   assert.equal((await api('maram', 'POST', `/api/requests/${FR1}/escalation/reply`, { note: 'Here it is' })).status, 409);
@@ -226,7 +227,9 @@ test('d. management decisions: INFO → reply → APPROVE → Sven final approva
   assert.equal(reply.status, 200);
   assert.equal(reply.json.item.status, 'ESCALATED');
   assert.equal(reply.json.item.escalation.decision, null);
+  assert.equal(reply.json.item.escalation.infoRequest, undefined, 'the question is answered');
   assert.equal(reply.json.item.escalation.log.at(-1).action, 'REPLY');
+  assert.equal((await api('maram', 'POST', `/api/requests/${ESC1}/escalation/reply`, { note: 'Answering twice' })).status, 409, 'nothing left to answer');
 
   const appr = await decide('ahmed', ESC1, 'APPROVE', 'Proceed, client is reliable');
   assert.equal(appr.status, 200);
@@ -249,7 +252,7 @@ test('d. management decisions: INFO → reply → APPROVE → Sven final approva
   assert.equal(e.status, 200);
   const rej = await decide('eduard', e.json.id, 'REJECT', 'Client still owes us');
   assert.equal(rej.status, 200);
-  assert.equal(rej.json.item.status, 'DECLINED');
+  assert.equal(rej.json.item.status, 'MGMT_REJECTED');
   assert.equal(rej.json.item.approved, 0);
   const again = await precheck('maram', C.lima);
   assert.equal(again.status, 422, 'client unlocked after reject (fails checks, but not 409)');

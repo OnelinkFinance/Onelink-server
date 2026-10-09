@@ -168,7 +168,7 @@ const GATE_JS = `  verifyClient() {
         // Zoho Analytics / Zoho Books could not both be verified: the same panel, no escalation.
         const esc = o.j.escalate || {}, conn = o.j.reason === 'ZOHO_CONNECTION_FAILED';
         const ff = o.j.reason === 'FINANCIAL_CHECKS_FAILED' || conn ? { kind: conn ? 'conn' : 'checks', connections: o.j.connections || null, failed: conn ? [] : o.j.failed || [], finance: conn ? null : o.j.finance || null, token: conn ? '' : esc.token || '', allowed: !conn && !!esc.allowed, error: msg, clientName: g.name, amount: amount, open: false, justification: '', sendError: '', busy: false, to: 'ALL' } : null;
-        this.zlDone({ ok: false, finance: o.j.finance, error: !ff });
+        this.zlDone({ ok: false, finance: o.j.finance, error: !ff, conn: conn });
         // Failed financial checks: the panel below carries the message — no second copy in the summary box.
         this.setState(s => ({ errors: Object.assign({}, s.errors, { summary: ff ? null : msg }), shake: s.shake + 1, askNoDoc: false, finFail: ff }));
         this.flash(msg, null, o.j.reason === 'ZOHO_CONNECTION_FAILED' ? 'ph ph-plugs' : o.j.reason === 'INSUFFICIENT_BALANCE' || ff ? 'ph ph-flag' : 'ph ph-prohibit');
@@ -207,6 +207,7 @@ const GATE_JS = `  verifyClient() {
       { label: 'Requested on', value: r.date || '—' },
       { label: r.financeLatest ? 'Financial checks · latest re-check' : 'Financial checks', value: this.finSummary(r.financeLatest || r.finance) }
     ].concat(r.escalation ? [{ label: 'Escalation', value: this.escSummary(r) }] : [])
+      .concat(this.infoReq(r) ? [{ label: 'Management asks', value: this.infoLine(this.infoReq(r)) }] : [])
       .concat(r.voided ? [{ label: 'Voided', value: (r.voided.byName || this.nameOf(r.voided.by)) + (r.voided.reason ? ' — ' + r.voided.reason : '') }] : [])
       .concat(r.notes ? [{ label: 'Notes', value: r.notes }] : []);
     return {
@@ -417,7 +418,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     const z = this.state.zl;
     if (!z || z.done) return;
     const r = res || {}, fin = r.finance;
-    this.setState({ zl: Object.assign({}, z, { done: true, doneAt: Date.now(), ok: !!r.ok, error: !!r.error, route: (fin && fin.route) || z.route }) });
+    this.setState({ zl: Object.assign({}, z, { done: true, doneAt: Date.now(), ok: !!r.ok, error: !!r.error || !!r.conn, conn: !!r.conn, route: (fin && fin.route) || z.route }) });
     const wait = Math.max(450, 1100 - (Date.now() - z.at));
     this._zlHide = setTimeout(() => { if (this.state.zl && this.state.zl.done) this.setState({ zl: null }); }, wait);
     if (this._zlHide && this._zlHide.unref) this._zlHide.unref();
@@ -447,7 +448,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     });
     const MSG = ['Crunching numbers…', 'Checking journals…', 'Talking to Zoho…', 'Matching invoices to payments…', 'Counting credit notes…', 'Almost there…'];
     const mi = Math.floor(el / 1400) % MSG.length;
-    const end = z.done ? (z.error ? 'Could not finish — nothing was sent' : z.ok ? (esc ? 'Sent to management' : 'All checks passed') : (esc ? 'Not sent' : 'The checks did not pass')) : '';
+    const end = z.done ? (z.conn ? 'Zoho connections could not be verified — nothing was sent' : z.error ? 'Could not finish — nothing was sent' : z.ok ? (esc ? 'Sent to management' : 'All checks passed') : (esc ? 'Not sent' : 'The checks did not pass')) : '';
     return {
       show: true, done: !!z.done, running: !z.done,
       title: esc ? 'Sending to management…' : 'Checking with Zoho…',
@@ -458,7 +459,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       iconBg: z.done ? (z.ok ? 'var(--chipGreenBg)' : 'var(--chipRedBg)') : 'var(--chipBlueBg)',
       ring: z.done ? 'none' : 'zlOrbit 1.4s linear infinite',
       barW: z.done ? '100%' : '92%',
-      barAnim: z.done ? 'none' : 'zlFill 9s cubic-bezier(.12,.62,.24,1) both',
+      barAnim: z.done ? 'none' : 'zlFill 6s cubic-bezier(.12,.62,.24,1) both',
       barBg: z.done && !z.ok ? 'linear-gradient(90deg,#f87171,#dc2626)' : z.done ? 'linear-gradient(90deg,#4ade80,#16a34a)' : 'linear-gradient(90deg,#60a5fa,#1d4ed8)',
       msg: z.done ? end : MSG[mi], msgAnim: z.done ? 'none' : (mi % 2 ? 'zlMsgA .45s ease' : 'zlMsgB .45s ease'),
       msgFg: z.done ? (z.ok ? 'var(--fgGreen)' : 'var(--fgRedDeep)') : 'var(--ink3)',
@@ -1141,9 +1142,9 @@ const BTN_SOFT = 'class="btn" style="font-size:12.5px; border-radius:11px; backg
 // A. new-request form: the failed financial checks, and the escalation to management
 const FINFAIL_MARKUP = `          <sc-if value="{{ finFail.show }}" hint-placeholder-val="{{ false }}">
             <div role="alert" style="grid-column:{{ L.span }}; display:flex; flex-direction:column; gap:10px; padding:15px 17px; border-radius:16px; background:var(--chipRedBg); border:1px solid var(--chipRedBd); animation:riseIn .26s ease">
-              <div style="display:flex; align-items:flex-start; gap:10px">
+              <div style="display:flex; align-items:flex-start; gap:8px 10px; flex-wrap:wrap">
                 <i class="{{ finFail.headIcon }}" style="font-size:19px; color:var(--fgRed); flex:none; margin-top:1px"></i>
-                <div style="flex:1; display:flex; flex-direction:column; gap:2px; min-width:0">
+                <div style="flex:1 1 220px; display:flex; flex-direction:column; gap:2px; min-width:0">
                   <span style="font-family:var(--font-heading); font-size:13.5px; line-height:1.45; color:var(--fgRedDeep)">{{ finFail.error }}</span>
                   <span style="font-size:11px; color:var(--fgRedDeep)">{{ finFail.sub }}</span>
                 </div>
@@ -1553,14 +1554,17 @@ const BRAND_HEAD_FROM = `      <span style="width:30px; height:30px; border-radi
 const BRAND_HEAD_TO = `      <span style="width:30px; height:30px; flex:none; border-radius:10px; display:grid; place-items:center; transition:transform .2s ease" style-hover="transform:rotate(-6deg) scale(1.05)">
         ${logo(30, 10, '0 4px 12px rgba(29,99,230,.32)')}
       </span>`;
+// narrow phones: the logo alone (with the word mark the header was wider than the screen)
+const BRAND_TEXT_FROM = '      <span style="font-family:var(--font-heading); font-size:{{ L.brand }}; letter-spacing:-0.02em; white-space:nowrap">OneLink Funds</span>';
+const BRAND_TEXT_TO = '      <sc-if value="{{ brandText }}" hint-placeholder-val="{{ true }}"><span style="font-family:var(--font-heading); font-size:{{ L.brand }}; letter-spacing:-0.02em; white-space:nowrap">OneLink Funds</span></sc-if>';
 const BRAND_BOOT_FROM = `<span style="width:54px; height:54px; border-radius:18px; display:grid; place-items:center; color:#fff; background:var(--accentGrad); box-shadow:0 14px 34px rgba(29,99,230,.32); animation:breathe 1.8s ease-in-out infinite"><i class="ph ph-hand-coins" style="font-size:26px"></i></span>`;
 const BRAND_BOOT_TO = `<span style="width:54px; height:54px; border-radius:18px; display:grid; place-items:center; animation:breathe 1.8s ease-in-out infinite">${logo(54, 18, '0 14px 34px rgba(29,99,230,.32)')}</span>`;
 const BRAND_LOGIN_FROM = `<span style="width:38px; height:38px; border-radius:13px; display:grid; place-items:center; color:#fff; background:var(--accentGrad); box-shadow:0 8px 20px rgba(29,99,230,.3)"><i class="ph ph-hand-coins" style="font-size:19px"></i></span>`;
 const BRAND_LOGIN_TO = `<span style="width:38px; height:38px; flex:none; border-radius:13px; display:grid; place-items:center">${logo(38, 13, '0 8px 20px rgba(29,99,230,.3)')}</span>`;
 
 // desktop nav: icon + count badge (Management Requests)
-const NAV_BTN_FROM = 'box-shadow:{{ nv.sh }}">{{ nv.label }}</button>';
-const NAV_BTN_TO = `box-shadow:{{ nv.sh }}; display:inline-flex; align-items:center; gap:6px"><sc-if value="{{ nv.hasIcon }}" hint-placeholder-val="{{ false }}"><i class="{{ nv.icon }}" style="font-size:14px"></i></sc-if>{{ nv.label }}<sc-if value="{{ nv.badge }}" hint-placeholder-val="{{ false }}"><span style="min-width:18px; height:18px; padding:0 5px; border-radius:9px; display:inline-grid; place-items:center; font-size:10.5px; font-weight:600; background:var(--fgAmber); color:#fff">{{ nv.badge }}</span></sc-if></button>`;
+const NAV_BTN_FROM = '<button type="button" sc-camel-on-click="{{ nv.go }}" style="cursor:pointer; border:0; padding:6px 13px; border-radius:9px; font-size:13px; white-space:nowrap; transition:all .18s ease; background:{{ nv.bg }}; color:{{ nv.fg }}; box-shadow:{{ nv.sh }}">{{ nv.label }}</button>';
+const NAV_BTN_TO = `<button type="button" sc-camel-on-click="{{ nv.go }}" aria-label="{{ nv.aria }}" title="{{ nv.aria }}" style="cursor:pointer; border:0; padding:6px 13px; border-radius:9px; font-size:13px; white-space:nowrap; transition:all .18s ease; background:{{ nv.bg }}; color:{{ nv.fg }}; box-shadow:{{ nv.sh }}; display:inline-flex; align-items:center; gap:6px"><sc-if value="{{ nv.hasIcon }}" hint-placeholder-val="{{ false }}"><i class="{{ nv.icon }}" style="font-size:14px"></i></sc-if>{{ nv.label }}<sc-if value="{{ nv.badge }}" hint-placeholder-val="{{ false }}"><span style="min-width:18px; height:18px; padding:0 5px; border-radius:9px; display:inline-grid; place-items:center; font-size:10.5px; font-weight:600; background:var(--fgAmber); color:#fff">{{ nv.badge }}</span></sc-if></button>`;
 // phone bottom nav: the same badge
 const BOTTOM_NAV_FROM = '<i class="{{ b.icon }}" style="font-size:20px"></i>{{ b.label }}';
 const BOTTOM_NAV_TO = `<span style="position:relative; display:inline-flex"><i class="{{ b.icon }}" style="font-size:20px"></i><sc-if value="{{ b.badge }}" hint-placeholder-val="{{ false }}"><span style="position:absolute; top:-5px; right:-11px; min-width:16px; height:16px; padding:0 4px; border-radius:8px; display:grid; place-items:center; font-size:9.5px; font-weight:600; background:var(--fgAmber); color:#fff">{{ b.badge }}</span></sc-if></span>{{ b.label }}`;
@@ -1971,6 +1975,9 @@ ${PEEK_MORE}              <div style="display:flex; flex-direction:column; gap:8
   [HEAD_FROM, HEAD_TO],
   ["    this._mountAt = Date.now();\n", "    this._mountAt = Date.now();\n    this.keepTitle();\n"],
   [BRAND_HEAD_FROM, BRAND_HEAD_TO],
+  [BRAND_TEXT_FROM, BRAND_TEXT_TO],
+  // phone header fits the screen: the live chip says "Live" without the head count
+  ["'Live' + (s.live.online ? ' · ' + s.live.online + ' online' : '')", "'Live' + (s.live.online && !mob ? ' · ' + s.live.online + ' online' : '')"],
   [BRAND_BOOT_FROM, BRAND_BOOT_TO],
   [BRAND_LOGIN_FROM, BRAND_LOGIN_TO],
   // loader keyframes, next to the export's own (before its reduced-motion rule)
@@ -1981,7 +1988,7 @@ ${PEEK_MORE}              <div style="display:flex; flex-direction:column; gap:8
   // Management Requests: nav item (desktop), bottom-nav item (phone, in place of "Request" — the header has +), palette
   ["const navDef = [['home', 'Home'], ['board', 'Board']]", "const navDef = [['home', 'Home'], ['board', 'Board']].concat(this.canMgmtView(me) ? [['mgmt', 'Management Requests']] : [])"],
   ["        return { label: nv[1], bg: active ? 'var(--sf)' : 'transparent',",
-   "        const mgN = nv[0] === 'mgmt' ? this.mgmtCount() : 0;\n        return { hasIcon: nv[0] === 'mgmt', icon: nv[0] === 'mgmt' ? 'ph ph-briefcase' : '', badge: mgN ? String(mgN) : '', label: nv[1], bg: active ? 'var(--sf)' : 'transparent',"],
+   "        const mgN = nv[0] === 'mgmt' ? this.mgmtCount() : 0;\n        return { hasIcon: nv[0] === 'mgmt', icon: nv[0] === 'mgmt' ? 'ph ph-briefcase' : '', badge: mgN ? String(mgN) : '', aria: nv[1] + (mgN ? ' (' + mgN + ' awaiting)' : ''), label: nv[0] === 'mgmt' && s.vw < 1500 ? 'Management' : nv[1], bg: active ? 'var(--sf)' : 'transparent',"],
   [NAV_BTN_FROM, NAV_BTN_TO],
   ["{ label: 'Request', icon: 'ph ph-plus-circle', route: 'new',",
    "this.canMgmtView(me) ? { label: 'Management', icon: 'ph ph-briefcase', route: 'mgmt', go: () => this.go('mgmt'), badge: this.mgmtCount() ? String(this.mgmtCount()) : '' } : { label: 'Request', icon: 'ph ph-plus-circle', route: 'new',"],
@@ -1992,7 +1999,7 @@ ${PEEK_MORE}              <div style="display:flex; flex-direction:column; gap:8
    "      { label: 'Management Requests', hint: 'Escalations', icon: 'ph ph-briefcase', skip: !this.canMgmtView(me), go: () => { this.setState({ palette: false }); this.go('mgmt'); } },\n      { label: 'View zero balances', hint: 'Master control',"],
   ["].filter(c => !c.need || this.can(c.need));", "].filter(c => !c.skip && (!c.need || this.can(c.need)));"],
   ["      r_master: s.route === 'master' && isM,",
-   "      r_master: s.route === 'master' && isM,\n      r_mgmt: s.route === 'mgmt' && this.canMgmtView(me), mgmtReq: this.mgmtVals(), zl: this.zlVals(),"],
+   "      r_master: s.route === 'master' && isM,\n      r_mgmt: s.route === 'mgmt' && this.canMgmtView(me), mgmtReq: this.mgmtVals(), zl: this.zlVals(), brandText: !mob || s.vw >= 520,"],
   ['    <sc-if value="{{ r_home }}" hint-placeholder-val="{{ true }}">', MGMT_PAGE + '    <sc-if value="{{ r_home }}" hint-placeholder-val="{{ true }}">'],
   // management users land on Management Requests after sign-in (and when Sven views as one of them)
   ["this.setState({ authed: true, booting: false, userKey: o.json.user.key, route: 'home',",

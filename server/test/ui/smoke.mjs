@@ -56,14 +56,17 @@ const escReq = (status, extra) => Object.assign({
 const orig = JSON.parse(fs.readFileSync(path.join(root, 'index.html'), 'utf8').match(/<script type="__bundler\/template">([\s\S]*?)<\/script>/)[1]);
 const markupOf = t => t.slice(0, t.indexOf('<script type="text/x-dc"'));
 const bindRe = /\{\{\s*([A-Za-z_$][\w$.]*)\s*\}\}/g;
-// baseline = bindings already present before this upgrade (the committed client-workflow.js), so only new ones are checked
+// baseline = the untouched export: every binding any patch rule added must resolve in some scenario below.
+// (UI_BASE=<git rev> narrows the check to bindings added since that revision.)
 const basePath = path.join(out, 'client-workflow.base.mjs');
 let baseTpl = orig;
-try {
-  fs.writeFileSync(basePath, execFileSync('git', ['show', 'HEAD:server/client-workflow.js'], { cwd: root, encoding: 'utf8' }));
-  const base = await import(basePath), r0 = base.applyTemplateRules(orig);
-  if (r0.hit === r0.total) baseTpl = r0.text;
-} catch (e) { console.log('(no git baseline — checking every binding added since the export)'); }
+if (process.env.UI_BASE) {
+  try {
+    fs.writeFileSync(basePath, execFileSync('git', ['show', process.env.UI_BASE + ':server/client-workflow.js'], { cwd: root, encoding: 'utf8' }));
+    const base = await import(basePath), r0 = base.applyTemplateRules(orig);
+    if (r0.hit === r0.total) baseTpl = r0.text;
+  } catch (e) { console.log('(UI_BASE not usable — checking every binding added since the export)'); }
+}
 const origBindings = new Set([...markupOf(baseTpl).matchAll(bindRe)].map(m => m[1]));
 function resolveAll(markup, vm, seen) {
   // walk tags, keeping a stack of sc-for scopes (loop var → first item of its list)
@@ -722,6 +725,18 @@ const seen = new Map();
   assert.equal(vm.peek.open, true);
   assert.equal(vm.peek.missing, true);
   assert.equal(vm.peek.missingText, 'This request is not on the platform — it was not submitted, or it has been removed.');
+  resolveAll(markupOf(tpl), vm, seen);
+}
+
+// ── scenario 14b: the client type-ahead lists Zoho Books matches ──
+{
+  const c = make('maram');
+  c.setState({ route: 'new', form: c.blankForm(), gate: { name: 'Ken', status: 'idle', results: [{ contactId: 'c1', contactName: 'Kenenia LTD', companyName: 'Kenenia LTD' }, { contactId: 'c2', contactName: 'Kenzo FZE', companyName: 'Kenzo Group', pendingId: 'FR-12' }], active: 1 } });
+  const vm = c.renderVals();
+  resolveAll(markupOf(tpl), vm, seen);
+  assert.equal(vm.gate.showList, true);
+  assert.equal(vm.gate.suggestions[1].sub, 'Request Pending Approval · FR-12 · Kenzo Group · Zoho Books · c2');
+  assert.equal(vm.gate.suggestions[1].active, true);
 }
 
 // ── scenario 15: Amina (Master Operations Control) sees every Operations request but never an amount or balance ──
@@ -810,7 +825,7 @@ const fin5 = () => ({
   assert.equal(vm.detail.fin.primary, 'Zoho Analytics: The Zoho Analytics balance does not cover the amount');
   assert.equal(vm.detail.esc.to, 'Mr. Adnan (CFO), Mr. Eduard (Chief Legal Officer)');
   assert.equal(vm.peek.mgmtDecide, false);
-  assert.equal(vm.navs.some(n => n.label === 'Management Requests'), false, 'Operations never see the nav item');
+  assert.equal(vm.navs.some(n => /^Management Requests/.test(n.aria || '')), false, 'Operations never see the nav item');
   assert.equal(vm.r_mgmt, false);
   c.setState({ route: 'mgmt' });
   assert.equal(c.renderVals().r_mgmt, false, 'Operations never see the page');
@@ -828,6 +843,8 @@ const fin5 = () => ({
   assert.equal(vm.detail.esc.hasInfo, true);
   assert.equal(vm.detail.esc.canReply, false, 'one Reply button: the waiting card has it');
   assert.equal(vm.peek.canReply, true);
+  assert.ok(vm.peek.facts.some(f => f.label === 'Management asks' && f.value === 'More information requested by Mr. Eduard (Chief Legal Officer): Send the bank slip'));
+  assert.ok(vm.peek.facts.some(f => f.label === 'Escalation' && f.value === 'Waiting for management — more information requested · ESC-1A2B3C'));
   assert.equal(vm.detail.nextText, 'Management needs more information. Reply to them below.');
   c.setState({ route: 'board', tab: 'tasks' });
   vm = c.renderVals();
@@ -881,10 +898,12 @@ const fin5 = () => ({
   assert.equal(own.renderVals().detail.esc.canDecide, false);
   // nav, landing, page
   assert.equal(adnan.landingRoute('adnan'), 'mgmt');
-  const nav = vm.navs.find(n => n.label === 'Management Requests');
+  const nav = vm.navs.find(n => /^Management Requests/.test(n.aria || ''));
   assert.ok(nav && nav.hasIcon && nav.icon === 'ph ph-briefcase');
+  assert.equal(nav.label, 'Management', 'short label below 1500 px (the aria-label keeps the full name)');
+  assert.equal(nav.aria, 'Management Requests (2 awaiting)');
   assert.equal(nav.badge, '2', 'awaiting escalations sent to Mr. Adnan (FR-904 went to everyone; an open question still counts as awaiting)');
-  assert.equal(ahmed.renderVals().navs.find(n => n.label === 'Management Requests').badge, '1', 'Mr. Ahmed: only FR-904 was sent to him');
+  assert.equal(ahmed.renderVals().navs.find(n => /^Management Requests/.test(n.aria || '')).badge, '1', 'Mr. Ahmed: only FR-904 was sent to him');
   adnan.setState({ route: 'mgmt' });
   vm = adnan.renderVals();
   resolveAll(markupOf(tpl), vm, seen);
@@ -910,7 +929,7 @@ const fin5 = () => ({
   sv.setState({ requests: [r].concat(others, sv.state.requests), route: 'mgmt' });
   vm = sv.renderVals();
   assert.equal(vm.r_mgmt, true);
-  assert.equal(vm.navs.find(n => n.label === 'Management Requests').badge, '2');
+  assert.equal(vm.navs.find(n => /^Management Requests/.test(n.aria || '')).badge, '2');
   assert.ok(vm.palette && sv.landingRoute('sven') === 'home');
   // empty: no escalations at all
   const e0 = make('eduard');

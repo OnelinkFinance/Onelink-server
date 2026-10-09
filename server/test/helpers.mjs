@@ -15,7 +15,7 @@ export const STUB = path.join(HERE, 'zoho-stub.mjs');
 export const MASTER_PW = 'master-pass-123456';
 export const TEAM_PW = 'team-pass-123';
 export const SECRET = '0123456789abcdef0123456789abcdef0123';
-export const OPS_INSUFFICIENT = 'Client does not have sufficient balance to request funds. Please contact Sven.';
+export const OPS_INSUFFICIENT = 'Client does not have sufficient balance. You may escalate to Management.';
 
 let synced = false;
 export function syncSandbox() {
