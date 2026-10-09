@@ -143,3 +143,55 @@ test('an open history request already raised again on the platform is imported v
     assert.equal(s2.requests.find(r => r.id === 'FR-541').status, 'VOID', 'stays voided after a restart');
   } finally { await srv.stop(); }
 });
+
+test('requests the platform made before it stamped them (no createdAt) are recognised as live; their history is renumbered; duplicates voided', async () => {
+  const dir = mkTmp('ledger-no3'), lf = path.join(dir, 'ledger.json');
+  // the production shape on 9 Oct: live FR-528 / FR-529 made on the platform before requests carried createdAt
+  const U = (id, extra) => ({ id, by: 'anastasiya', company: 'x', person: 'y', purpose: 'Visa', zone: 'RAKEZ', requested: 1000, approved: null, credited: 0, status: 'NEW', date: '3 Oct',
+    docs: [], notes: '', paid: PAID, timeline: [{ at: '3 Oct · 11:00', text: 'Anastasiya requested funds on the platform' }], zohoClient: 'y', ...extra });
+  const L528 = H('FR-528', { company: 'Nova Oil FZ-LLC', person: 'Arman', requested: 3800, approved: null, credited: 0, status: 'NEW', date: '1 Oct' });
+  const L530 = H('FR-530', { company: 'ETD Global LTD', person: 'ETD', requested: 1000, approved: null, credited: 0, status: 'NEW', date: '7 Oct' });
+  const L531 = H('FR-531', { status: 'APPROVED', credited: 0 });
+  const ledger = { requests: [H('FR-527'), L528, H('FR-529'), L530, L531], chat: [], notifications: [], audit: [] };
+  fs.writeFileSync(lf, JSON.stringify(ledger));
+  const edited531 = { ...L531, status: 'CREDITED', credited: 1000, timeline: L531.timeline.concat([{ at: '9 Oct · 08:00', text: 'Sven credited AED 1,000', srv: true }]) };
+  fs.writeFileSync(path.join(dir, 'platform.json'), JSON.stringify({ rev: 3, requests: [
+    edited531, L530, // imported by the previous start (FR-531 then edited on the platform)
+    U('FR-529', { company: 'ETD Global LTD', person: 'ETD', requested: 1000, date: '8 Oct' }),
+    U('FR-528', { company: 'Nova Oil FZ-LLC', person: 'Arman', requested: 3800, date: '3 Oct' }),
+    H('FR-527')], chat: [], notifications: [], audit: [] }));
+  const env = { LEDGER_FILE: lf };
+  let srv = await startServer({ dir, fixture: fixture(), env });
+  try {
+    const out = srv.out();
+    assert.match(out, /Ledger: FR-528 \(Nova Oil FZ-LLC\) was created on the platform before requests were stamped — kept as a live request\./);
+    assert.match(out, /Ledger: FR-529 \(ETD Global LTD\) was created on the platform before requests were stamped/);
+    assert.doesNotMatch(out, /FR-531 \(.*\) was created on the platform/, 'edited history is not mistaken for a live request');
+    assert.doesNotMatch(out, /FR-530 \(.*\) was created on the platform/);
+    assert.match(out, /FR-528 is taken by a live request — imported the history as FR-53[23]\./);
+    assert.match(out, /Ledger: 1 history requests voided as duplicates of live requests\./);
+    const sv = await login(srv.base, 'sven', MASTER_PW);
+    const s = (await call(srv.base, sv, 'GET', '/api/sync/snapshot')).json;
+    const ids = s.requests.map(r => r.id);
+    assert.equal(new Set(ids).size, ids.length, 'no number used twice');
+    assert.deepEqual([...ids].sort(), ['FR-527', 'FR-528', 'FR-529', 'FR-530', 'FR-531', 'FR-532', 'FR-533']);
+    const by = id => s.requests.find(r => r.id === id);
+    assert.equal(by('FR-528').date, '3 Oct', 'the live request keeps its number and data');
+    const h528 = s.requests.find(r => r.id !== 'FR-528' && r.company === 'Nova Oil FZ-LLC');
+    assert.equal(h528.status, 'VOID', 'its WhatsApp history duplicates the live FR-528');
+    assert.match(h528.voided.reason, /as FR-528$/);
+    assert.equal(by('FR-530').status, 'VOID', 'already-imported open history duplicating live FR-529 is voided late');
+    assert.match(by('FR-530').voided.reason, /as FR-529$/);
+    assert.equal(by('FR-531').status, 'CREDITED', 'edited history kept as edited');
+    const pv = (await call(srv.base, sv, 'GET', '/api/admin/reset/preview')).json;
+    assert.deepEqual(pv.live.map(r => r.id).sort(), ['FR-528', 'FR-529'], 'the unstamped requests count as live');
+    await srv.stop();
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, 'platform.json'), 'utf8'));
+    assert.deepEqual([...saved.liveIds].sort(), ['FR-528', 'FR-529']);
+    // restart: nothing new
+    srv = await startServer({ dir, env });
+    assert.doesNotMatch(srv.out(), /was created on the platform|imported the history as|voided as duplicates/);
+    assert.match(srv.out(), /Ledger: server already up to date\./);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'platform.json'), 'utf8')).requests.length, 7);
+  } finally { await srv.stop(); }
+});

@@ -1016,7 +1016,9 @@ function mergeMissing(col, items) {
 // is ever used twice: it is imported under a fresh number, recorded in db.ledgerIds { ledger id: platform id } so every
 // later start maps it the same way. History ids are always looked up through that map.
 const idNum = id => Number(String(id ?? '').replace(/\D/g, '')) || 0;
-const isLiveRecord = r => !!(r && (r.createdAt || r.requestorId)); // created on the platform (history entries carry neither)
+// Created on the platform: stamped (createdAt / requestorId), or one of the requests the platform made before it stamped
+// them, recognised once when a newer ledger brought history under its number (db.liveIds).
+const isLiveRecord = r => !!(r && (r.createdAt || r.requestorId || (Array.isArray(db.liveIds) && db.liveIds.includes(r.id))));
 const ledgerMap = () => (db.ledgerIds && typeof db.ledgerIds === 'object' && !Array.isArray(db.ledgerIds) ? db.ledgerIds : {});
 const platformIdOf = ledgerId => ledgerMap()[ledgerId] || ledgerId;
 const historyGone = id => (db.purged || []).includes(id) && !(db.purgedLive || []).includes(id);
@@ -1064,10 +1066,12 @@ function duplicateOf(L, used) {
   const names = new Set([L.company, L.person, L.zohoClient].map(normName).filter(n => n && n !== '-'));
   if (!names.size) return null;
   return db.requests.find(r => {
-    if (!r.createdAt || r.status === 'VOID' || used.has(r.id)) return false;
+    if (r.id === L.id || !isLiveRecord(r) || r.status === 'VOID' || used.has(r.id)) return false;
     if (Math.abs((Number(r.requested) || 0) - (Number(L.requested) || 0)) > 0.005 || !(Number(L.requested) > 0)) return false;
     if (![r.company, r.person, r.zohoClient].some(v => names.has(normName(v)))) return false;
-    const created = Date.parse(r.createdAt), day = ledgerDayMs(L.date, created);
+    // requests made before the platform stamped them only carry their day ('3 Oct'): noon of that day
+    const created = r.createdAt ? Date.parse(r.createdAt) : (ledgerDayMs(r.date, Date.now()) ?? NaN) + 12 * 3600_000;
+    const day = ledgerDayMs(L.date, created);
     return day !== null && created >= day;
   }) || null;
 }
@@ -1077,6 +1081,46 @@ function voidAsDuplicate(L, live) {
   console.log(`Ledger: ${L.id} (${L.company}, ${L.requested}) is already on the platform as ${live.id} — imported as voided.`);
   return { ...L, status: 'VOID', flagged: false, voided: { by: 'system', byName: 'System', at: now.toISOString(), atText, reason, prevStatus: L.status },
     timeline: (Array.isArray(L.timeline) ? L.timeline : []).concat([{ at: atText.replace(/^0/, ''), text: `Voided by the system — ${reason}`, srv: true }]) };
+}
+// The previous ledger's end (FR-527 in production): ids above it are new history, ids at or below it were history before.
+const oldLedgerMax = () => Math.max(Number(process.env.LEDGER_PREVIOUS_MAX) || PREVIOUS_LEDGER_MAX,
+  ...Object.keys((LEDGER.previous && typeof LEDGER.previous === 'object') ? LEDGER.previous : {}).map(idNum));
+// Is this unstamped record the ledger entry L as imported (possibly edited since), or a request the platform made itself
+// before it stamped requests? History keeps the ledger's company and first history line; edits only append lines.
+const sameOrigin = (cur, L) => normName(cur.company) === normName(L.company)
+  && JSON.stringify((cur.timeline || [])[0] || null) === JSON.stringify((L.timeline || [])[0] || null);
+// Requests the platform made before it stamped them (up to 9 Oct 04:53 UTC) carry no createdAt. Under a number the old
+// ledger never had, such a record that is not the ledger's entry is a live request: recorded once in db.liveIds.
+function recogniseUnstampedLive() {
+  const known = new Set(db.ledgerHistory || []), live = new Set(db.liveIds || []), max = oldLedgerMax();
+  let found = 0, confirmed = 0;
+  for (const L of LEDGER.requests || []) {
+    if (!L || typeof L.id !== 'string' || ledgerMap()[L.id] || idNum(L.id) <= max) continue;
+    const cur = db.requests.find(r => r.id === L.id);
+    if (!cur || isLiveRecord(cur) || known.has(L.id)) continue;
+    if (sameOrigin(cur, L) || (cur.voided && cur.voided.by === 'system')) { known.add(L.id); confirmed++; continue; }
+    live.add(L.id); found++;
+    console.log(`Ledger: ${L.id} (${cur.company || '—'}) was created on the platform before requests were stamped — kept as a live request.`);
+  }
+  if (found) db.liveIds = [...live];
+  if (confirmed) db.ledgerHistory = [...known];
+  return found + confirmed;
+}
+// History imported by an earlier start, still exactly as the ledger has it and open, may duplicate a live request recognised
+// only now (above): it is voided the same way as at import.
+function voidLateDuplicates() {
+  const used = new Set(db.requests.filter(r => r.voided && r.voided.by === 'system').map(r => (/as (FR-\d+)$/.exec(r.voided.reason || '') || [])[1]).filter(Boolean));
+  let n = 0;
+  for (const L of LEDGER.requests || []) {
+    if (!L || typeof L.id !== 'string' || idNum(L.id) <= oldLedgerMax()) continue;
+    const pid = platformIdOf(L.id), i = db.requests.findIndex(r => r.id === pid);
+    if (i < 0) continue;
+    const cur = db.requests[i];
+    if (isLiveRecord(cur) || ledgerHash({ ...cur, id: L.id }) !== ledgerHash(L)) continue; // live, or touched on the platform
+    const dup = duplicateOf(cur, used);
+    if (dup) { used.add(dup.id); db.requests[i] = voidAsDuplicate(cur, dup); n++; }
+  }
+  return n;
 }
 function mergeLedger() {
   const map = { ...ledgerMap() }, purgedLive = new Set(db.purgedLive || []), add = [], used = new Set();
@@ -1103,7 +1147,11 @@ function mergeLedger() {
     add.push(entry);
   }
   if (remapped) db.ledgerIds = map;
-  return { added: mergeMissing('requests', add), remapped, voided };
+  const added = mergeMissing('requests', add);
+  // new history imported under its own number is recorded, so a later edit on the platform never makes it look live
+  const imported = add.filter(e => idNum(e.id) > oldLedgerMax() && !Object.values(map).includes(e.id)).map(e => e.id);
+  if (imported.length) db.ledgerHistory = [...new Set((db.ledgerHistory || []).concat(imported))];
+  return { added, remapped, voided };
 }
 // A newer ledger.json may also carry updated versions of history requests (later messages approved / credited / paid
 // them): `previous` maps each such id to the ledgerHash of the entry as the old ledger.json had it. A history request the
@@ -1137,10 +1185,13 @@ try {
     db.rev++; persist(); console.log('Ledger: loaded', db.requests.length, 'requests into an empty server.');
   } else {
     const c = classifyTombstones();
+    const k = recogniseUnstampedLive();
     const { added, remapped, voided } = mergeLedger();
+    const late = voidLateDuplicates();
+    if (late) console.log(`Ledger: ${late} history requests voided as duplicates of live requests.`);
     console.log('Ledger:', added ? 'added ' + added + ' missing requests' + (remapped ? ` (${remapped} under new numbers)` : '') + (voided ? ` (${voided} voided as duplicates of live requests)` : '') + '.' : 'server already up to date.');
     const u = applyLedgerUpdates();
-    if (c || added || remapped || u) { db.rev++; persist(); } // persisted once
+    if (c || k || added || remapped || late || u) { db.rev++; persist(); } // persisted once
   }
 } catch (e) { console.error('Ledger not applied:', e.message); }
 const LEDGER_IDS = Object.fromEntries(COLS.map(c => [c, new Set((LEDGER[c] || []).map(x => x && x.id))]));
