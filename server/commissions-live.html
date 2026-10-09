@@ -97,7 +97,11 @@ h1, h2, h3 { font-family: var(--f-display); letter-spacing: -0.01em; text-wrap: 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 18px; box-shadow: var(--shadow); min-width: 0; }
 .card h2 { font-size: 16px; margin: 0 0 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
 .card h2 .acts { display: flex; gap: 6px; flex-wrap: wrap; }
-.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 1000px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 460px) { .kpis { grid-template-columns: minmax(0, 1fr); } }
+span.zn { display: inline-flex; align-items: center; gap: 7px; }
+span.zn i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; flex: none; }
 .kpi { position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 14px 16px 12px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .kpi .l { color: var(--ink-2); font-size: 12.5px; padding-right: 54px; }
 .kpi .v { font-family: var(--f-display); font-size: 25px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -228,6 +232,14 @@ table.cells tr.hl td { background: var(--warn-bg); }
   dl.kv { grid-template-columns: 1fr; gap: 2px; } dl.kv dd { margin-bottom: 8px; }
 }
 .drawer:not(.open) { visibility: hidden; box-shadow: none; }
+.plabel { font-size: 12.5px; color: var(--ink-2); margin-right: 4px; align-self: center; }
+.plabel b { color: var(--ink); font-weight: 600; }
+.compare table th[scope=row] { text-align: left; font-weight: 500; color: var(--ink-2); white-space: nowrap; }
+.compare td.cur, .compare th.cur { background: var(--accent-bg, rgba(29,91,214,.07)); }
+.phead { font: inherit; font-weight: 600; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.phead[aria-pressed="true"] { color: var(--ink); text-decoration: none; }
+tr.inpm td { background: var(--accent-bg, rgba(29,91,214,.06)); }
+h3.rh { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); margin: 18px 0 8px; }
 </style>
 
 <header class="top">
@@ -243,20 +255,21 @@ table.cells tr.hl td { background: var(--warn-bg); }
         <label class="sr" for="month">Month</label><input type="month" id="month">
         <button id="next" type="button" aria-label="Next month">›</button>
       </div>
-      <div class="seg" id="spanSeg" role="group" aria-label="Months loaded">
-        <button type="button" data-span="3">3M</button><button type="button" data-span="6">6M</button><button type="button" data-span="12">12M</button>
+      <div class="seg" id="spanSeg" role="group" aria-label="Period">
+        <button type="button" data-span="1">Month</button><button type="button" data-span="3">3M</button><button type="button" data-span="6">6M</button><button type="button" data-span="12">12M</button><button type="button" data-span="0">All</button>
       </div>
       <button id="refresh" class="btn primary" type="button">↻ Refresh live</button>
       <button id="save" class="btn onband" type="button" hidden>Save for viewers</button>
       <details class="menu" id="exportMenu">
         <summary class="btn onband">Export ▾</summary>
         <div class="menu-list" role="menu">
-          <button type="button" role="menuitem" data-export="tx">Transactions (CSV)</button>
+          <button type="button" role="menuitem" data-export="tx">Transactions — this period (CSV)</button>
           <button type="button" role="menuitem" data-export="txall">Transactions, all months (CSV)</button>
           <button type="button" role="menuitem" data-export="ex">Exceptions (CSV)</button>
           <button type="button" role="menuitem" data-export="ren">Renewals (CSV)</button>
           <button type="button" role="menuitem" data-export="inv">Commission invoices (CSV)</button>
           <button type="button" role="menuitem" data-export="zones">Summary by free zone (CSV)</button>
+          <button type="button" role="menuitem" data-export="period">Period report (CSV)</button>
         </div>
       </details>
       <button id="copy" class="btn onband" type="button">Copy summary</button>
@@ -893,7 +906,10 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   let mode = null;              // 'live' | 'snapshot'
   let snapMeta = null, snapBy = '';
   let data = null;              // the dashboard built from inputs for the chosen month/span
-  let tab = 'overview', gz = '', span = 6, drawerOpen = false, busy = false;
+  let tab = 'overview', gz = '', drawerOpen = false, busy = false;
+  // Period shown: 1 = the chosen month, 3/6/12 = that many months ending with it, 0 = every month loaded.
+  let span = 0; try { const v = localStorage.getItem('fzc.span'); if (v != null && [0, 1, 3, 6, 12].includes(+v)) span = +v; } catch (e) {}
+  const MAX_MONTHS = 24;
   let db = null, user = null, canWrite = false;
   const now = new Date();
   $('month').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -1000,8 +1016,12 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   async function clientInvoices(wanted, fresh) {
     const map = new Map(wanted.map(n => [n, null]));
     if (!wanted.length) return { map, sql: '' };
-    const sql = `select "Invoice ID", "Invoice Number", "Invoice Status", "Invoice Date", "Customer ID", round("Total (BCY)", 2) as total, round("Balance (BCY)", 2) as balance from "Invoices" where "Invoice Number" in (${wanted.map(sqlStr).join(',')})`;
-    for (const r of await zsql(sql, fresh)) map.set(String(r['Invoice Number']).toUpperCase(), { id: r['Invoice ID'], number: String(r['Invoice Number']).toUpperCase(), status: zStatus(r['Invoice Status']), total: money2(r.total), balance: money2(r.balance), date: core.parseSheetDate(r['Invoice Date']).date, customerId: r['Customer ID'] });
+    // In batches of 150 invoice numbers so a long history keeps each SQL query short.
+    const q = list => `select "Invoice ID", "Invoice Number", "Invoice Status", "Invoice Date", "Customer ID", round("Total (BCY)", 2) as total, round("Balance (BCY)", 2) as balance from "Invoices" where "Invoice Number" in (${list.map(sqlStr).join(',')})`;
+    const sql = q(wanted.length > 3 ? [...wanted.slice(0, 3), '…'] : wanted) + (wanted.length > 150 ? ` — run in ${Math.ceil(wanted.length / 150)} batches of up to 150` : '');
+    const rows = [];
+    for (let i = 0; i < wanted.length; i += 150) rows.push(...await zsql(q(wanted.slice(i, i + 150)), fresh));
+    for (const r of rows) map.set(String(r['Invoice Number']).toUpperCase(), { id: r['Invoice ID'], number: String(r['Invoice Number']).toUpperCase(), status: zStatus(r['Invoice Status']), total: money2(r.total), balance: money2(r.balance), date: core.parseSheetDate(r['Invoice Date']).date, customerId: r['Customer ID'] });
     return { map, sql };
   }
   async function gmailMessages(from, to, fresh) {
@@ -1016,10 +1036,9 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
 
 
 
-  async function liveInputs(month, n, fresh) {
+  async function liveInputs(month, fresh) {
     if (!(await mcpReady)) throw Object.assign(new Error('Refresh live works when the page is opened in claude.ai with Google Sheets, Google Drive and Zoho Analytics connected.'), { code: 'no_mcp' });
     const at = () => new Date().toISOString();
-    const months = Array.from({ length: n }, (_, i) => core.addMonths(month, i - n + 1));
     const sources = {}, gp = {}, reads = [], links = { gp: {} };
 
     step('Finding the GP reports in Google Drive…');
@@ -1030,6 +1049,10 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
       for (const f of (p && p.files) || []) { const m = core.gpReportMonth(f.title); if (m && (!files[m] || f.modifiedTime > files[m].modifiedTime)) files[m] = f; }
       reads.push({ source: 'Google Drive', what: 'Monthly GP report files', where: `Drive search: ${driveQuery}`, rows: Object.keys(files).length + ' monthly reports found (copies ignored; newest file per month)', at: at() });
     } catch (e) { sources.gp = { ok: false, detail: why(e, S_DRIVE), code: e.code }; }
+    // Every month from the oldest GP report found (at most 24 months back) up to the chosen month.
+    const oldest = Object.keys(files).filter(m => m <= month).sort()[0];
+    const n = oldest ? Math.min(MAX_MONTHS, (+month.slice(0, 4) - +oldest.slice(0, 4)) * 12 + (+month.slice(5, 7) - +oldest.slice(5, 7)) + 1) : 12;
+    const months = Array.from({ length: n }, (_, i) => core.addMonths(month, i - n + 1));
 
     step('Reading the commission tracker…');
     let tracker = null;
@@ -1048,16 +1071,19 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     if (!sources.gp) {
       step('Reading the GP reports…');
       const errs = [];
-      await Promise.all(months.map(async m => {
-        const f = files[m]; if (!f) return;
+      // Four reports at a time, so a long history does not trip Google's rate limits.
+      const queue = months.filter(m => files[m]); let doneN = 0;
+      await Promise.all(Array.from({ length: 4 }, async () => { for (let m; (m = queue.shift());) {
+        step(`Reading the GP reports… ${++doneN} of ${months.filter(x => files[x]).length}`);
+        const f = files[m];
         try {
           const s = await sheet(f.id, RANGES.gp, fresh);
           const parsed = core.parseGpReport(s.rows, m);
-          if (parsed.error) { errs.push(`${m}: ${parsed.error}`); return; }
+          if (parsed.error) { errs.push(`${m}: ${parsed.error}`); continue; }
           gp[m] = parsed.rows; links.gp[m] = { id: f.id, gid: s.gid, file: f.title, tab: s.tab };
           reads.push({ source: 'Google Sheets', what: `GP report — ${monthLabel(m)}`, file: f.title, tab: s.tab, range: RANGES.gp, url: sheetUrl(f.id, s.gid), rows: `${parsed.rows.length} deal rows`, at: at() });
         } catch (e) { errs.push(why(e, S_SHEETS)); }
-      }));
+      } }));
       const found = months.filter(m => gp[m]);
       sources.gp = errs.length && !found.length ? { ok: false, detail: errs[0] } : { ok: true, detail: found.length ? `${found.length} monthly report${found.length > 1 ? 's' : ''}` : `None for ${monthLabel(months[0])} – ${monthLabel(month)}`, warning: gp[month] ? (errs[0] || '') : `No GP report for ${monthLabel(month)}` };
     }
@@ -1089,7 +1115,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     step('Searching Gmail…');
     let emails = null;
     try {
-      const g = await gmailMessages(core.addDays(months[0] + '-01', -30), core.addDays(core.monthEnd(month), 1), fresh);
+      const g = await gmailMessages(core.addDays(core.addMonths(month, -3) + '-01', -30), core.addDays(core.monthEnd(month), 1), fresh);
       emails = g.list;
       reads.push({ source: 'Gmail', what: 'Free zone and renewal emails', where: `Search: ${g.query}`, rows: `${emails.length} threads (first 50)`, at: at() });
       sources.gmail = { ok: true, detail: `${emails.length} threads` };
@@ -1102,10 +1128,22 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   // Snapshot for viewers: saved in this page's own storage, readable by everyone it is shared with.
   // ---------------------------------------------------------------------------------------------
   const PART = 80000;
+  // Cells are stored as [col, header, value] triples to keep the saved copy small.
+  const packRow = r => r.cells ? { ...r, cells: undefined, c3: r.cells.map(c => [c.col, c.label, c.value]) } : r;
+  const unpackRow = r => r.c3 ? Object.assign(r, { cells: r.c3.map(([col, label, value]) => ({ col, label, value })), c3: undefined }) : r;
+  const tracked = z => core.TRACKED.some(t => t.code === z);
   function slim(inp) {
     const refs = new Set(((inp.tracker && inp.tracker.lines) || []).map(l => l.ref));
-    const gp = Object.fromEntries(Object.entries(inp.gp).map(([m, rows]) => [m, rows.filter(g => g.zone || refs.has(g.invoice))]));
-    return { ...inp, gp, renewals: inp.renewals.filter(r => r.zone), kind: 'snapshot' };
+    const gp = Object.fromEntries(Object.entries(inp.gp).map(([m, rows]) => [m, rows.filter(g => g.zone || refs.has(g.invoice)).map(packRow)]));
+    const tracker = inp.tracker && { lines: inp.tracker.lines.map(packRow), checklist: inp.tracker.checklist.map(packRow) };
+    const zoneInv = inp.zoneInv && inp.zoneInv.map(z => ({ ...z, raw: undefined }));
+    return { ...inp, gp, tracker, zoneInv, renewals: inp.renewals.filter(r => tracked(r.zone)).map(packRow), kind: 'snapshot' };
+  }
+  function unslim(inp) {
+    Object.values(inp.gp).forEach(rows => rows.forEach(unpackRow));
+    if (inp.tracker) { inp.tracker.lines.forEach(unpackRow); inp.tracker.checklist.forEach(unpackRow); }
+    inp.renewals.forEach(unpackRow);
+    return inp;
   }
   async function saveSnapshot() {
     if (!db || !canWrite || !inputs || inputs.kind !== 'live') return false;
@@ -1131,7 +1169,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
       const m = cur.data();
       const parts = await Promise.all(Array.from({ length: m.parts }, (_, i) => db.doc(`snapshot/current/parts/${m.version}-${i}`).get().catch(() => null)));
       if (parts.every(p => p && p.exists)) {
-        try { const inp = JSON.parse(parts.map(p => p.data().s).join('')); inp.kind = 'snapshot'; snapMeta = m; return inp; } catch (e) { /* mid-save: retry */ }
+        try { const inp = unslim(JSON.parse(parts.map(p => p.data().s).join(''))); inp.kind = 'snapshot'; snapMeta = m; return inp; } catch (e) { /* mid-save: retry */ }
       }
       await sleep(1500);
     }
@@ -1145,9 +1183,10 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   // ---------------------------------------------------------------------------------------------
   // Build the dashboard for the chosen month from whatever was read.
   // ---------------------------------------------------------------------------------------------
-  const covers = (m, n) => inputs && inputs.months.includes(m) && inputs.months.filter(x => x <= m).length >= Math.min(n, inputs.months.indexOf(m) + 1);
-  function build(month, n) {
-    const months = inputs.months.filter(m => m <= month).slice(-n);
+  const covers = m => !!inputs && inputs.months.includes(m);
+  const periodName = n => n === 1 ? 'Month' : n ? `Last ${n} months` : 'All months';
+  function build(month) {
+    const months = inputs.months.filter(m => m <= month);
     const gp = Object.fromEntries(months.filter(m => inputs.gp[m]).map(m => [m, inputs.gp[m]]));
     const built = core.buildDashboard({ month, months, gp, tracker: inputs.tracker, renewals: inputs.renewals,
       clientInvoices: inputs.clientInv ? new Map(inputs.clientInv) : null, zoneInvoices: inputs.zoneInv ? inputs.zoneInv.filter(i => i.period >= months[0] && i.period <= month) : null,
@@ -1155,6 +1194,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     const raw = { lines: inputs.tracker ? inputs.tracker.lines : [], checklist: inputs.tracker ? inputs.tracker.checklist : [], gp, renewals: inputs.renewals,
       zone: inputs.zoneInv || [], client: inputs.clientInv ? inputs.clientInv.map(([n, v]) => ({ number: n, ...(v || { status: 'not found' }) })) : [], emails: inputs.emails || [] };
     data = { ok: true, ...built, sources: inputs.sources, reads: inputs.reads, links: inputs.links, raw, generatedAt: inputs.generatedAt };
+    setPeriod();
   }
   // Latest loaded month that has any free zone deal (the current month is often still empty).
   function bestMonth(inp, want) {
@@ -1162,6 +1202,14 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     if (has(want)) return want;
     return inp.months.filter(m => m <= want).reverse().find(has) || want;
   }
+  // The months the tiles, zone cards and lists add up: the period ending with the chosen month.
+  function setPeriod() {
+    const ms = data.summary.map(s => s.month), pm = span ? ms.slice(-span) : ms;
+    const prev = span && span > 1 && ms.length >= pm.length * 2 ? ms.slice(-pm.length * 2, -pm.length) : span === 1 && ms.length > 1 ? ms.slice(-2, -1) : null;
+    data.pm = pm; data.prevPm = prev;
+    data.periodLabel = pm.length === 1 ? monthLabel(pm[0]) : `${monthLabel(pm[0])} – ${monthLabel(pm[pm.length - 1])}`;
+  }
+  const inPm = m => data.pm.includes(m);
   function notice(t) { $('notice').textContent = t; show('notice', !!t); }
   function errorMsg(t) { $('error').textContent = t; show('error', !!t); }
 
@@ -1169,11 +1217,11 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     if (busy) return; busy = true; $('refresh').disabled = true; errorMsg('');
     let month = $('month').value;
     try {
-      const inp = await liveInputs(month, span, fresh);
+      const inp = await liveInputs(month, fresh);
       const allFailed = ['tracker', 'gp', 'renewals', 'zoho'].every(k => !inp.sources[k] || !inp.sources[k].ok);
       if (allFailed && inputs) { errorMsg('Live refresh could not read any source: ' + (inp.sources.tracker && inp.sources.tracker.detail) + ' Showing the saved snapshot instead.'); }
       else {
-        inputs = inp; mode = 'live'; if (first) month = bestMonth(inp, month); build(month, span); render();
+        inputs = inp; mode = 'live'; if (first) month = bestMonth(inp, month); build(month); render();
         if (canWrite) await saveSnapshot(); else notice('');
       }
     } catch (e) {
@@ -1182,7 +1230,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   }
   function setMonth(m) {
     $('month').value = m;
-    if (inputs && covers(m, 1)) { build(m, span); render(); return; }
+    if (covers(m)) { build(m); render(); return; }
     if (mode === 'snapshot' && !canWrite && inputs) { notice(`The saved snapshot covers ${monthLabel(inputs.months[0])} – ${monthLabel(inputs.month)}. Press Refresh live to read ${monthLabel(m)} (needs your own connections), or ask the owner to save a newer snapshot.`); $('month').value = data ? data.month : m; return; }
     goLive(false);
   }
@@ -1192,10 +1240,11 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   $('refresh').addEventListener('click', () => goLive(true));
   $('save').addEventListener('click', async () => { $('save').disabled = true; await saveSnapshot(); $('save').disabled = false; renderStatus(); });
   $('spanSeg').querySelectorAll('[data-span]').forEach(b => b.onclick = () => {
-    span = +b.dataset.span; paintSpan();
-    if (inputs && inputs.months.filter(x => x <= $('month').value).length >= span) { build($('month').value, span); render(); }
-    else if (mode === 'snapshot' && !canWrite) { build($('month').value, span); render(); notice(`The saved snapshot holds ${inputs.months.length} months; showing all of them.`); }
-    else goLive(false);
+    span = +b.dataset.span; paintSpan(); try { localStorage.setItem('fzc.span', String(span)); } catch (e) {}
+    if (!data) return;
+    setPeriod(); if (fx.scope !== 'all') fx.scope = span === 1 ? 'month' : 'period'; render();
+    const have = data.summary.length;
+    notice(span > have ? `${have} month${have > 1 ? 's' : ''} of data loaded (${monthLabel(data.summary[0].month)} – ${monthLabel(data.month)}) — the period shows all of them.` : '');
   });
   const paintSpan = () => $('spanSeg').querySelectorAll('[data-span]').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.span === span)));
   paintSpan();
@@ -1214,11 +1263,12 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   const zoneName = c => (data.zones.find(z => z.code === c) || (data.rules.zones.find(z => z.code === c)) || {}).name || c || '—';
 
   // ---- filters ----
-  const TX0 = { scope: 'month', zone: '', type: '', status: '', source: '', trackerStatus: '', ciStatus: '', agent: '', from: '', to: '', min: '', q: '', problems: false, more: false };
+  const TX0 = { scope: 'period', zone: '', type: '', status: '', source: '', trackerStatus: '', ciStatus: '', agent: '', from: '', to: '', min: '', q: '', problems: false, more: false };
   let fx = { ...TX0 }, fe = { severity: '', kind: '', zone: '', q: '' }, fr = { state: '', zone: '', manager: '', q: '' }, fi = { status: '', zone: '', q: '' }, fs = { set: 'lines', q: '' };
   const OK_STATES = ['Completed', 'No commission', 'Awaiting payment'];
   const zoneOk = z => !gz || z === gz;
-  function txBase() { return (fx.scope === 'all' ? data.workAll : data.work).filter(w => zoneOk(w.zone)); }
+  const txAllRows = () => fx.scope === 'month' ? data.work : data.workAll;
+  function txBase() { return (fx.scope === 'month' || (fx.scope === 'period' && span === 1) ? data.work : fx.scope === 'period' ? data.workAll.filter(w => inPm(w.month)) : data.workAll).filter(w => zoneOk(w.zone)); }
   function txRows() {
     const q = fx.q.toLowerCase(), min = Number(fx.min) || 0;
     return txBase().filter(w =>
@@ -1305,47 +1355,53 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   // ---- KPI "How?" ----
   const zt = () => gz ? ` for ${zoneName(gz)}` : '';
   const KPI = {
-    commission: { t: 'Commission earned', f: () => `Sum of the commission on every free zone deal in ${monthLabel(data.month)}${zt()}${gz ? '' : ' — RAK DAO, RAK ICC, Meydan, RAKEZ and other free zones'}. For each deal the commission tracker's figure (GP Commission Lines, column G) is used when the deal is on the tracker; otherwise the GP report's "Free zone Commission" column.`, go: { scope: 'month' } },
-    uninvoiced: { t: 'Not yet invoiced', f: () => `Sum of the commission on ${monthLabel(data.month)} deals${zt()} the tracker marks Uninvoiced (or leaves blank), plus GP-report-only deals with no Zoho commission invoice for that free zone and month. The smaller figure underneath adds every month loaded.`, go: { scope: 'month', status: 'Pending commission invoice' }, filter: w => w.status === 'Pending commission invoice' || (w.missing || []).some(x => /not yet invoiced|not invoiced|partly invoiced/i.test(x)) },
-    missed: { t: 'Commission missed', f: () => `Sum of the commission on ${monthLabel(data.month)} lines${zt()} whose tracker Status is "Missed".`, go: { scope: 'all', status: 'Commission missed' } },
-    toCollect: { t: 'Still to collect', f: () => `Sum of "Still to collect (AED)" on every Invoice Checklist row${zt()} with Status TO COLLECT — exactly as the tracker computes it. Amounts include 5% VAT. The coloured bar splits it by how many days each invoice has been outstanding.` },
-    deals: { t: 'Free zone deals', f: () => `Deals in ${monthLabel(data.month)}${zt() || ' for RAK DAO, RAK ICC, Meydan and RAKEZ'} (tracker lines joined to GP report rows, plus GP-report-only deals). Complete = Completed, No commission or Awaiting payment.`, go: { scope: 'month' } },
-    renewals: { t: 'Renewals due', f: () => `Renewals sheet rows${zt()} that are Not started, Overdue or In progress: due within ${data.windowDays} days or already expired, with no renewal on the GP report or tracker.` }
+    commission: { t: 'Commission earned', f: () => `Sum of the commission on every free zone deal in ${data.periodLabel}${zt()}${gz ? '' : ' — RAK DAO, RAK ICC, Meydan, RAKEZ and other free zones'}. For each deal the commission tracker's figure (GP Commission Lines, column G) is used when the deal is on the tracker; otherwise the GP report's "Free zone Commission" column. The arrow compares it with the same number of months just before.`, go: { scope: 'period' } },
+    invoiced: { t: 'Invoiced to free zones', f: () => `Sum of the commission on deals in ${data.periodLabel}${zt()} whose tracker Status is "Invoiced" (ex VAT). The bar shows that as a share of the commission earned.`, go: { scope: 'period', trackerStatus: 'Invoiced' }, filter: w => w.trackerStatus === 'Invoiced' },
+    collected: { t: 'Collected', f: () => `Sum of the Amount on Invoice Checklist rows${zt()} with Status RECEIVED and a "Received on" date in ${data.periodLabel}. Amounts include 5% VAT.` },
+    uninvoiced: { t: 'Not yet invoiced', f: () => `Sum of the commission on deals in ${data.periodLabel}${zt()} the tracker marks Uninvoiced (or leaves blank), plus GP-report-only deals with no Zoho commission invoice for that free zone and month. The smaller figure underneath adds every month loaded.`, go: { scope: 'period', status: 'Pending commission invoice' }, filter: w => w.status === 'Pending commission invoice' || (w.missing || []).some(x => /not yet invoiced|not invoiced|partly invoiced/i.test(x)) },
+    missed: { t: 'Commission missed', f: () => `Sum of the commission on lines in ${data.periodLabel}${zt()} whose tracker Status is "Missed".`, go: { scope: 'period', status: 'Commission missed' } },
+    toCollect: { t: 'Still to collect', f: () => `Open today, whatever the period: the sum of "Still to collect (AED)" on every Invoice Checklist row${zt()} with Status TO COLLECT — exactly as the tracker computes it. Amounts include 5% VAT. The coloured bar splits it by how many days each invoice has been outstanding.` },
+    deals: { t: 'Free zone deals', f: () => `Deals in ${data.periodLabel}${zt() || ' for RAK DAO, RAK ICC, Meydan and RAKEZ'} (tracker lines joined to GP report rows, plus GP-report-only deals). Complete = Completed, No commission or Awaiting payment.`, go: { scope: 'period' } },
+    renewals: { t: 'Renewals due', f: () => `As of today: Renewals sheet rows${zt()} that are Not started, Overdue or In progress — due within ${data.windowDays} days or already expired, with no renewal on the GP report or tracker.` }
   };
   function explainKpi(key) {
     const k = KPI[key], v = kpiVals();
     let html = sec('Formula', `<p>${esc(k.f())}</p>`);
-    if (key === 'toCollect') {
+    if (key === 'collected') {
+      html += sec(`Invoice Checklist rows received (${v.recd.length})`, `<div class="tablewrap"><table><thead><tr><th>Invoice</th><th>Free zone</th><th>Date</th><th>Received on</th><th class="r">Amount</th></tr></thead><tbody>${v.recd.map(c => `<tr><td>${rowLink(L.checklist(c.sheetRow), c.number)}</td><td>${esc(zoneName(c.zone))}</td><td>${fmtDate(c.date)}</td><td>${fmtDate(c.receivedOn)}</td><td class="r">${aedFull(c.amount)}</td></tr>`).join('')}<tr class="total"><td colspan="4">Total</td><td class="r">${aedFull(v.collected)}</td></tr></tbody></table></div>`);
+      html += `<button class="btn" id="kgo" type="button">Open commission invoices</button>`;
+    } else if (key === 'toCollect') {
       const rows = v.coll;
       html += sec(`Invoice Checklist rows (${rows.length})`, `<div class="tablewrap"><table><thead><tr><th>Invoice</th><th>Free zone</th><th>Date</th><th class="r">Still to collect</th><th class="r">Days</th></tr></thead><tbody>${rows.map(c => `<tr><td>${rowLink(L.checklist(c.sheetRow), c.number)}</td><td>${esc(zoneName(c.zone))}</td><td>${fmtDate(c.date)}</td><td class="r">${aedFull(c.toCollect)}</td><td class="r">${c.daysOutstanding ?? '—'}</td></tr>`).join('')}<tr class="total"><td colspan="3">Total</td><td class="r">${aedFull(v.toCollect)}</td><td></td></tr></tbody></table></div>`);
       html += `<button class="btn" id="kgo" type="button">Open commission invoices</button>`;
     } else if (key === 'renewals') {
       html += `<button class="btn" id="kgo" type="button">Show the renewals</button>`;
     } else {
-      const rows = data.work.filter(w => w.source !== 'Renewals sheet' && zoneOk(w.zone)).filter(k.filter || (key === 'missed' ? (w => w.status === 'Commission missed') : (() => true)));
+      const rows = dealsIn(data.pm).filter(k.filter || (key === 'missed' ? (w => w.status === 'Commission missed') : (() => true)));
       const sum = rows.reduce((a, w) => a + (w.commission || 0), 0);
-      html += sec(`Contributing deals (${rows.length})`, `<div class="tablewrap"><table><thead><tr><th>Deal</th><th>Free zone</th><th>From</th><th class="r">AED</th></tr></thead><tbody>${rows.map(w => `<tr><td><button class="link" type="button" data-deal="${data.workAll.indexOf(w)}">${esc(w.name)}</button></td><td>${esc(zoneName(w.zone))}</td><td class="muted">${w.trackerRow ? 'tracker row ' + w.trackerRow : ''}${w.trackerRow && w.gpRow ? ' · ' : ''}${w.gpRow ? 'GP row ' + w.gpRow : ''}</td><td class="r">${aedFull(w.commission)}</td></tr>`).join('')}<tr class="total"><td colspan="3">Total of these rows</td><td class="r">${aedFull(sum)}</td></tr></tbody></table></div>`);
+      html += sec(`Contributing deals (${rows.length})`, `<div class="tablewrap"><table><thead><tr><th>Deal</th><th>Month</th><th>Free zone</th><th>From</th><th class="r">AED</th></tr></thead><tbody>${rows.map(w => `<tr><td><button class="link" type="button" data-deal="${data.workAll.indexOf(w)}">${esc(w.name)}</button></td><td class="nw">${monthLabel(w.month)}</td><td>${esc(zoneName(w.zone))}</td><td class="muted">${w.trackerRow ? 'tracker row ' + w.trackerRow : ''}${w.trackerRow && w.gpRow ? ' · ' : ''}${w.gpRow ? 'GP row ' + w.gpRow : ''}</td><td class="r">${aedFull(w.commission)}</td></tr>`).join('')}<tr class="total"><td colspan="4">Total of these rows</td><td class="r">${aedFull(sum)}</td></tr></tbody></table></div>`);
       if (k.go) html += `<button class="btn" id="kgo" type="button">Show these in Transactions</button>`;
     }
     openDrawer(k.t + (gz ? ' · ' + zoneName(gz) : ''), html);
     wireDealLinks($('drawerBody'));
-    const b = $('kgo'); if (b) b.onclick = () => { if (key === 'renewals' || key === 'toCollect') { tab = key === 'renewals' ? 'renewals' : 'invoices'; closeDrawer(); render(); } else goTx(k.go); };
+    const b = $('kgo'); if (b) b.onclick = () => { if (key === 'renewals' || key === 'toCollect' || key === 'collected') { tab = key === 'renewals' ? 'renewals' : 'invoices'; closeDrawer(); render(); } else goTx(k.go); };
   }
 
 
   function explainZone(code) {
-    const sel = data.summary.find(s => s.month === data.month), z = sel.zones[code], deals = data.work.filter(w => w.zone === code && w.source !== 'Renewals sheet');
-    let html = `<div class="xhead">${sel.state !== 'No data' ? pill(sel.state) : ''} <span class="muted">${monthLabel(data.month)} · baseline: ${esc(sel.baseline || '—')}</span></div>`;
-    html += sec('Figures', `<dl class="kv"><dt>Total commission</dt><dd><b>AED ${aedFull(z.commission)}</b><div class="muted">Sum of the commission on the ${z.count} deals below (tracker figure where the deal is on the tracker, else the GP report)</div></dd>
+    const z = periodCell(code), deals = data.workAll.filter(w => w.zone === code && w.source !== 'Renewals sheet' && inPm(w.month));
+    const bases = [...new Set(data.pm.map(m => data.summary.find(s => s.month === m).baseline).filter(Boolean))];
+    let html = `<div class="xhead"><span class="muted">${esc(data.periodLabel)} · baseline: ${esc(bases.join(' / ') || '—')}</span></div>`;
+    html += sec('Figures', `<dl class="kv"><dt>Total commission</dt><dd><b>AED ${aedFull(z.commission)}</b><div class="muted">Sum of the commission on the ${z.count} deals in ${esc(data.periodLabel)} below (tracker figure where the deal is on the tracker, else the GP report)</div></dd>
       <dt>New</dt><dd>${z.newCount} deals · AED ${aedFull(z.newCommission)}</dd><dt>Renewals</dt><dd>${z.renewalCount} deals · AED ${aedFull(z.renewalCommission)}</dd>
       <dt>Invoiced</dt><dd>AED ${aedFull(z.invoicedLines)}<div class="muted">Lines the tracker marks Invoiced</div></dd><dt>Not yet invoiced</dt><dd>AED ${aedFull(z.uninvoiced)}</dd><dt>Missed</dt><dd>AED ${aedFull(z.missed)}</dd>
       <dt>Gross fees</dt><dd>AED ${aedFull(z.fees)}<div class="muted">Fee paid to the free zone, from the GP report fee columns</div></dd>
       <dt>GP report check</dt><dd>AED ${aedFull(z.gpCommission)} on the GP report vs AED ${aedFull(z.trackerCommission)} on the tracker ${Math.abs(z.gpCommission - z.trackerCommission) <= 1 ? pill('Matches', 'good') : pill('Differs', 'serious')}</dd>
-      ${data.zoneInvoices ? `<dt>Zoho invoiced</dt><dd>AED ${aedFull(z.invoiced)} ex VAT${z.invoices.length ? ' · ' + z.invoices.map(esc).join(', ') : ''}</dd>` : ''}</dl>`);
-    if (code !== 'OTHER') html += sec(`Deals (${deals.length})`, deals.length ? `<div class="tablewrap"><table><thead><tr><th>Deal</th><th>Type</th><th>Status</th><th class="r">AED</th></tr></thead><tbody>${deals.map(w => `<tr><td><button class="link" data-deal="${data.workAll.indexOf(w)}">${esc(w.name)}</button></td><td>${esc(w.type)}</td><td>${pill(w.status)}</td><td class="r">${aedFull(w.commission)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No deals.</p>') + `<button class="btn" id="kgo" type="button">Open in Transactions</button>`;
+      ${data.zoneInvoices ? `<dt>Zoho invoiced</dt><dd>AED ${aedFull(z.invoiced)} ex VAT${(() => { const n = data.pm.flatMap(m => data.summary.find(s => s.month === m).zones[code].invoices); return n.length ? ' · ' + n.map(esc).join(', ') : ''; })()}</dd>` : ''}</dl>`);
+    if (code !== 'OTHER') html += sec(`Deals (${deals.length})`, deals.length ? `<div class="tablewrap"><table><thead><tr><th>Deal</th><th>Month</th><th>Type</th><th>Status</th><th class="r">AED</th></tr></thead><tbody>${deals.map(w => `<tr><td><button class="link" data-deal="${data.workAll.indexOf(w)}">${esc(w.name)}</button></td><td class="nw">${monthLabel(w.month)}</td><td>${esc(w.type)}</td><td>${pill(w.status)}</td><td class="r">${aedFull(w.commission)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No deals.</p>') + `<button class="btn" id="kgo" type="button">Open in Transactions</button>`;
     openDrawer(code === 'OTHER' ? 'Other free zones' : zoneName(code), html);
     wireDealLinks($('drawerBody'));
-    const b = $('kgo'); if (b) b.onclick = () => goTx({ zone: code, scope: 'month' });
+    const b = $('kgo'); if (b) b.onclick = () => goTx({ zone: code, scope: 'period' });
   }
 
   function shareHelp() {
@@ -1363,11 +1419,13 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   $('shareBtn').addEventListener('click', shareHelp);
 
   function summaryText() {
-    const sel = data.summary.find(s => s.month === data.month), k = kpiVals();
-    const lines = [`Free zone commissions — ${monthLabel(data.month)}${gz ? ' — ' + zoneName(gz) : ''}`, '',
-      `Commission earned: AED ${aedFull(k.commission)}`, `Not yet invoiced: AED ${aedFull(k.uninvoiced)} (all loaded months: AED ${aedFull(k.uninvoicedAll)})`,
-      `Commission missed: AED ${aedFull(k.missed)}`, `Still to collect: AED ${aedFull(k.toCollect)} across ${k.toCollectCount} invoices`, `Deals: ${k.deals} (${k.completed} complete, ${k.deals - k.completed} pending)`, `Renewals due: ${k.renewals} (${k.overdue} overdue)`, '',
-      'By free zone:', ...data.zones.filter(z => zoneOk(z.code)).map(z => `- ${z.name}: AED ${aedFull(sel.zones[z.code].commission)} (not yet invoiced AED ${aedFull(sel.zones[z.code].uninvoiced)})`), '',
+    const k = kpiVals();
+    const lines = [`Free zone commissions — ${data.periodLabel}${gz ? ' — ' + zoneName(gz) : ''}`, '',
+      `Commission earned: AED ${aedFull(k.commission)}`, `Invoiced to free zones: AED ${aedFull(k.invoiced)}`, `Collected (incl. VAT): AED ${aedFull(k.collected)} from ${k.collectedCount} invoices`,
+      `Not yet invoiced: AED ${aedFull(k.uninvoiced)} (all loaded months: AED ${aedFull(k.uninvoicedAll)})`, `Commission missed: AED ${aedFull(k.missed)}`,
+      `Still to collect today: AED ${aedFull(k.toCollect)} across ${k.toCollectCount} invoices`, `Deals: ${k.deals} (${k.newCount} new, ${k.renewalCount} renewals; ${k.completed} complete)`, `Renewals due: ${k.renewals} (${k.overdue} overdue)`, '',
+      'By free zone:', ...data.zones.filter(z => zoneOk(z.code)).map(z => { const c = periodCell(z.code); return `- ${z.name}: AED ${aedFull(c.commission)} (invoiced AED ${aedFull(c.invoicedLines)}, not yet invoiced AED ${aedFull(c.uninvoiced)})`; }), '',
+      'By period:', ...PERIODS.map(([n, l]) => { const r = periodRow(n); return `- ${l} (${r.label}): commission AED ${aedFull(r.commission)}, invoiced AED ${aedFull(r.invoiced)}, collected AED ${aedFull(r.collected)}, not yet invoiced AED ${aedFull(r.uninvoiced)}`; }), '',
       'Top actions:', ...exList().slice(0, 6).map(e => `- [${e.severity}] ${e.kind}: ${e.detail}`), '',
       `Source: ${mode === 'live' ? 'read live ' + fmtWhen(data.generatedAt) : 'snapshot saved ' + fmtWhen(snapMeta && snapMeta.savedAt)} (Dubai).`];
     return lines.join('\n');
@@ -1391,7 +1449,20 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   document.querySelectorAll('[data-export]').forEach(b => b.onclick = () => {
     $('exportMenu').open = false; if (!data) return;
     const k = b.dataset.export, sel = data.summary.find(s => s.month === data.month), tag = (gz ? zoneName(gz).replace(/\s+/g, '-') + '-' : '') + data.month;
-    if (k === 'tx') saveCsv(`free-zone-transactions-${tag}.csv`, [TXHEAD, ...data.work.filter(w => zoneOk(w.zone)).map(txLine)]);
+    const ptag = (gz ? zoneName(gz).replace(/\s+/g, '-') + '-' : '') + (data.pm.length > 1 ? data.pm[0] + '-to-' + data.month : data.month);
+    if (k === 'tx') saveCsv(`free-zone-transactions-${ptag}.csv`, [TXHEAD, ...data.workAll.filter(w => zoneOk(w.zone) && (inPm(w.month) || w.source === 'Renewals sheet')).map(txLine)]);
+    if (k === 'period') {
+      const head = ['Period', 'Month', 'Free zone', 'Deals', 'New', 'Renewals', 'Gross fees AED', 'Commission AED', 'Invoiced AED', 'Not yet invoiced AED', 'Missed AED', 'Zoho invoiced ex VAT AED', 'Collected incl VAT AED', 'Month status'];
+      const rec = (ms, z) => (data.commissionInvoices || []).filter(x => x.inTracker && x.status === 'RECEIVED' && (!z ? zoneOk(x.zone) : x.zone === z) && x.receivedOn && ms.includes(x.receivedOn.slice(0, 7))).reduce((a, x) => a + (x.amount || 0), 0);
+      const zs = data.zones.filter(z => zoneOk(z.code) || (z.code === 'OTHER' && !gz));
+      const out = [head];
+      for (const m of data.pm) { const s = data.summary.find(x => x.month === m); for (const z of zs) { const c = s.zones[z.code]; out.push([data.periodLabel, m, z.name, c.count, c.newCount, c.renewalCount, c.fees, c.commission, c.invoicedLines, c.uninvoiced, c.missed, c.invoiced, rec([m], z.code), s.state]); } }
+      for (const z of zs) { const c = periodCell(z.code); out.push([data.periodLabel, 'Period total', z.name, c.count, c.newCount, c.renewalCount, c.fees, c.commission, c.invoicedLines, c.uninvoiced, c.missed, c.invoiced, rec(data.pm, z.code), '']); }
+      const t = periodCell(gz); out.push([data.periodLabel, 'Period total', gz ? zoneName(gz) : 'All free zones', t.count, t.newCount, t.renewalCount, t.fees, t.commission, t.invoicedLines, t.uninvoiced, t.missed, t.invoiced, rec(data.pm), '']);
+      out.push([]); out.push(['Comparison', 'Months', 'Commission AED', 'Invoiced AED', 'Not yet invoiced AED', 'Missed AED', 'Collected AED', 'Deals']);
+      for (const [n, l] of PERIODS) { const r = periodRow(n); out.push([l, r.label, r.commission, r.invoiced, r.uninvoiced, r.missed, r.collected, r.deals]); }
+      saveCsv(`free-zone-period-report-${ptag}.csv`, out);
+    }
     if (k === 'txall') saveCsv(`free-zone-transactions-all-months-${tag}.csv`, [TXHEAD, ...data.workAll.filter(w => zoneOk(w.zone)).map(txLine)]);
     if (k === 'ex') saveCsv(`free-zone-exceptions-${tag}.csv`, [['Severity', 'What', 'Free zone', 'Detail', 'AED'], ...exList().map(e => [e.severity, e.kind, zoneName(e.zone), e.detail, e.amount])]);
     if (k === 'ren') saveCsv(`free-zone-renewals-${tag}.csv`, [['Company', 'Free zone', 'Expiry', 'Days', 'State', 'Why', 'Sheet status', 'Progress', 'Remarks', 'Manager', 'Renewals row'], ...data.renewals.filter(r => zoneOk(r.zone)).map(r => [r.company, zoneName(r.zone), r.expiry, r.daysLeft, r.state, r.reason, r.status, r.progress, r.remarks, r.manager, r.sheetRow])]);
@@ -1402,14 +1473,25 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   // ---------------------------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------------------------
+  // Totals of the monthly summary over a set of months, for one free zone or all ('').
+  const sumMonths = (ms, z) => {
+    const out = {};
+    for (const m of ms) { const s = data.summary.find(x => x.month === m); if (!s) continue; const c = z ? s.zones[z] : s.total; for (const [k, v] of Object.entries(c)) if (typeof v === 'number') out[k] = (out[k] || 0) + v; }
+    for (const k of Object.keys(out)) out[k] = Math.round(out[k] * 100) / 100;
+    return { count: 0, newCount: 0, renewalCount: 0, commission: 0, invoicedLines: 0, uninvoiced: 0, missed: 0, fees: 0, gpCommission: 0, trackerCommission: 0, invoiced: 0, ...out };
+  };
+  const periodCell = z => sumMonths(data.pm, z);
+  const received = ms => (data.commissionInvoices || []).filter(c => c.inTracker && c.status === 'RECEIVED' && zoneOk(c.zone) && c.receivedOn && ms.includes(c.receivedOn.slice(0, 7)));
+  const dealsIn = ms => data.workAll.filter(w => w.source !== 'Renewals sheet' && zoneOk(w.zone) && ms.includes(w.month));
   function kpiVals() {
-    const sel = data.summary.find(s => s.month === data.month), z = gz ? sel.zones[gz] : sel.total;
-    const deals = data.work.filter(w => w.source !== 'Renewals sheet' && zoneOk(w.zone));
-    const coll = (data.commissionInvoices || []).filter(c => c.status === 'TO COLLECT' && zoneOk(c.zone));
+    const c = periodCell(gz), deals = dealsIn(data.pm), recd = received(data.pm);
+    const coll = (data.commissionInvoices || []).filter(x => x.status === 'TO COLLECT' && zoneOk(x.zone));
     const ren = data.renewals.filter(r => zoneOk(r.zone) && ['Not started', 'Overdue', 'In progress'].includes(r.state));
-    return { commission: z.commission, uninvoiced: z.uninvoiced, missed: z.missed,
-      uninvoicedAll: data.summary.reduce((a, s) => a + (gz ? s.zones[gz].uninvoiced : s.total.uninvoiced), 0),
-      toCollect: data.commissionInvoices ? coll.reduce((a, c) => a + (c.toCollect || 0), 0) : null, toCollectCount: coll.length, coll,
+    return { commission: c.commission, invoiced: c.invoicedLines, uninvoiced: c.uninvoiced, missed: c.missed, fees: c.fees, newCount: c.newCount, renewalCount: c.renewalCount,
+      prevCommission: data.prevPm ? sumMonths(data.prevPm, gz).commission : null,
+      uninvoicedAll: sumMonths(data.summary.map(x => x.month), gz).uninvoiced,
+      collected: Math.round(recd.reduce((a, x) => a + (x.amount || 0), 0) * 100) / 100, collectedCount: recd.length, recd,
+      toCollect: data.commissionInvoices ? coll.reduce((a, x) => a + (x.toCollect || 0), 0) : null, toCollectCount: coll.length, coll,
       deals: deals.length, completed: deals.filter(w => OK_STATES.includes(w.status)).length, renewals: ren.length, overdue: ren.filter(r => r.state === 'Overdue').length };
   }
   function spark(values, color) {
@@ -1435,44 +1517,46 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     show('body', true); show('loading', false);
     $('month').value = data.month;
     renderStatus();
-    const sel = data.summary.find(s => s.month === data.month);
-    $('zoneChips').innerHTML = `<button class="chip" type="button" data-z="" aria-pressed="${!gz}">All free zones <span class="n">${aed(sel.total.commission)}</span></button>` + data.zones.filter(z => z.code !== 'OTHER').map(z => `<button class="chip" type="button" data-z="${z.code}" aria-pressed="${gz === z.code}"><i style="background:${SERIES[z.code]}"></i>${esc(z.name)} <span class="n">${aed(sel.zones[z.code].commission)}</span></button>`).join('');
+    $('zoneChips').innerHTML = `<span class="plabel">${esc(periodName(span))} · <b>${esc(data.periodLabel)}</b></span><button class="chip" type="button" data-z="" aria-pressed="${!gz}">All free zones <span class="n">${aed(periodCell('').commission)}</span></button>` + data.zones.filter(z => z.code !== 'OTHER').map(z => `<button class="chip" type="button" data-z="${z.code}" aria-pressed="${gz === z.code}"><i style="background:${SERIES[z.code]}"></i>${esc(z.name)} <span class="n">${aed(periodCell(z.code).commission)}</span></button>`).join('');
     $('zoneChips').querySelectorAll('[data-z]').forEach(b => b.onclick = () => { gz = b.dataset.z; render(); });
 
     const k = kpiVals(), series = key => data.summary.map(s => gz ? s.zones[gz][key] : s.total[key]);
-    const prev = data.summary[data.summary.findIndex(s => s.month === data.month) - 1], prevV = prev ? (gz ? prev.zones[gz].commission : prev.total.commission) : null;
-    const delta = prevV ? Math.round((k.commission - prevV) / prevV * 100) : null;
+    const delta = k.prevCommission ? Math.round((k.commission - k.prevCommission) / k.prevCommission * 100) : null;
+    const vsLabel = data.prevPm ? (data.prevPm.length === 1 ? MON[+data.prevPm[0].slice(5, 7) - 1] : `previous ${data.prevPm.length} months`) : '';
     const ag = agingBuckets(k.coll), agTot = Math.max(1, ag.reduce((a, b) => a + b.amt, 0));
-    const done = k.deals ? Math.round(k.completed / k.deals * 100) : 0;
+    const done = k.deals ? Math.round(k.completed / k.deals * 100) : 0, invPct = k.commission ? Math.min(100, Math.round(k.invoiced / k.commission * 100)) : 0;
+    const per = data.pm.length > 1 ? ` · avg ${aed(k.commission / data.pm.length)}/month` : '';
+    const recSeries = data.summary.map(s => received([s.month]).reduce((a, x) => a + (x.amount || 0), 0));
     const tiles = [
-      ['commission', 'Commission earned', aed(k.commission), `${monthLabel(data.month)}${delta != null ? ` · <span class="delta ${delta >= 0 ? 'up' : 'down'}">${delta >= 0 ? '▲' : '▼'} ${Math.abs(delta)}% vs ${MON[+prev.month.slice(5, 7) - 1]}</span>` : ''}`, spark(series('commission'), 'var(--accent)'), { scope: 'month' }],
-      ['uninvoiced', 'Not yet invoiced', aed(k.uninvoiced), `All ${data.months.length} months: ${aed(k.uninvoicedAll)}`, spark(series('uninvoiced'), 'var(--serious)'), { scope: 'month', status: 'Pending commission invoice' }],
-      ['missed', 'Commission missed', aed(k.missed), 'Marked Missed on the tracker', spark(series('missed'), 'var(--critical)'), { scope: 'all', status: 'Commission missed' }],
-      ['toCollect', 'Still to collect', aed(k.toCollect), k.toCollect == null ? 'Tracker not connected' : `${k.toCollectCount} invoices · Invoice Checklist`, `<div class="bar" aria-label="Aging">${ag.filter(b => b.amt).map(b => `<span class="${b.cls}" style="width:${b.amt / agTot * 100}%" title="${b.l}: AED ${aedFull(b.amt)}"></span>`).join('')}</div>`, null],
-      ['deals', 'Free zone deals', String(k.deals), `${k.completed} complete · ${k.deals - k.completed} pending`, `<div class="bar"><span class="g" style="width:${done}%"></span><span class="w" style="width:${100 - done}%"></span></div>`, { scope: 'month' }],
-      ['renewals', 'Renewals due', String(k.renewals), `${k.overdue} overdue · within ${data.windowDays} days`, '', null]
+      ['commission', 'Commission earned', aed(k.commission), `${esc(data.periodLabel)}${per}${delta != null ? ` · <span class="delta ${delta >= 0 ? 'up' : 'down'}">${delta >= 0 ? '▲' : '▼'} ${Math.abs(delta)}% vs ${vsLabel}</span>` : ''}`, spark(series('commission'), 'var(--accent)'), { scope: 'period' }],
+      ['invoiced', 'Invoiced to free zones', aed(k.invoiced), `${invPct}% of earned · tracker lines marked Invoiced`, `<div class="bar"><span class="g" style="width:${invPct}%"></span><span class="w" style="width:${100 - invPct}%"></span></div>`, { scope: 'period', trackerStatus: 'Invoiced' }],
+      ['collected', 'Collected', aed(k.collected), `${k.collectedCount} invoice${k.collectedCount === 1 ? '' : 's'} received in the period · incl. VAT`, spark(recSeries, 'var(--good)'), null],
+      ['uninvoiced', 'Not yet invoiced', aed(k.uninvoiced), `All ${data.summary.length} months: ${aed(k.uninvoicedAll)}`, spark(series('uninvoiced'), 'var(--serious)'), { scope: 'period', status: 'Pending commission invoice' }],
+      ['toCollect', 'Still to collect', aed(k.toCollect), k.toCollect == null ? 'Tracker not connected' : `${k.toCollectCount} invoices open today · Invoice Checklist`, `<div class="bar" aria-label="Aging">${ag.filter(b => b.amt).map(b => `<span class="${b.cls}" style="width:${b.amt / agTot * 100}%" title="${b.l}: AED ${aedFull(b.amt)}"></span>`).join('')}</div>`, null],
+      ['missed', 'Commission missed', aed(k.missed), 'Marked Missed on the tracker', spark(series('missed'), 'var(--critical)'), { scope: 'period', status: 'Commission missed' }],
+      ['deals', 'Free zone deals', String(k.deals), `${k.newCount} new · ${k.renewalCount} renewals · ${k.completed} complete`, `<div class="bar"><span class="g" style="width:${done}%"></span><span class="w" style="width:${100 - done}%"></span></div>`, { scope: 'period' }],
+      ['renewals', 'Renewals due', String(k.renewals), `${k.overdue} overdue · within ${data.windowDays} days of today`, '', null]
     ];
-    $('kpis').innerHTML = tiles.map(([key, l, v, n, viz, go], i) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="n">${n}</div>${viz || ''}<div class="foot">${go ? `<button class="btn sm" type="button" data-kgo="${i}">View deals</button>` : key === 'toCollect' ? '<button class="btn sm" type="button" data-ktab="invoices">View invoices</button>' : key === 'renewals' ? '<button class="btn sm" type="button" data-ktab="renewals">View renewals</button>' : ''}</div><button class="how" type="button" data-kpi="${key}" aria-label="How is ${esc(l)} calculated?">How?</button></div>`).join('');
+    $('kpis').innerHTML = tiles.map(([key, l, v, n, viz, go], i) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="n">${n}</div>${viz || ''}<div class="foot">${go ? `<button class="btn sm" type="button" data-kgo="${i}">View deals</button>` : key === 'toCollect' || key === 'collected' ? '<button class="btn sm" type="button" data-ktab="invoices">View invoices</button>' : key === 'renewals' ? '<button class="btn sm" type="button" data-ktab="renewals">View renewals</button>' : ''}</div><button class="how" type="button" data-kpi="${key}" aria-label="How is ${esc(l)} calculated?">How?</button></div>`).join('');
     $('kpis').querySelectorAll('[data-kpi]').forEach(b => b.onclick = () => explainKpi(b.dataset.kpi));
     $('kpis').querySelectorAll('[data-kgo]').forEach(b => b.onclick = () => goTx(tiles[+b.dataset.kgo][6]));
     $('kpis').querySelectorAll('[data-ktab]').forEach(b => b.onclick = () => { tab = b.dataset.ktab; render(); });
 
     const exN = exList().length, exHigh = exList().filter(e => e.severity === 'high').length;
-    const tabs = [['overview', 'Overview'], ['work', 'Transactions', txBase().length], ['exceptions', 'Exceptions', exN, exHigh], ['renewals', 'Renewals', data.renewals.filter(r => zoneOk(r.zone)).length], ['invoices', 'Commission invoices', (data.commissionInvoices || []).filter(c => zoneOk(c.zone)).length], ...(data.emails ? [['emails', 'Emails', data.emails.length]] : []), ['source', 'Source data'], ['how', 'How it\'s calculated']];
+    const tabs = [['overview', 'Overview'], ['report', 'Period report'], ['work', 'Transactions', txBase().length], ['exceptions', 'Exceptions', exN, exHigh], ['renewals', 'Renewals', data.renewals.filter(r => zoneOk(r.zone)).length], ['invoices', 'Commission invoices', (data.commissionInvoices || []).filter(c => zoneOk(c.zone)).length], ...(data.emails ? [['emails', 'Emails', data.emails.length]] : []), ['source', 'Source data'], ['how', 'How it\'s calculated']];
     if (!tabs.some(t => t[0] === tab)) tab = 'overview';
     $('tabs').innerHTML = tabs.map(([id, l, n, hot]) => `<button role="tab" type="button" data-tab="${id}" aria-selected="${id === tab}">${l}${n != null ? ` <span class="badge ${hot ? 'hot' : ''}">${n}</span>` : ''}</button>`).join('');
     $('tabs').querySelectorAll('button').forEach(b => b.onclick = () => { tab = b.dataset.tab; render(); });
-    $('panes').innerHTML = ({ overview, work, renewals, exceptions, invoices, emails, source, how })[tab]();
-    ({ overview: wireOverview, work: wireWork, renewals: wireRenewals, exceptions: wireExceptions, invoices: wireInvoices, source: wireSource })[tab]?.();
+    $('panes').innerHTML = ({ overview, report, work, renewals, exceptions, invoices, emails, source, how })[tab]();
+    ({ overview: wireOverview, report: wireReport, work: wireWork, renewals: wireRenewals, exceptions: wireExceptions, invoices: wireInvoices, source: wireSource })[tab]?.();
   }
 
   // ---- Overview ----
   function exList() { return data.exceptions.filter(e => zoneOk(e.zone)); }
   function overview() {
-    const sel = data.summary.find(s => s.month === data.month);
     const cards = data.zones.map(z => {
-      const c = sel.zones[z.code], tot = Math.max(c.commission, 0.01);
-      const ok = Math.abs(c.gpCommission - c.trackerCommission) <= 1 || !sel.hasReport || !sel.onTracker;
+      const c = periodCell(z.code), tot = Math.max(c.commission, 0.01);
+      const ok = data.pm.every(m => { const s = data.summary.find(x => x.month === m), q = s.zones[z.code]; return !s.hasReport || !s.onTracker || Math.abs(q.gpCommission - q.trackerCommission) <= 1; });
       return `<div class="zcard ${gz && gz !== z.code ? 'dim' : ''}">
         <div class="zh"><span class="zn"><i style="background:${SERIES[z.code]}"></i>${esc(z.name)}</span>${c.count ? (ok ? pill('GP ✓', 'good') : pill('GP ≠ tracker', 'serious')) : ''}</div>
         <div class="zv">${aed(c.commission)}</div>
@@ -1486,8 +1570,8 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     const coll = ci.filter(c => c.status === 'TO COLLECT'), ag = agingBuckets(coll), agMax = Math.max(1, ...ag.map(b => b.amt));
     const pct = inv ? Math.round(rec / inv * 1000) / 10 : 0;
     const acts = exList().slice(0, 6);
-    const hist = data.summary.slice().reverse().map(s => { const c = gz ? s.zones[gz] : s.total; return `<tr><td class="nw"><button class="link" data-month="${s.month}" type="button">${monthLabel(s.month)}</button><div class="muted small">${esc(s.baseline || 'no data')}</div></td><td>${s.state === 'No data' ? '<span class="muted">—</span>' : pill(s.state)}</td><td class="r">${s.total.count ? aedFull(c.commission) : '—'}</td><td class="r">${s.total.count ? aedFull(c.invoicedLines) : '—'}</td><td class="r">${s.total.count ? aedFull(c.uninvoiced) : '—'}</td><td class="r">${s.total.count ? aedFull(c.missed) : '—'}</td></tr>`; }).join('');
-    return `<div class="zgrid">${cards}</div>
+    const hist = data.summary.slice().reverse().map(s => { const c = gz ? s.zones[gz] : s.total; return `<tr class="${inPm(s.month) ? 'inpm' : ''}"><td class="nw"><button class="link" data-month="${s.month}" type="button">${monthLabel(s.month)}</button><div class="muted small">${esc(s.baseline || 'no data')}</div></td><td>${s.state === 'No data' ? '<span class="muted">—</span>' : pill(s.state)}</td><td class="r">${s.total.count ? aedFull(c.commission) : '—'}</td><td class="r">${s.total.count ? aedFull(c.invoicedLines) : '—'}</td><td class="r">${s.total.count ? aedFull(c.uninvoiced) : '—'}</td><td class="r">${s.total.count ? aedFull(c.missed) : '—'}</td></tr>`; }).join('');
+    return `${compareCard()}<div class="zgrid">${cards}</div>
       <div class="legend-s"><span><i style="background:var(--good)"></i>Invoiced</span><span><i style="background:var(--serious)"></i>Not yet invoiced</span><span><i style="background:var(--critical)"></i>Missed</span></div>
       <div class="grid2">
         <div class="card"><h2>Commission per month <span class="acts"><button class="btn sm" type="button" data-export2="zones">Export</button></span></h2><div class="legend">${data.zones.map(z => `<span><i style="background:${SERIES[z.code]}"></i>${esc(z.name)}</span>`).join('')}</div><div class="chart" id="chart"></div></div>
@@ -1502,8 +1586,8 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
         <div class="card"><h2>Action centre <span class="acts"><button class="btn sm" type="button" data-ktab="exceptions">All ${exList().length}</button></span></h2>
           ${acts.length ? `<ul class="actions">${acts.map(e => `<li>${pill(e.severity, STATUS[e.severity])}<div><div class="t">${esc(e.kind)}${e.amount ? ' · ' + aed(e.amount) : ''}</div><div class="d">${esc(e.detail)}</div></div><button class="btn sm" type="button" data-act="${data.exceptions.indexOf(e)}">${e.ref && e.ref.kind === 'group' ? 'Show deals' : 'Explain'}</button></li>`).join('')}</ul>` : '<div class="empty">Nothing needs action.</div>'}
         </div>
-        <div class="card"><h2>Monthly history${gz ? ' · ' + esc(zoneName(gz)) : ''}</h2><div class="tablewrap"><table><thead><tr><th>Month</th><th>Status</th><th class="r">Commission</th><th class="r">Invoiced</th><th class="r">Not yet</th><th class="r">Missed</th></tr></thead><tbody>${hist}</tbody></table></div>
-          <small class="note">Click a month to open it. Finalized = every commission line invoiced or confirmed, and the tracker total equals the GP report.</small></div>
+        <div class="card"><h2>Monthly history${gz ? ' · ' + esc(zoneName(gz)) : ''} <span class="acts"><button class="btn sm" type="button" data-ktab="report">Period report</button></span></h2><div class="tablewrap"><table><thead><tr><th>Month</th><th>Status</th><th class="r">Commission</th><th class="r">Invoiced</th><th class="r">Not yet</th><th class="r">Missed</th></tr></thead><tbody>${hist}</tbody></table></div>
+          <small class="note">Shaded rows are in the period shown (${esc(data.periodLabel)}). Click a month to open it. Finalized = every commission line invoiced or confirmed, and the tracker total equals the GP report.</small></div>
       </div>`;
   }
   function wireOverview() {
@@ -1515,7 +1599,8 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     P.querySelectorAll('[data-ktab]').forEach(b => b.onclick = () => { tab = b.dataset.ktab; render(); });
     P.querySelectorAll('[data-act]').forEach(b => b.onclick = () => openRef(data.exceptions[+b.dataset.act]));
     P.querySelectorAll('[data-month]').forEach(b => b.onclick = () => setMonth(b.dataset.month));
-    P.querySelectorAll('[data-export2]').forEach(b => b.onclick = () => document.querySelector('[data-export="zones"]').click());
+    P.querySelectorAll('[data-pspan]').forEach(b => b.onclick = () => document.querySelector(`#spanSeg [data-span="${b.dataset.pspan}"]`).click());
+    P.querySelectorAll('[data-export2]').forEach(b => b.onclick = () => document.querySelector(`[data-export="${b.dataset.export2}"]`).click());
   }
 
   function drawChart() {
@@ -1556,6 +1641,63 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     });
   }
 
+  // ---- Periods side by side: the month, last 3 / 6 / 12 months and everything loaded ----
+  const PERIODS = [[1, 'Month'], [3, 'Last 3 months'], [6, 'Last 6 months'], [12, 'Last 12 months'], [0, 'All months']];
+  function periodRow(n) {
+    const ms0 = data.summary.map(s => s.month), ms = n ? ms0.slice(-n) : ms0, c = sumMonths(ms, gz), d = dealsIn(ms), r = received(ms);
+    return { n, ms, label: ms.length === 1 ? monthLabel(ms[0]) : `${MON[+ms[0].slice(5, 7) - 1]} ${ms[0].slice(2, 4)} – ${MON[+ms[ms.length - 1].slice(5, 7) - 1]} ${ms[ms.length - 1].slice(2, 4)}`, short: n && ms.length < n,
+      commission: c.commission, invoiced: c.invoicedLines, uninvoiced: c.uninvoiced, missed: c.missed, fees: c.fees, deals: d.length, newCount: c.newCount, renewalCount: c.renewalCount,
+      completed: d.filter(w => OK_STATES.includes(w.status)).length, collected: Math.round(r.reduce((a, x) => a + (x.amount || 0), 0) * 100) / 100, collectedCount: r.length };
+  }
+  function compareCard() {
+    const rows = PERIODS.map(([n]) => periodRow(n));
+    const line = (label, f, cls = '') => `<tr class="${cls}"><th scope="row">${label}</th>${rows.map(r => `<td class="r ${(r.n === span) ? 'cur' : ''}">${f(r)}</td>`).join('')}</tr>`;
+    return `<div class="card compare"><h2>All that has been done — by period${gz ? ' · ' + esc(zoneName(gz)) : ''} <span class="acts"><button class="btn sm" type="button" data-ktab="report">Open period report</button><button class="btn sm" type="button" data-export2="period">Export</button></span></h2>
+      <div class="tablewrap"><table><thead><tr><th></th>${rows.map(r => `<th class="r ${r.n === span ? 'cur' : ''}"><button class="phead" type="button" data-pspan="${r.n}" aria-pressed="${r.n === span}">${esc(PERIODS.find(p => p[0] === r.n)[1])}</button><div class="muted small">${esc(r.label)}${r.short ? ` · ${r.ms.length} mo` : ''}</div></th>`).join('')}</tr></thead><tbody>
+        ${line('Commission earned', r => `<b>${aedFull(r.commission)}</b>`)}
+        ${line('Invoiced to free zones', r => aedFull(r.invoiced))}
+        ${line('Not yet invoiced', r => aedFull(r.uninvoiced))}
+        ${line('Commission missed', r => aedFull(r.missed))}
+        ${line('Collected (received, incl. VAT)', r => `${aedFull(r.collected)}<div class="muted small">${r.collectedCount} invoice${r.collectedCount === 1 ? '' : 's'}</div>`)}
+        ${line('Gross fees to free zones', r => aedFull(r.fees))}
+        ${line('Deals · new / renewal', r => `${r.deals}<div class="muted small">${r.newCount} / ${r.renewalCount}</div>`)}
+        ${line('Deals complete', r => `${r.completed} of ${r.deals}`)}
+      </tbody></table></div>
+      <small class="note">Each column adds up the monthly figures for the months it names, ending ${esc(monthLabel(data.month))}. Click a column heading to show that period across the page. Collected = Invoice Checklist rows marked RECEIVED with "Received on" in those months.</small></div>`;
+  }
+
+  // ---- Period report: month by month and free zone by free zone ----
+  function report() {
+    const pm = data.pm, recd = m => received([m]).reduce((a, x) => a + (x.amount || 0), 0);
+    const mrow = m => { const s = data.summary.find(x => x.month === m), c = gz ? s.zones[gz] : s.total, d = dealsIn([m]); return { m, s, c, d, rec: recd(m) }; };
+    const rows = pm.slice().reverse().map(mrow), T = periodCell(gz), Td = dealsIn(pm), Trec = received(pm).reduce((a, x) => a + (x.amount || 0), 0);
+    const zrows = data.zones.filter(z => zoneOk(z.code) || z.code === 'OTHER' && !gz).map(z => ({ z, c: periodCell(z.code), rec: (data.commissionInvoices || []).filter(x => x.inTracker && x.status === 'RECEIVED' && x.zone === z.code && x.receivedOn && pm.includes(x.receivedOn.slice(0, 7))).reduce((a, x) => a + (x.amount || 0), 0) }));
+    const raised = (data.commissionInvoices || []).filter(c => zoneOk(c.zone) && c.date && pm.includes(c.date.slice(0, 7)));
+    return `<div class="card"><div class="statusrow">${PERIODS.map(([n, l]) => `<button class="chip" type="button" data-pspan="${n}" aria-pressed="${n === span}">${esc(l)}</button>`).join('')}
+        <span class="acts" style="margin-left:auto"><button class="btn sm" type="button" id="rp_csv">Export CSV</button></span></div>
+      <h2 style="margin:6px 0 4px">${esc(periodName(span))} · ${esc(data.periodLabel)}${gz ? ' · ' + esc(zoneName(gz)) : ''}</h2>
+      <p class="muted" style="margin:0 0 12px">${pm.length} month${pm.length === 1 ? '' : 's'} · commission AED ${aedFull(T.commission)} · invoiced AED ${aedFull(T.invoicedLines)} · not yet invoiced AED ${aedFull(T.uninvoiced)} · missed AED ${aedFull(T.missed)} · collected AED ${aedFull(Trec)}</p>
+      <h3 class="rh">Month by month</h3>
+      <div class="tablewrap"><table><thead><tr><th>Month</th><th>Status</th><th class="r">Deals</th><th class="r">New / Ren.</th><th class="r">Gross fees</th><th class="r">Commission</th><th class="r">Invoiced</th><th class="r">Not yet invoiced</th><th class="r">Missed</th><th class="r">Collected</th><th></th></tr></thead><tbody>
+        ${rows.map(({ m, s, c, d, rec }) => `<tr><td class="nw"><b>${monthLabel(m)}</b><div class="muted small">${esc(s.baseline || 'no data')}</div></td><td>${s.state === 'No data' ? '<span class="muted">—</span>' : pill(s.state)}</td><td class="r">${d.length}</td><td class="r">${c.newCount} / ${c.renewalCount}</td><td class="r">${aedFull(c.fees)}</td><td class="r"><b>${aedFull(c.commission)}</b></td><td class="r">${aedFull(c.invoicedLines)}</td><td class="r">${aedFull(c.uninvoiced)}</td><td class="r">${aedFull(c.missed)}</td><td class="r">${aedFull(rec)}</td><td class="nw"><button class="btn sm" type="button" data-rm="${m}">Deals</button></td></tr>`).join('')}
+        <tr class="total"><td colspan="2">Total</td><td class="r">${Td.length}</td><td class="r">${T.newCount} / ${T.renewalCount}</td><td class="r">${aedFull(T.fees)}</td><td class="r">${aedFull(T.commission)}</td><td class="r">${aedFull(T.invoicedLines)}</td><td class="r">${aedFull(T.uninvoiced)}</td><td class="r">${aedFull(T.missed)}</td><td class="r">${aedFull(Trec)}</td><td></td></tr>
+      </tbody></table></div>
+      <h3 class="rh">By free zone</h3>
+      <div class="tablewrap"><table><thead><tr><th>Free zone</th><th class="r">Deals</th><th class="r">New / Ren.</th><th class="r">Gross fees</th><th class="r">Commission</th><th class="r">Invoiced</th><th class="r">Not yet invoiced</th><th class="r">Missed</th><th class="r">Zoho invoiced (ex VAT)</th><th class="r">Collected</th></tr></thead><tbody>
+        ${zrows.map(({ z, c, rec }) => `<tr><td class="nw"><span class="zn"><i style="background:${SERIES[z.code]}"></i>${esc(z.name)}</span></td><td class="r">${c.count}</td><td class="r">${c.newCount} / ${c.renewalCount}</td><td class="r">${aedFull(c.fees)}</td><td class="r"><b>${aedFull(c.commission)}</b></td><td class="r">${aedFull(c.invoicedLines)}</td><td class="r">${aedFull(c.uninvoiced)}</td><td class="r">${aedFull(c.missed)}</td><td class="r">${aedFull(c.invoiced)}</td><td class="r">${aedFull(rec)}</td></tr>`).join('')}
+      </tbody></table></div>
+      <h3 class="rh">Commission invoices raised in the period (${raised.length})</h3>
+      ${raised.length ? `<div class="tablewrap"><table><thead><tr><th>Invoice</th><th>Free zone</th><th>Date</th><th class="r">Amount</th><th>Tracker</th><th>Received on</th><th>Zoho</th><th></th></tr></thead><tbody>${raised.map(c => `<tr><td class="nw"><b>${esc(c.number)}</b>${c.sheetRow ? `<div class="small">${rowLink(L.checklist(c.sheetRow), 'Checklist row ' + c.sheetRow)}</div>` : ''}</td><td>${esc(zoneName(c.zone))}</td><td class="nw">${fmtDate(c.date)}</td><td class="r">${aedFull(c.amount)}</td><td>${c.inTracker ? pill(c.status) : pill('Not on tracker')}</td><td class="nw">${fmtDate(c.receivedOn)}</td><td>${c.zoho ? pill(c.zoho.status) : '<span class="muted">—</span>'}</td><td><button class="btn sm" type="button" data-ri="${(data.commissionInvoices || []).indexOf(c)}">Explain</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No commission invoices dated in this period.</div>'}
+      <small class="note">Commission, invoiced, not yet invoiced and missed are the monthly summary figures (tracker where it covers the month — from ${esc(data.rules.trackerFrom ? monthLabel(data.rules.trackerFrom) : '—')} — otherwise the GP report checked against Zoho). Collected uses the Invoice Checklist's "Received on" date and includes VAT. Months before the tracker started show "Under review" because nothing on the tracker confirms them.</small></div>`;
+  }
+  function wireReport() {
+    const P = $('panes');
+    P.querySelectorAll('[data-pspan]').forEach(b => b.onclick = () => document.querySelector(`#spanSeg [data-span="${b.dataset.pspan}"]`).click());
+    P.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => goTx({ scope: 'all', from: b.dataset.rm + '-01', to: core.monthEnd(b.dataset.rm) }));
+    P.querySelectorAll('[data-ri]').forEach(b => b.onclick = () => explainChecklist(data.commissionInvoices[+b.dataset.ri]));
+    $('rp_csv').onclick = () => document.querySelector('[data-export="period"]').click();
+  }
+
   // ---- Transactions ----
   function work() {
     const base = txBase(), counts = countBy(base, w => w.status);
@@ -1563,7 +1705,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     return `<div class="card">${chips}
       <div class="fbar">
         <input type="search" id="f_q" value="${esc(fx.q)}" placeholder="Search client, company, invoice no., agent" aria-label="Search">
-        <div class="seg" style="border-color:var(--border)" role="group" aria-label="Months"><button type="button" class="btn sm" id="f_m1" aria-pressed="${fx.scope === 'month'}" style="${fx.scope === 'month' ? 'background:var(--ink);color:var(--page)' : 'color:var(--ink)'}">${monthLabel(data.month)}</button><button type="button" class="btn sm" id="f_m2" aria-pressed="${fx.scope === 'all'}" style="${fx.scope === 'all' ? 'background:var(--ink);color:var(--page)' : 'color:var(--ink)'}">All ${data.months.length} months</button></div>
+        <div class="seg" style="border-color:var(--border)" role="group" aria-label="Months"><button type="button" class="btn sm" id="f_m1" aria-pressed="${fx.scope === 'month' || (fx.scope === 'period' && span === 1)}" style="${fx.scope === 'month' || (fx.scope === 'period' && span === 1) ? 'background:var(--ink);color:var(--page)' : 'color:var(--ink)'}">${monthLabel(data.month)}</button>${span !== 1 && data.pm.length > 1 ? `<button type="button" class="btn sm" id="f_m3" aria-pressed="${fx.scope === 'period'}" style="${fx.scope === 'period' ? 'background:var(--ink);color:var(--page)' : 'color:var(--ink)'}">${esc(data.periodLabel)}</button>` : ''}<button type="button" class="btn sm" id="f_m2" aria-pressed="${fx.scope === 'all'}" style="${fx.scope === 'all' ? 'background:var(--ink);color:var(--page)' : 'color:var(--ink)'}">All ${data.months.length} months</button></div>
         <button class="btn sm" type="button" id="f_more" aria-expanded="${fx.more}">${fx.more ? 'Fewer filters' : 'More filters'}</button>
         <label class="btn sm" style="cursor:pointer"><input type="checkbox" id="f_problems" ${fx.problems ? 'checked' : ''} style="min-height:auto"> Needs action</label>
         <button class="btn sm" type="button" id="f_reset">Reset</button>
@@ -1587,7 +1729,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     const rows = txRows();
     $('txCount').textContent = `${rows.length} row${rows.length === 1 ? '' : 's'} · commission AED ${aedFull(rows.reduce((a, w) => a + (w.commission || 0), 0))}`;
     if (!rows.length) return '<div class="empty">Nothing matches these filters.</div>';
-    const base = fx.scope === 'all' ? data.workAll : data.work;
+    const base = txAllRows();
     return `<table><thead><tr><th>Client / company</th><th>Status</th><th>Free zone</th><th>Type</th><th>Date</th><th class="r">Commission</th><th>Commission invoice</th><th>Source rows</th><th></th></tr></thead><tbody>
       ${rows.map(w => `<tr><td><b>${esc(w.name)}</b>${w.client && w.client !== w.name ? `<div class="muted">${esc(w.client)}</div>` : ''}<div class="muted small">${esc(w.services)}${w.agent ? ' · ' + esc(w.agent) : ''}</div></td>
         <td style="min-width:190px">${pill(w.status)}${w.missing.length ? `<ul class="missing">${w.missing.slice(0, 2).map(x => `<li>${esc(x)}</li>`).join('')}${w.missing.length > 2 ? `<li>+${w.missing.length - 2} more</li>` : ''}</ul>` : ''}</td>
@@ -1599,15 +1741,15 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
       </tbody></table>`;
   }
   function wireWork() {
-    const base = () => fx.scope === 'all' ? data.workAll : data.work;
+    const base = txAllRows;
     const redraw = () => { $('workTable').innerHTML = workTable(); $('workTable').querySelectorAll('[data-x]').forEach(b => b.onclick = () => explainDeal(base()[+b.dataset.x])); };
     const bind = (id, key, ev = 'change') => { $(id).addEventListener(ev, e => { fx[key] = e.target.type === 'checkbox' ? e.target.checked : e.target.value; redraw(); }); };
     bind('f_type', 'type'); bind('f_source', 'source'); bind('f_tstatus', 'trackerStatus'); bind('f_ci', 'ciStatus'); bind('f_agent', 'agent'); bind('f_from', 'from'); bind('f_to', 'to'); bind('f_min', 'min', 'input'); bind('f_q', 'q', 'input'); bind('f_problems', 'problems');
     $('panes').querySelectorAll('[data-st]').forEach(b => b.onclick = () => { fx.status = b.dataset.st; render(); });
-    $('f_m1').onclick = () => { fx.scope = 'month'; render(); }; $('f_m2').onclick = () => { fx.scope = 'all'; render(); };
+    $('f_m1').onclick = () => { fx.scope = 'month'; render(); }; $('f_m2').onclick = () => { fx.scope = 'all'; render(); }; if ($('f_m3')) $('f_m3').onclick = () => { fx.scope = 'period'; render(); };
     $('f_more').onclick = () => { fx.more = !fx.more; render(); };
     $('f_reset').onclick = () => { fx = { ...TX0 }; render(); };
-    $('csv').onclick = () => saveCsv(`free-zone-transactions-${fx.scope === 'all' ? 'all-months' : data.month}.csv`, [TXHEAD, ...txRows().map(txLine)]);
+    $('csv').onclick = () => saveCsv(`free-zone-transactions-${fx.scope === 'all' ? 'all-months' : fx.scope === 'period' && span !== 1 ? data.pm[0] + '-to-' + data.month : data.month}.csv`, [TXHEAD, ...txRows().map(txLine)]);
     redraw();
   }
 
@@ -1784,6 +1926,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
         <li><b>Type</b> — Renewal if the Renewals flag is TRUE or the service mentions renewal; New if 0 VISA / With Visa is TRUE or the service says set-up, formation, start-up, "1 Visa", "1BL"…; otherwise Other.</li>
         <li><b>Invoiced / Not yet invoiced / Missed</b> — the tracker's Status column (Invoiced / Uninvoiced or blank / Missed).</li>
         <li><b>Still to collect</b> — the Invoice Checklist's "Still to collect" on TO COLLECT rows, as the tracker computes it (incl. VAT).</li>
+        <li><b>Periods</b> — Month, Last 3 / 6 / 12 months and All add up the monthly figures for the months ending with the month chosen at the top. The page loads every month that has a GP report (up to 24 months). "Collected" counts Invoice Checklist rows marked RECEIVED with "Received on" in the period (incl. VAT); "Still to collect" and "Renewals due" are always as of today.</li>
         <li><b>Month status</b> — Finalized when every commission line is invoiced or confirmed and the tracker total equals the GP report total; otherwise Under review.</li>
       </ul>
       <h2>Status of a deal (first rule that applies)</h2>
@@ -1819,13 +1962,12 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     const snap = await loadSnapshot().catch(() => null);
     if (snap) {
       inputs = snap; mode = 'snapshot'; await resolveSaver();
-      span = Math.min(12, Math.max(3, snap.months.length)); paintSpan();
-      build(bestMonth(snap, snap.month), snap.months.length); render();
+      build(bestMonth(snap, snap.month)); render();
       if (!canWrite) notice(`You are seeing the figures saved ${fmtWhen(snapMeta.savedAt)}${snapBy ? ' by ' + snapBy : ''}. Press "Refresh live" to read the sources yourself (needs Google Sheets, Google Drive and Zoho Analytics connected in your claude.ai).`);
     }
     if (db) db.doc('snapshot/current').onSnapshot(async s => {
       if (mode !== 'snapshot' || !s.exists || !snapMeta || s.data().version === snapMeta.version) return;
-      const fresh = await loadSnapshot().catch(() => null); if (fresh) { inputs = fresh; await resolveSaver(); build(data ? data.month : fresh.month, fresh.months.length); render(); notice('Newer figures were just saved — the page has updated.'); }
+      const fresh = await loadSnapshot().catch(() => null); if (fresh) { inputs = fresh; await resolveSaver(); build(data && covers(data.month) ? data.month : bestMonth(fresh, fresh.month)); render(); notice('Newer figures were just saved — the page has updated.'); }
     }, () => {});
     if (canWrite || !snap) { $('month').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`; await goLive(false, true); }
     show('loading', false);
