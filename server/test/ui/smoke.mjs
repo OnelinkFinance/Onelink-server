@@ -1055,6 +1055,42 @@ const fin5 = () => ({
   assert.equal(vm.detail.fin.chip, '1 of 3 checks failed');
 }
 
+// ── scenario 19b: coordinator deltas — notes stripped for Operations, no active manager, legacy INFO decision ──
+{
+  const c = make('maram');
+  const r = escReq('MGMT_REJECTED');
+  r.escalation.justification = undefined; // a manager raised it: removed for Operations
+  r.escalation.decision = { action: 'REJECT', by: 'adnan', byName: 'Adnan', title: 'CFO', atText: '09 Oct · 11:00' }; // no note
+  r.escalation.log = [{ atText: '09 Oct · 11:00', who: 'adnan', whoName: 'Adnan', action: 'REJECT' }];
+  c.setState({ requests: [r].concat(c.state.requests), reqId: 'FR-900', route: 'detail' });
+  let vm = c.renderVals();
+  resolveAll(markupOf(tpl), vm, seen);
+  noJunk(vm.detail.esc, 'esc');
+  assert.equal(vm.detail.esc.hasJust, false);
+  assert.equal(vm.detail.esc.hasNote, false);
+  assert.equal(vm.detail.esc.log[0].text, 'Adnan rejected the escalation');
+  // no active management account: a clear message, nothing sent
+  const n = make('maram');
+  n.setState({ accounts: n.state.accounts.map(a => a.dept === 'MANAGEMENT' ? Object.assign({}, a, { active: false }) : a) });
+  n.setState({ route: 'new', gate: { name: 'K', status: 'ok', token: 'vt', clientId: 'c1' }, form: Object.assign(n.blankForm(), { company: 'K', purpose: 'x', amount: '5', paid: 'Yes' }), formDocs: [],
+    finFail: { kind: 'checks', failed: [], finance: fin5(), token: 't', allowed: true, error: 'x', clientName: 'K', amount: 5, open: true, justification: 'A long enough justification text.', to: 'ALL' } });
+  vm = n.renderVals();
+  assert.equal(vm.finFail.targets.length, 1, 'only "All management"');
+  assert.match(vm.finFail.targetHint, /^No management account is active — Sven must activate/);
+  const before = calls.length;
+  n.sendEscalation();
+  assert.match(n.state.finFail.sendError, /^No management account is active/);
+  assert.equal(calls.length, before);
+  // legacy record: decision INFO carries the question
+  const l = make('maram');
+  const lg = escReq('MGMT_INFO');
+  lg.escalation.decision = { action: 'INFO', by: 'ahmed', byName: 'Ahmed', title: 'General Manager', atText: 'x', note: 'Which bank?' };
+  l.setState({ requests: [lg].concat(l.state.requests), reqId: 'FR-900', route: 'detail' });
+  vm = l.renderVals();
+  assert.equal(vm.detail.esc.canReply, true);
+  assert.equal(vm.detail.esc.decisionNote, 'Which bank?');
+}
+
 // ── scenario 20: brand — the logo replaces every coin badge; the page head carries title and icons; the title is kept ──
 {
   const markup = markupOf(tpl);

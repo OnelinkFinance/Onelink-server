@@ -983,26 +983,80 @@ function mergeMissing(col, items) {
 // ledger.json is the source of truth for the request history (rebuilt from the Alaan Card Invoices group).
 // It lives beside server.js, apart from the Claude Design export, and is applied on every start:
 // an empty server takes all of it; a server with data only gains the requests it is missing.
-// A platform reset records what it removed (db.purged) and when (db.resetAt): removed history never comes back,
-// and an emptied server is not mistaken for a first start.
+// A platform reset records what it removed (db.purged; the live ones also in db.purgedLive) and when (db.resetAt):
+// removed history never comes back, and an emptied server is not mistaken for a first start.
+//
+// Numbers: the live platform numbers new requests after the highest one it holds, so a newer ledger can bring history
+// under a number a live request already took (or took and a reset removed). That history is never dropped and no number
+// is ever used twice: it is imported under a fresh number, recorded in db.ledgerIds { ledger id: platform id } so every
+// later start maps it the same way. History ids are always looked up through that map.
+const idNum = id => Number(String(id ?? '').replace(/\D/g, '')) || 0;
+const isLiveRecord = r => !!(r && (r.createdAt || r.requestorId)); // created on the platform (history entries carry neither)
+const ledgerMap = () => (db.ledgerIds && typeof db.ledgerIds === 'object' && !Array.isArray(db.ledgerIds) ? db.ledgerIds : {});
+const platformIdOf = ledgerId => ledgerMap()[ledgerId] || ledgerId;
+const historyGone = id => (db.purged || []).includes(id) && !(db.purgedLive || []).includes(id);
+// Tombstones written before purgedLive existed do not say whether they were live or history. The ledger then ended at
+// FR-527 (LEDGER_PREVIOUS_MAX overrides it); live numbers were always handed out above every number the server held, so
+// a tombstone above the old ledger's end can only have been a live request. Done once (db.tombstones = 2); from then on every reset says which is which.
+const PREVIOUS_LEDGER_MAX = 527;
+function classifyTombstones() {
+  if (db.tombstones === 2) return false;
+  const old = (db.purged || []).filter(id => !(db.purgedLive || []).includes(id));
+  if (old.length) {
+    const inLedger = new Set((LEDGER.requests || []).map(r => r && r.id));
+    const hist = db.requests.filter(r => inLedger.has(r.id) && !isLiveRecord(r)).map(r => idNum(r.id));
+    // The previous ledger's end: the highest history id still here, the ids `previous` names (all from the old ledger), and
+    // never below FR-527 — where it ended in production — so purged history at the top is not mistaken for live requests.
+    const prevKeys = Object.keys((LEDGER.previous && typeof LEDGER.previous === 'object') ? LEDGER.previous : {}).map(idNum);
+    const oldMax = Math.max(Number(process.env.LEDGER_PREVIOUS_MAX) || PREVIOUS_LEDGER_MAX, ...hist, ...prevKeys);
+    const live = old.filter(id => idNum(id) > oldMax);
+    db.purgedLive = [...new Set((db.purgedLive || []).concat(live))];
+    console.log(`Ledger: ${old.length} earlier reset tombstones classified — ${live.length} live (above FR-${oldMax}), ${old.length - live.length} history.`);
+  }
+  db.tombstones = 2;
+  return true;
+}
+// Highest number the ledger occupies or will occupy (its own ids and the fresh numbers given to colliding entries).
+const ledgerMaxNo = () => Math.max(0, ...(LEDGER.requests || []).map(r => idNum(r && r.id)), ...Object.values(ledgerMap()).map(idNum));
+function mergeLedger() {
+  const map = { ...ledgerMap() }, purgedLive = new Set(db.purgedLive || []), add = [];
+  let next = null, remapped = 0;
+  for (const L of LEDGER.requests || []) {
+    if (!L || typeof L.id !== 'string') continue;
+    let pid = map[L.id];
+    if (!pid) {
+      const cur = db.requests.find(r => r.id === L.id);
+      if ((cur && isLiveRecord(cur)) || purgedLive.has(L.id)) {
+        if (next === null) next = Math.max(db.floorNo || 0, ledgerMaxNo(), ...db.requests.map(r => idNum(r.id)), ...(db.purged || []).map(idNum), ...Object.values(map).map(idNum));
+        pid = L.id.replace(/\d+$/, '') + (++next);
+        map[L.id] = pid; remapped++;
+        console.log(`Ledger: ${L.id} is taken by a ${cur ? 'live request' : 'live request removed in a reset'} — imported the history as ${pid}.`);
+      } else pid = L.id;
+    }
+    if (historyGone(pid)) continue; // removed history stays removed
+    add.push(pid === L.id ? L : { ...L, id: pid });
+  }
+  if (remapped) db.ledgerIds = map;
+  return { added: mergeMissing('requests', add), remapped };
+}
 // A newer ledger.json may also carry updated versions of history requests (later messages approved / credited / paid
 // them): `previous` maps each such id to the ledgerHash of the entry as the old ledger.json had it. A history request the
 // platform never touched still has exactly that fingerprint (and no field beyond the ledger's own): it is replaced by
-// the new entry. One that was edited on the platform keeps the platform's version.
-function applyLedgerUpdates(gone) {
+// the new entry. One that was edited on the platform keeps the platform's version. (Fingerprints use the ledger's id.)
+function applyLedgerUpdates() {
   const prev = LEDGER.previous && typeof LEDGER.previous === 'object' && !Array.isArray(LEDGER.previous) ? LEDGER.previous : {};
   const ids = Object.keys(prev);
   if (!ids.length) return 0;
   const entries = new Map((LEDGER.requests || []).filter(r => r && typeof r.id === 'string').map(r => [r.id, r]));
   let updated = 0, kept = 0;
   for (const id of ids) {
-    const entry = entries.get(id), i = db.requests.findIndex(r => r.id === id);
-    if (!entry || gone.has(id) || i < 0) continue;
+    const entry = entries.get(id), pid = platformIdOf(id), i = db.requests.findIndex(r => r.id === pid);
+    if (!entry || historyGone(pid) || i < 0) continue;
     const cur = db.requests[i];
-    if (cur.createdAt) continue; // created on the live platform, not history
-    const h = ledgerHash(cur);
-    if (h === ledgerHash(entry) && Object.keys(cur).every(k => LEDGER_KEYS.includes(k))) continue; // already the new version
-    if (h === prev[id] && Object.keys(cur).every(k => LEDGER_KEYS.includes(k))) { db.requests[i] = JSON.parse(JSON.stringify(entry)); updated++; }
+    if (isLiveRecord(cur)) continue; // created on the live platform, not history
+    const h = ledgerHash({ ...cur, id }), plain = Object.keys(cur).every(k => LEDGER_KEYS.includes(k));
+    if (h === ledgerHash(entry) && plain) continue; // already the new version
+    if (h === prev[id] && plain) { db.requests[i] = { ...JSON.parse(JSON.stringify(entry)), id: pid }; updated++; }
     else kept++;
   }
   console.log(`Ledger: updated ${updated} history requests (${kept} left as edited on the platform).`);
@@ -1011,20 +1065,23 @@ function applyLedgerUpdates(gone) {
 let LEDGER = { requests: [], chat: [], notifications: [], audit: [] };
 try {
   LEDGER = JSON.parse(fs.readFileSync(process.env.LEDGER_FILE ? path.resolve(process.env.LEDGER_FILE) : new URL('./ledger.json', import.meta.url), 'utf8'));
-  const gone = new Set(db.purged || []);
   if (!db.requests.length && !db.resetAt) {
     for (const c of COLS) if (Array.isArray(LEDGER[c])) db[c] = LEDGER[c];
+    db.tombstones = 2;
     db.rev++; persist(); console.log('Ledger: loaded', db.requests.length, 'requests into an empty server.');
   } else {
-    const n = mergeMissing('requests', (LEDGER.requests || []).filter(r => !gone.has(r.id)));
-    console.log('Ledger:', n ? 'added ' + n + ' missing requests.' : 'server already up to date.');
-    const u = applyLedgerUpdates(gone);
-    if (n || u) { db.rev++; persist(); } // persisted once
+    const c = classifyTombstones();
+    const { added, remapped } = mergeLedger();
+    console.log('Ledger:', added ? 'added ' + added + ' missing requests' + (remapped ? ` (${remapped} under new numbers)` : '') + '.' : 'server already up to date.');
+    const u = applyLedgerUpdates();
+    if (c || added || remapped || u) { db.rev++; persist(); } // persisted once
   }
 } catch (e) { console.error('Ledger not applied:', e.message); }
 const LEDGER_IDS = Object.fromEntries(COLS.map(c => [c, new Set((LEDGER[c] || []).map(x => x && x.id))]));
+// The platform ids of the history requests (through db.ledgerIds — read live, a restore can bring another map).
+const historyIds = () => new Set((LEDGER.requests || []).map(r => r && platformIdOf(r.id)));
 // History = imported from the ledger; everything else was created on the live platform.
-const isHistory = r => LEDGER_IDS.requests.has(r.id) && !r.createdAt;
+const isHistory = (r, ids = historyIds()) => ids.has(r.id) && !isLiveRecord(r);
 
 const clients = new Set(); // { res, user }
 const ops = u => u.dept === 'OPERATIONS' && !isMaster(u);
@@ -1208,7 +1265,8 @@ function tooBig(item) {
 const remaps = new Map(); // `${userKey}:${oldId}` -> { id, at }
 const DAY = 24 * 3600 * 1000;
 const numOf = id => Number(String(id).replace(/\D/g, '')) || 0;
-const nextRequestId = () => 'FR-' + (Math.max(db.floorNo || 0, db.requests.reduce((a, r) => Math.max(a, numOf(r.id)), 0)) + 1);
+// Never a number the ledger holds or will hold (its own ids and the fresh numbers given to colliding history).
+const nextRequestId = () => 'FR-' + (Math.max(db.floorNo || 0, ledgerMaxNo(), db.requests.reduce((a, r) => Math.max(a, numOf(r.id)), 0)) + 1);
 function resolveRequestId(userKey, id, maxAge = DAY) {
   const r = id && remaps.get(userKey + ':' + id);
   if (r && Date.now() - r.at > DAY) { remaps.delete(userKey + ':' + id); return id; }
@@ -1538,7 +1596,7 @@ function mountReset(app) {
   const reqIds = () => new Set(db.requests.map(r => r.id));
   const liveLog = (col, ids) => x => !LEDGER_IDS[col].has(x.id) && (!x.req || !ids.has(x.req)) && !KEEP_ACTIONS.includes(x.action);
   app.get('/api/admin/reset/preview', requireAuth, masterOnly, async (_q, s) => {
-    const live = db.requests.filter(r => !isHistory(r)), ids = reqIds();
+    const hids = historyIds(), live = db.requests.filter(r => !isHistory(r, hids)), ids = reqIds();
     s.json({ ok: true, live: live.map(r => ({ id: r.id, company: r.company, by: r.by, byName: uName(r.by), status: r.status, requested: r.requested, date: r.date })),
       history: { requests: db.requests.length - live.length }, notifications: db.notifications.length, audit: db.audit.length, chat: db.chat.length,
       liveLogs: { audit: db.audit.filter(liveLog('audit', ids)).length, chat: db.chat.filter(liveLog('chat', ids)).length },
@@ -1550,7 +1608,9 @@ function mountReset(app) {
     if (reason.length < 5) return s.status(422).json({ ok: false, error: 'Give a reason for the record.' });
     if (resetting) return s.status(409).json({ ok: false, error: 'A reset is already running.' });
     const want = new Set((Array.isArray(b.ids) ? b.ids : []).map(String));
-    const remove = new Set(db.requests.filter(r => (want.has(r.id) && !isHistory(r)) || (b.includeHistory === true && isHistory(r))).map(r => r.id));
+    const hids = historyIds();
+    const remove = new Set(db.requests.filter(r => (want.has(r.id) && !isHistory(r, hids)) || (b.includeHistory === true && isHistory(r, hids))).map(r => r.id));
+    const removeLive = db.requests.filter(r => remove.has(r.id) && !isHistory(r, hids)).map(r => r.id);
     if (!remove.size && !b.clearNotifications) return s.status(422).json({ ok: false, error: 'Nothing selected to remove.' });
     resetting = true;
     try {
@@ -1568,6 +1628,8 @@ function mountReset(app) {
       db.notifications = b.clearNotifications ? [] : db.notifications.filter(x => !tied(x) && !(hist && LEDGER_IDS.notifications.has(x.id)));
       db.audit = db.audit.filter(x => !tied(x) && !(hist && LEDGER_IDS.audit.has(x.id)) && !(logs && liveLog('audit', ids)(x)));
       db.purged = [...new Set((db.purged || []).concat([...remove]))];
+      db.purgedLive = [...new Set((db.purgedLive || []).concat(removeLive))]; // so a ledger entry with that number is never dropped
+      db.tombstones = 2;
       db.floorNo = floor;
       const removed = Object.fromEntries(COLS.map(c => [c, before[c] - db[c].length]));
       db.resetAt = new Date().toISOString();
@@ -1649,7 +1711,7 @@ function mount(app) {
       if (mapped !== item.id && (fresh || !ownReal)) item.id = mapped; // the renamed new request — never the user's real one
       else {
         const taken = db.requests.find(x => x.id === item.id);
-        const reused = !taken && numOf(item.id) <= (db.floorNo || 0); // a number from before the last reset
+        const reused = !taken && (numOf(item.id) <= (db.floorNo || 0) || numOf(item.id) <= ledgerMaxNo()); // a number from before the last reset, or one the ledger holds
         if ((taken && (taken.by !== item.by || (fresh && !sameSubmission(item, taken)))) || reused) {
           renamed = nextRequestId(); // its mapping is recorded below, once the request is accepted
           console.log(`Request number ${item.id} ${taken ? 'already belongs to ' + taken.by : 'was used before the last reset'}; ${q.user.key}'s new request saved as ${renamed}.`);

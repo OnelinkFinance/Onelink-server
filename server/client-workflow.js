@@ -249,7 +249,7 @@ const GATE_JS = `  verifyClient() {
     this.zohoCall(req).then(out => {
       const id = (this._idAlias && this._idAlias[req.id]) || req.id; // the server may have given it a new number
       const j = out.live ? out.json || {} : null;
-      this.zlDone({ ok: !!(j && j.approvalStatus && j.ok !== false), finance: j && j.finance, error: !(j && j.approvalStatus) });
+      this.zlDone({ ok: !!(j && j.approvalStatus && j.ok !== false), finance: j && j.finance, error: !(j && j.approvalStatus), conn: !!(j && j.reason === 'ZOHO_CONNECTION_FAILED') });
       if (!this.reqById(id)) return;
       if (j && j.approvalStatus) {
         // The server attaches the result to the request and pushes it to every screen (Sven's included).
@@ -564,8 +564,9 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       noEscalate: !ff.allowed || !ff.token,
       noEscalateText: conn ? 'Nothing was sent. Try again in a few minutes — the request cannot go ahead until both Zoho connections are verified.' : 'This request cannot be escalated. Contact Sven.',
       targets: [chip(all, 'All management', () => this.pickTarget('ALL'), 'ph ph-users-three')].concat(accts.map(a => chip(!all && sel.indexOf(a.key) >= 0, this.mgmtName(a.name, a.title), () => this.pickTarget(a.key), 'ph ph-user'))),
-      targetHint: all ? 'Every manager is notified; any of them can decide.' : picked.length ? 'Only ' + picked.map(a => this.mgmtName(a.name, a.title)).join(', ') + (picked.length === 1 ? ' is' : ' are') + ' notified and can decide.' : 'Pick at least one manager.',
-      targetHintFg: !all && !picked.length ? 'var(--fgRed)' : 'var(--mut2)',
+      noManagers: !accts.length,
+      targetHint: !accts.length ? 'No management account is active — Sven must activate Mr. Adnan, Mr. Ahmed or Mr. Eduard in Master Control → Users before this can be escalated.' : all ? 'Every manager is notified; any of them can decide.' : picked.length ? 'Only ' + picked.map(a => this.mgmtName(a.name, a.title)).join(', ') + (picked.length === 1 ? ' is' : ' are') + ' notified and can decide.' : 'Pick at least one manager.',
+      targetHintFg: !accts.length || (!all && !picked.length) ? 'var(--fgRed)' : 'var(--mut2)',
       recipients: 'You choose who it goes to. Sven is kept informed.',
       start: () => this.setFinFail({ open: true, sendError: '' }),
       cancel: () => this.setFinFail({ open: false, sendError: '' }),
@@ -585,6 +586,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     if (why.length < 15) return this.setFinFail({ sendError: 'Write at least 15 characters so management can decide.' });
     if (!ff.token) return this.setFinFail({ sendError: 'This check has expired — send the request again to re-run the financial checks.' });
     const to = this.escTargets();
+    if (!this.mgmtAccounts().length) return this.setFinFail({ sendError: 'No management account is active — ask Sven to activate one in Master Control → Users.' });
     if (to !== 'ALL' && !to.length) return this.setFinFail({ sendError: 'Pick at least one manager to send it to.' });
     if (this.state.formDocs.some(d => d.status !== 'done')) return this.setFinFail({ sendError: 'Hold on — the upload is still finishing.' });
     const d0 = new Date(f.date || Date.now()), d = isNaN(d0.getTime()) ? new Date() : d0, mo = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -649,7 +651,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     return {
       id: esc.id || '—',
       raised: 'Raised by ' + (esc.byName || this.nameOf(esc.by)) + (esc.atText ? ' · ' + esc.atText : ''),
-      justification: esc.justification || '—',
+      justification: esc.justification || '', hasJust: !!esc.justification, // removed for Operations when a manager raised it
       failed: failed, hasFailed: failed.length > 0,
       to: this.escToText(r, ', '),
       hasInfo: !!ir, infoLine: ir ? this.infoLine(ir) : '', infoAt: ir && ir.atText ? ir.atText : '',
@@ -1333,10 +1335,12 @@ const DETAIL_CARDS = `
               </div>
             </sc-if>
             <div style="display:grid; grid-template-columns:{{ L.grid2 }}; gap:12px 22px; margin-top:14px">
+              <sc-if value="{{ detail.esc.hasJust }}" hint-placeholder-val="{{ true }}">
               <div>
                 <div style="${LABEL}">Justification</div>
                 <div style="font-size:13px; color:var(--ink2); margin-top:3px; line-height:1.5; overflow-wrap:anywhere">{{ detail.esc.justification }}</div>
               </div>
+              </sc-if>
               <div>
                 <div style="${LABEL}">Sent to</div>
                 <div style="font-size:13px; color:var(--ink2); margin-top:3px; line-height:1.5">{{ detail.esc.to }}</div>
