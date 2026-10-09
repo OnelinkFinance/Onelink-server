@@ -97,7 +97,7 @@ const seen = new Map();
   r.escalation.log.push({ atText: '07 Oct · 15:00', who: 'adnan', whoName: 'Adnan', action: 'APPROVE', note: 'Go ahead' });
   c.setState({ requests: [r].concat(c.state.requests), reqId: 'FR-900', route: 'detail', peekId: 'FR-900', masterTab: 'reset', notifOpen: true });
   c.setState({ gate: { name: 'Kenenia LTD', status: 'ok', token: 'vt', clientId: 'c1' }, form: Object.assign(c.blankForm(), { company: 'Kenenia LTD', purpose: 'Renewal', amount: '12520', paid: 'No — not yet' }), formDocs: [] });
-  c.setState({ finFail: { failed: r.escalation.failed, finance: finance(false), token: 'esc-tok', allowed: true, error: 'Client does not have sufficient balance to request funds. Please contact Sven.', clientName: 'Kenenia LTD', amount: 12520, open: true, justification: 'short', sendError: 'Write at least 15 characters so management can decide.' } });
+  c.setState({ finFail: { failed: r.escalation.failed, finance: finance(false), token: 'esc-tok', allowed: true, error: 'Client does not have sufficient balance. You may escalate to Management.', clientName: 'Kenenia LTD', amount: 12520, open: true, justification: 'short', sendError: 'Write at least 15 characters so management can decide.' } });
   c.setState({ reset: { data: { ok: true, live: [{ id: 'FR-900', company: 'Kenenia LTD', by: 'maram', byName: 'Maram', status: 'ESCALATED', requested: 12520, date: '7 Oct' }], history: { requests: 268 }, notifications: 40, audit: 120, chat: 300, liveLogs: { audit: 11, chat: 5 }, backups: [{ id: 'BK-1', atText: '06 Oct · 10:00', by: 'Sven', reason: 'test', counts: { requests: 3, chat: 2, notifications: 9, audit: 4 } }] }, sel: { 'FR-900': true }, clearNotifs: true, includeHistory: true, reason: 'x', confirm: 'RESET', result: { ok: true, backupId: 'BK-2', removed: { requests: 1, chat: 0, notifications: 3, audit: 2 }, kept: { requests: 268, chat: 300, notifications: 0, audit: 118 } } } });
   c.openModal('chase', 'FR-900');
   c.setState({ modal: Object.assign({}, c.state.modal, { files: [{ key: 'k1', name: 'inv.pdf', size: 2048, type: 'Invoice', status: 'done', fileId: 'F1' }] }) });
@@ -109,7 +109,7 @@ const seen = new Map();
   assert.equal(vm.detail.fin.chip, '1 of 3 checks failed');
   assert.equal(vm.detail.fin.checks[0].detail, 'AED 3,000 against AED 12,520');
   assert.match(vm.detail.esc.decisionLine, /^Approved & proceed — Mr\. Adnan \(CFO\)/);
-  assert.equal(vm.detail.esc.to, 'Mr. Adnan (CFO) · Mr. Ahmed (General Manager) · Mr. Eduard (Chief Legal Officer)');
+  assert.equal(vm.detail.esc.to, 'Mr. Adnan (CFO), Mr. Ahmed (General Manager), Mr. Eduard (Chief Legal Officer)');
   assert.equal(vm.detail.canVoid, true);
   assert.equal(vm.detail.canChase, true);
   assert.equal(vm.detail.showDecide, true, 'decisions on MGMT_APPROVED for Sven');
@@ -241,13 +241,13 @@ const seen = new Map();
   c.setState({ route: 'new', gate: { name: 'Kenenia LTD', status: 'ok', token: 'vt', clientId: 'c1' }, form: Object.assign(c.blankForm(), { company: 'Kenenia LTD', purpose: 'Renewal', amount: '12520', paid: 'No', date: '2026-10-07' }), formDocs: [{ key: 'f1', name: 'inv.pdf', size: 10, type: 'Invoice', status: 'done', fileId: 'F9' }] });
   const realFetch = globalThis.fetch;
   let preBody = null;
-  globalThis.fetch = (u, o) => { preBody = JSON.parse(o.body); return Promise.resolve({ status: 422, json: () => Promise.resolve({ ok: false, reason: 'FINANCIAL_CHECKS_FAILED', error: 'Client does not have sufficient balance to request funds. Please contact Sven.', failed: [{ key: 'CFD', label: 'Customer Fund Disbursement account', message: 'Not enough' }], finance: finance(false), escalate: { allowed: true, token: 'esc-tok' } }) }); };
+  globalThis.fetch = (u, o) => { preBody = JSON.parse(o.body); return Promise.resolve({ status: 422, json: () => Promise.resolve({ ok: false, reason: 'FINANCIAL_CHECKS_FAILED', error: 'Client does not have sufficient balance. You may escalate to Management.', failed: [{ key: 'CFD', label: 'Customer Fund Disbursement account', message: 'Not enough' }], finance: finance(false), escalate: { allowed: true, token: 'esc-tok' } }) }); };
   c.send(true);
   await tick(); await tick(); await tick();
   globalThis.fetch = realFetch;
   assert.equal(preBody.paid, 'No', 'precheck sends paid');
   assert.equal(c.state.errors.summary, null, 'the failed-checks panel carries the message, not the summary box');
-  assert.equal(c.state.finFail.error, 'Client does not have sufficient balance to request funds. Please contact Sven.');
+  assert.equal(c.state.finFail.error, 'Client does not have sufficient balance. You may escalate to Management.');
   let vm = c.renderVals();
   resolveAll(markupOf(tpl), vm, seen);
   assert.equal(vm.finFail.show, true);
@@ -764,6 +764,294 @@ const seen = new Map();
   vm = s2.renderVals();
   assert.ok(vm.detail.fields.some(f => f.value === 'Using existing credits'));
   assert.ok(vm.peek.facts.some(f => f.label === 'Client already paid us?' && f.value === 'Using existing credits'));
+}
+
+// ── round 2 helpers ──
+const noJunk = (v, where, path = '') => {
+  if (typeof v === 'string') { assert.ok(!/undefined|NaN|\[object Object\]/.test(v), where + path + ' = ' + v); return; }
+  if (Array.isArray(v)) return v.forEach((x, i) => noJunk(x, where, path + '[' + i + ']'));
+  if (v && typeof v === 'object') for (const k of Object.keys(v)) noJunk(v[k], where, path + '.' + k);
+};
+const fin5 = () => ({
+  id: 'FV-5B5B5B5B', atText: '09 Oct · 10:00', ok: false, source: 'Zoho Books + Zoho Analytics', route: 'BOOKS_CROSSCHECK',
+  connections: { analytics: true, books: true, atText: '09 Oct · 10:00' }, primary: { ok: false, code: 'INSUFFICIENT', text: 'The Zoho Analytics balance does not cover the amount' },
+  checks: [
+    { key: 'CFD', label: 'Customer Fund Disbursement account', ok: false, message: 'Client does not have sufficient balance', items: [{ label: 'Funds available (Books live)', ok: false, text: 'short' }] },
+    { key: 'COGS', label: 'Cost of Goods Sold account', ok: true, message: 'Fine', items: [] },
+    { key: 'NOTES', label: 'Credit notes / debit notes', ok: false, message: 'A credit note is still in draft', items: [] },
+    { key: 'JOURNALS', label: 'Journals', ok: true, message: 'Journals match Zoho Analytics', items: [] },
+    { key: 'INVOICES', label: 'Invoice payment verification', ok: true, message: 'Paid', items: [] }
+  ]
+});
+
+// ── scenario 16: Operations — escalated request: waiting card, five-check finance card, info request and reply ──
+{
+  const c = make('maram');
+  const r = escReq('ESCALATED', { finance: fin5() });
+  r.escalation.to = [{ key: 'adnan', name: 'Adnan', title: 'CFO' }, { key: 'eduard', name: 'Eduard', title: 'Chief Legal Officer' }];
+  r.escalation.routing = 'SELECTED';
+  r.escalation.at = new Date(Date.now() - 2 * 3600e3).toISOString();
+  c.setState({ requests: [r].concat(c.state.requests), reqId: 'FR-900', route: 'detail', peekId: 'FR-900' });
+  let vm = c.renderVals();
+  resolveAll(markupOf(tpl), vm, seen);
+  noJunk(vm.detail, 'detail'); noJunk(vm.peek, 'peek');
+  assert.equal(vm.detail.wait.show, true);
+  assert.equal(vm.detail.wait.title, 'Waiting for management');
+  assert.equal(vm.detail.wait.to, 'Sent to Mr. Adnan (CFO), Mr. Eduard (Chief Legal Officer)');
+  assert.equal(vm.detail.wait.since, 'Since 07 Oct · 14:06 · 2 h ago');
+  assert.equal(vm.detail.wait.canReply, false);
+  assert.ok(!/AED|\d,\d{3}/.test([vm.detail.wait.title, vm.detail.wait.to, vm.detail.wait.since, vm.detail.wait.line, vm.detail.wait.infoLine].join(' ')), 'no amounts on the waiting card');
+  assert.equal(vm.detail.fin.chip, '2 of 5 checks failed');
+  assert.equal(vm.detail.fin.checks.length, 5);
+  assert.equal(vm.detail.fin.route, 'Zoho Analytics → Zoho Books cross-verification');
+  assert.equal(vm.detail.fin.hasConn, true);
+  assert.deepEqual(vm.detail.fin.conn.map(x => x.label + ':' + x.ok), ['Zoho Analytics:true', 'Zoho Books:true']);
+  assert.equal(vm.detail.fin.connAt, 'Connections verified 09 Oct · 10:00');
+  assert.equal(vm.detail.fin.primary, 'Zoho Analytics: The Zoho Analytics balance does not cover the amount');
+  assert.equal(vm.detail.esc.to, 'Mr. Adnan (CFO), Mr. Eduard (Chief Legal Officer)');
+  assert.equal(vm.peek.mgmtDecide, false);
+  assert.equal(vm.navs.some(n => n.label === 'Management Requests'), false, 'Operations never see the nav item');
+  assert.equal(vm.r_mgmt, false);
+  c.setState({ route: 'mgmt' });
+  assert.equal(c.renderVals().r_mgmt, false, 'Operations never see the page');
+  assert.equal(c.mgmtVals().groups.length, 0);
+  assert.equal(c.landingRoute('maram'), 'home');
+  // management asks for more information: status stays ESCALATED, the requester sees the question and replies
+  const q = Object.assign({}, r, { escalation: Object.assign({}, r.escalation, { infoRequest: { by: 'eduard', byName: 'Eduard', title: 'Chief Legal Officer', atText: '09 Oct · 12:00', note: 'Send the bank slip' } }) });
+  c.setState({ requests: c.state.requests.map(x => x.id === 'FR-900' ? q : x), route: 'detail' });
+  vm = c.renderVals();
+  resolveAll(markupOf(tpl), vm, seen);
+  assert.equal(vm.detail.st.label, 'Awaiting Management Decision');
+  assert.equal(vm.detail.wait.info, true);
+  assert.equal(vm.detail.wait.infoLine, 'More information requested by Mr. Eduard (Chief Legal Officer): Send the bank slip');
+  assert.equal(vm.detail.wait.canReply, true);
+  assert.equal(vm.detail.esc.hasInfo, true);
+  assert.equal(vm.detail.esc.canReply, false, 'one Reply button: the waiting card has it');
+  assert.equal(vm.peek.canReply, true);
+  assert.equal(vm.detail.nextText, 'Management needs more information. Reply to them below.');
+  c.setState({ route: 'board', tab: 'tasks' });
+  vm = c.renderVals();
+  const sec = vm.sections.find(sc => sc.rows.some(x => x.num === 'FR-900'));
+  assert.equal(sec.title, 'Management needs something from you');
+  assert.equal(sec.rows.find(x => x.num === 'FR-900').actLabel, 'Reply to management');
+  vm.detail.wait.reply && null;
+  c.setState({ route: 'detail' });
+  c.renderVals().detail.wait.reply();
+  assert.equal(c.state.modal.kind, 'mgmtReply');
+  replies['/api/requests/FR-900/escalation/reply'] = { ok: true, status: 200, json: { ok: true, item: r } };
+  c.setState({ modal: Object.assign({}, c.state.modal, { value: 'Bank slip uploaded' }) });
+  c.confirmModal(); await tick(); await tick();
+  assert.deepEqual(calls.filter(x => x.path === '/api/requests/FR-900/escalation/reply').at(-1).body, { note: 'Bank slip uploaded' });
+  assert.equal(c.state.modal, null);
+  // Amina (Master Operations Control) may reply too
+  const a = make('amina');
+  a.setState({ requests: [q].concat(a.state.requests), reqId: 'FR-900', route: 'detail' });
+  assert.equal(a.renderVals().detail.wait.canReply, true);
+}
+
+// ── scenario 17: management routing — only the managers it was sent to decide; Management Requests page ──
+{
+  const r = escReq('ESCALATED', { finance: fin5() });
+  r.escalation.to = [{ key: 'adnan', name: 'Adnan', title: 'CFO' }, { key: 'eduard', name: 'Eduard', title: 'Chief Legal Officer' }];
+  r.escalation.at = new Date().toISOString();
+  const others = [
+    escReq('MGMT_APPROVED', { id: 'FR-901', company: 'Approved Co' }),
+    escReq('MGMT_REJECTED', { id: 'FR-902', company: 'Rejected Co' }),
+    escReq('VOID', { id: 'FR-903', company: 'Void Co' }),
+    escReq('ESCALATED', { id: 'FR-904', company: 'Asked Co' })
+  ];
+  others[1].escalation.decision = { action: 'REJECT', by: 'adnan', byName: 'Adnan', title: 'CFO', atText: '09 Oct · 11:00' };
+  others[3].escalation.infoRequest = { by: 'ahmed', byName: 'Ahmed', title: 'General Manager', atText: 'now', note: 'Which bank?' };
+  const ahmed = make('ahmed');
+  ahmed.setState({ requests: [r].concat(others, ahmed.state.requests), reqId: 'FR-900', route: 'detail', peekId: 'FR-900' });
+  let vm = ahmed.renderVals();
+  assert.equal(vm.detail.esc.canDecide, false, 'not sent to Mr. Ahmed');
+  assert.equal(vm.peek.mgmtDecide, false);
+  assert.equal(vm.detail.nextText, 'Escalated to management — waiting for their decision.');
+  const adnan = make('adnan');
+  adnan.setState({ requests: [r].concat(others, adnan.state.requests), reqId: 'FR-900', route: 'detail', peekId: 'FR-900' });
+  vm = adnan.renderVals();
+  resolveAll(markupOf(tpl), vm, seen);
+  assert.equal(vm.detail.esc.canDecide, true);
+  assert.equal(vm.peek.mgmtDecide, true);
+  assert.equal(vm.detail.wait.show, false, 'the waiting card is for Operations');
+  // the raiser never decides
+  const own = make('adnan');
+  own.setState({ requests: [Object.assign({}, r, { escalation: Object.assign({}, r.escalation, { by: 'adnan' }) })].concat(own.state.requests), reqId: 'FR-900', route: 'detail' });
+  assert.equal(own.renderVals().detail.esc.canDecide, false);
+  // nav, landing, page
+  assert.equal(adnan.landingRoute('adnan'), 'mgmt');
+  const nav = vm.navs.find(n => n.label === 'Management Requests');
+  assert.ok(nav && nav.hasIcon && nav.icon === 'ph ph-briefcase');
+  assert.equal(nav.badge, '2', 'awaiting escalations sent to Mr. Adnan (FR-904 went to everyone; an open question still counts as awaiting)');
+  assert.equal(ahmed.renderVals().navs.find(n => n.label === 'Management Requests').badge, '1', 'Mr. Ahmed: only FR-904 was sent to him');
+  adnan.setState({ route: 'mgmt' });
+  vm = adnan.renderVals();
+  resolveAll(markupOf(tpl), vm, seen);
+  noJunk(vm.mgmtReq, 'mgmtReq');
+  assert.equal(vm.r_mgmt, true);
+  assert.deepEqual(vm.mgmtReq.groups.map(g => g.title + ':' + g.count), ['Awaiting decision:2', 'Approved – waiting for Sven:1', 'Rejected by management:1', 'Closed:1']);
+  const aw = vm.mgmtReq.groups[0].rows;
+  assert.equal(aw.find(x => x.id === 'FR-900').mine, true);
+  assert.equal(aw.find(x => x.id === 'FR-900').to, 'To Mr. Adnan (CFO), Mr. Eduard (Chief Legal Officer)');
+  assert.equal(aw.find(x => x.id === 'FR-900').amount, adnan.fmt(12520));
+  assert.equal(aw.find(x => x.id === 'FR-904').info, true);
+  assert.equal(vm.mgmtReq.groups[2].rows[0].status, 'Rejected by Management');
+  aw[0].go();
+  assert.equal(adnan.state.route, 'detail');
+  // phone: the bottom nav swaps "Request" for Management Requests (the header keeps its + button)
+  adnan.setState({ vw: 390 });
+  vm = adnan.renderVals();
+  assert.ok(vm.bottomNav.some(b => b.route === 'mgmt' && b.label === 'Management'));
+  assert.ok(!vm.bottomNav.some(b => b.route === 'new'));
+  assert.ok(vm.bottomNav.length <= 5);
+  // Sven sees the section too; every awaiting one counts for him
+  const sv = make('sven');
+  sv.setState({ requests: [r].concat(others, sv.state.requests), route: 'mgmt' });
+  vm = sv.renderVals();
+  assert.equal(vm.r_mgmt, true);
+  assert.equal(vm.navs.find(n => n.label === 'Management Requests').badge, '2');
+  assert.ok(vm.palette && sv.landingRoute('sven') === 'home');
+  // empty: no escalations at all
+  const e0 = make('eduard');
+  e0.setState({ requests: e0.state.requests.filter(x => !x.escalation), route: 'mgmt' });
+  vm = e0.renderVals();
+  resolveAll(markupOf(tpl), vm, seen);
+  assert.equal(vm.mgmtReq.empty, true);
+  assert.equal(vm.mgmtReq.groups[0].empty, true);
+  assert.equal(vm.mgmtReq.groups[0].emptyText, 'Nothing is waiting on you — all caught up.');
+}
+
+// ── scenario 18: MGMT_REJECTED everywhere statuses are mapped ──
+{
+  const r = escReq('MGMT_REJECTED');
+  r.escalation.decision = { action: 'REJECT', by: 'adnan', byName: 'Adnan', title: 'CFO', atText: '09 Oct · 11:00' };
+  const s = make('sven');
+  s.setState({ requests: [r].concat(s.state.requests), reqId: 'FR-900', route: 'detail', peekId: 'FR-900' });
+  let vm = s.renderVals();
+  assert.equal(vm.detail.st.label, 'Rejected by Management');
+  assert.equal(vm.detail.st.fg, 'var(--fgRed)');
+  assert.equal(vm.detail.nextIcon, 'ph ph-prohibit');
+  assert.match(vm.detail.nextText, /^Rejected by management/);
+  assert.match(vm.detail.esc.decisionLine, /^Rejected by management — Mr\. Adnan \(CFO\)/);
+  assert.ok(vm.peek.facts.some(f => f.label === 'Escalation' && f.value === 'Rejected by Mr. Adnan (CFO)'));
+  assert.equal(vm.peek.canDecide, false);
+  assert.equal(vm.detail.showDecide, false);
+  s.setState({ route: 'board', tab: 'done' });
+  vm = s.renderVals();
+  assert.ok(vm.sections.find(sc => sc.title === 'Rejected by management').rows.some(x => x.num === 'FR-900'));
+  const m = make('maram');
+  m.setState({ requests: [r].concat(m.state.requests), route: 'board', tab: 'tasks' });
+  vm = m.renderVals();
+  const row = vm.sections.find(sc => sc.title === 'Rejected by management').rows.find(x => x.num === 'FR-900');
+  assert.equal(row.actLabel, 'See reason');
+  assert.equal(s.undoable(r), false);
+}
+
+// ── scenario 19: Send → loader; connection failure (no escalation); recipients picker; escalation sends `to` ──
+{
+  const c = make('maram');
+  c.setState({ route: 'new', gate: { name: 'Kenenia LTD', status: 'ok', token: 'vt', clientId: 'c1' }, form: Object.assign(c.blankForm(), { company: 'Kenenia LTD', purpose: 'Renewal', amount: '12520', paid: 'Yes', date: '2026-10-09' }), formDocs: [{ key: 'f1', name: 'inv.pdf', size: 10, type: 'Invoice', status: 'done', fileId: 'F9' }] });
+  const realFetch = globalThis.fetch;
+  let release;
+  globalThis.fetch = () => new Promise(res => { release = res; });
+  c.send(true);
+  let vm = c.renderVals();
+  resolveAll(markupOf(tpl), vm, seen);
+  noJunk(vm.zl, 'zl');
+  assert.equal(vm.zl.show, true, 'loader up while Zoho is checked');
+  assert.equal(vm.zl.running, true);
+  assert.equal(vm.zl.steps.length, 4);
+  assert.equal(vm.zl.steps[0].label, 'Verifying Zoho connections');
+  assert.equal(vm.zl.steps[2].label, 'Cross-checking Zoho Books: journals, credit & debit notes, payments');
+  assert.ok(['Crunching numbers…', 'Checking journals…', 'Talking to Zoho…', 'Matching invoices to payments…', 'Counting credit notes…', 'Almost there…'].includes(vm.zl.msg));
+  assert.equal(vm.zl.barW, '92%');
+  assert.match(vm.zl.barAnim, /^zlFill /);
+  assert.ok(!/AED|\d,\d{3}/.test([vm.zl.title, vm.zl.sub, vm.zl.msg].concat(vm.zl.steps.map(x => x.label + x.note)).join(' ')), 'no figures on the loader');
+  release({ status: 503, json: () => Promise.resolve({ ok: false, reason: 'ZOHO_CONNECTION_FAILED', error: 'Zoho Analytics and Zoho Books could not both be verified — the request is blocked and Sven has been notified.', connections: { analytics: { ok: true }, books: { ok: false } } }) });
+  await tick(); await tick(); await tick();
+  vm = c.renderVals();
+  resolveAll(markupOf(tpl), vm, seen);
+  assert.equal(vm.zl.done, true);
+  assert.equal(vm.zl.barW, '100%');
+  assert.equal(vm.finFail.show, true);
+  assert.equal(vm.finFail.error, 'Zoho Analytics and Zoho Books could not both be verified — the request is blocked and Sven has been notified.');
+  assert.equal(vm.finFail.canStart, false, 'no escalation on a connection failure');
+  assert.equal(vm.finFail.noEscalate, true);
+  assert.deepEqual(vm.finFail.rows.map(x => x.label + ':' + x.message), ['Zoho Analytics:Connection verified', 'Zoho Books:Could not be verified']);
+  assert.equal(vm.finFail.count, 'Blocked');
+  c.setState({ zl: null });
+  // failed checks (five, Books cross-check) → escalate with a chosen recipient
+  globalThis.fetch = () => Promise.resolve({ status: 422, json: () => Promise.resolve({ ok: false, reason: 'FINANCIAL_CHECKS_FAILED', error: 'Client does not have sufficient balance. You may escalate to Management.', failed: fin5().checks.filter(x => !x.ok).map(x => ({ key: x.key, label: x.label, message: x.message })), finance: fin5(), escalate: { allowed: true, token: 'esc-tok' } }) });
+  c._pre = null;
+  c.send(true);
+  await tick(); await tick(); await tick();
+  globalThis.fetch = realFetch;
+  vm = c.renderVals();
+  assert.equal(vm.finFail.count, '2 of 5 checks failed');
+  assert.equal(vm.finFail.sub, 'Zoho Analytics → Zoho Books cross-verification · 09 Oct · 10:00 · FV-5B5B5B5B');
+  vm.finFail.start();
+  vm = c.renderVals();
+  resolveAll(markupOf(tpl), vm, seen);
+  noJunk(vm.finFail, 'finFail');
+  assert.deepEqual(vm.finFail.targets.map(t => t.label + (t.on ? '*' : '')), ['All management*', 'Mr. Adnan (CFO)', 'Mr. Ahmed (General Manager)', 'Mr. Eduard (Chief Legal Officer)']);
+  vm.finFail.targets[1].go();
+  vm = c.renderVals();
+  assert.deepEqual(vm.finFail.targets.map(t => t.on), [false, true, false, false]);
+  assert.equal(vm.finFail.targetHint, 'Only Mr. Adnan (CFO) is notified and can decide.');
+  vm.finFail.targets[1].go(); // none picked
+  c.setFinFail({ justification: 'Client paid in cash today, receipt follows Monday.' });
+  c.sendEscalation();
+  assert.equal(c.state.finFail.sendError, 'Pick at least one manager to send it to.');
+  vm = c.renderVals();
+  assert.equal(vm.finFail.targetHintFg, 'var(--fgRed)');
+  vm.finFail.targets[3].go(); vm = c.renderVals(); vm.finFail.targets[1].go();
+  let relEsc;
+  replies['/api/requests/escalate'] = () => new Promise(res => { relEsc = res; });
+  c._sync = { requests: c.state.requests };
+  c.sendEscalation();
+  vm = c.renderVals();
+  assert.equal(vm.zl.show, true, 'loader while the escalation is sent');
+  assert.equal(vm.zl.steps[3].label, 'Sending to management');
+  assert.deepEqual(calls.filter(x => x.path === '/api/requests/escalate').at(-1).body.to, ['eduard', 'adnan']);
+  relEsc({ ok: true, status: 200, json: { ok: true, id: 'FR-905', item: escReq('ESCALATED', { id: 'FR-905' }) } });
+  await tick(); await tick();
+  assert.equal(c.state.reqId, 'FR-905');
+  assert.equal(c.state.zl.done, true);
+  c.setState({ zl: null });
+  // "All management" (default) is sent as 'ALL'
+  c.setState({ route: 'new', gate: { name: 'Kenenia LTD', status: 'ok', token: 'vt', clientId: 'c1' }, form: Object.assign(c.blankForm(), { company: 'Kenenia LTD', purpose: 'Renewal', amount: '500', paid: 'Yes' }), formDocs: [],
+    finFail: { kind: 'checks', failed: [], finance: fin5(), token: 'esc-2', allowed: true, error: 'x', clientName: 'Kenenia LTD', amount: 500, open: true, justification: 'A long enough justification text.', to: 'ALL' } });
+  replies['/api/requests/escalate'] = { ok: true, status: 200, json: { ok: true, id: 'FR-906', item: escReq('ESCALATED', { id: 'FR-906' }) } };
+  c.sendEscalation(); await tick(); await tick();
+  assert.equal(calls.filter(x => x.path === '/api/requests/escalate').at(-1).body.to, 'ALL');
+  c.setState({ zl: null });
+  // a finance answer without route/connections (older server) still renders cleanly
+  const old = make('sven');
+  old.setState({ requests: [escReq('NEW', { escalation: null })].concat(old.state.requests), reqId: 'FR-900', route: 'detail' });
+  vm = old.renderVals();
+  noJunk(vm.detail.fin, 'fin');
+  assert.equal(vm.detail.fin.route, 'Checked in Zoho Books + Zoho Analytics');
+  assert.equal(vm.detail.fin.hasConn, false);
+  assert.equal(vm.detail.fin.chip, '1 of 3 checks failed');
+}
+
+// ── scenario 20: brand — the logo replaces every coin badge; the page head carries title and icons; the title is kept ──
+{
+  const markup = markupOf(tpl);
+  assert.equal((markup.match(/<img src="\/brand\/logo\.png" alt="OneLink"/g) || []).length, 3, 'header, boot screen, sign-in');
+  assert.ok(!/<span[^>]*><i class="ph ph-hand-coins"/.test(markup.replace(/\s+/g, ' ')), 'no coin badge left');
+  assert.ok(tpl.includes('<title>OneLink Funds</title>'));
+  assert.ok(tpl.includes('<link rel="icon" type="image/png" sizes="32x32" href="/brand/icon-32.png">'));
+  assert.ok(tpl.includes('<link rel="icon" href="/favicon.ico" sizes="any">'));
+  const sets = [...tpl.slice(tpl.indexOf('<script type="text/x-dc"')).matchAll(/document\.title\s*=(?!=)\s*([^;]*);/g)].map(m => m[1].trim());
+  assert.ok(sets.length >= 1 && sets.every(v => v === 'T'), 'nothing else sets document.title: ' + sets.join(' | '));
+  const c = make('sven');
+  const doc = { title: 'Bundled Page', head: {} };
+  globalThis.document = doc;
+  c.keepTitle();
+  assert.equal(doc.title, 'OneLink Funds');
+  delete globalThis.document;
 }
 
 const bad = [...seen].filter(([, s]) => s !== 'ok');

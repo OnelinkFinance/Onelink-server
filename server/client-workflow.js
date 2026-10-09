@@ -19,6 +19,7 @@ const NOT_FOUND = 'Client not found in Zoho Books. Cannot proceed.';
 const INSUFFICIENT = 'Client does not have sufficient balance in Zoho Analytics. Flagging Sven for review.';
 const PROVISIONAL = 'Pending Sven Approval';
 const MANDATORY = 'All mandatory fields must be completed before submitting the request.';
+const TITLE = 'OneLink Funds';
 
 const CLIENT_FIELD_FROM = `              <label>Client name — exactly as it appears in Zoho Books or Zoho Analytics</label>
               <div style="display:flex; gap:8px; flex-wrap:wrap">
@@ -156,22 +157,25 @@ const GATE_JS = `  verifyClient() {
     if (this._prechecking) return;
     this._prechecking = true;
     this.setState({ askNoDoc: false });
-    this.flash('Checking the client in Zoho Analytics…', null, 'ph ph-hourglass');
+    this.zlStart('precheck');
     fetch(this.zohoApiUrl('/precheck'), { method: 'POST', mode: 'cors', credentials: 'include', headers: this.zohoHeaders(true), body: JSON.stringify({ validationToken: g.token, clientName: g.name, amount: amount, paid: f.paid }), signal: this.zohoTimeout(40000) })
       .then(r => r.json().then(j => ({ st: r.status, j: j })))
       .then(o => {
         this._prechecking = false;
-        if (o.st === 200 && o.j.ok && o.j.submitToken) { this._pre = { token: g.token, amount: amount, submitToken: o.j.submitToken }; this.setState({ finFail: null }); return this.send(force); }
+        if (o.st === 200 && o.j.ok && o.j.submitToken) { this._pre = { token: g.token, amount: amount, submitToken: o.j.submitToken }; this.setState({ finFail: null }); this.zlStage(3, o.j.finance); return this.send(force); }
         const msg = o.j.error || ('The balance check failed (HTTP ' + o.st + '). Nothing was sent.');
-        // The three financial checks failed: keep the result and the one-time escalation pass the server issued
-        const esc = o.j.escalate || {};
-        const ff = o.j.reason === 'FINANCIAL_CHECKS_FAILED' ? { failed: o.j.failed || [], finance: o.j.finance || null, token: esc.token || '', allowed: !!esc.allowed, error: msg, clientName: g.name, amount: amount, open: false, justification: '', sendError: '', busy: false } : null;
+        // The financial checks failed: keep the result and the one-time escalation pass the server issued.
+        // Zoho Analytics / Zoho Books could not both be verified: the same panel, no escalation.
+        const esc = o.j.escalate || {}, conn = o.j.reason === 'ZOHO_CONNECTION_FAILED';
+        const ff = o.j.reason === 'FINANCIAL_CHECKS_FAILED' || conn ? { kind: conn ? 'conn' : 'checks', connections: o.j.connections || null, failed: conn ? [] : o.j.failed || [], finance: conn ? null : o.j.finance || null, token: conn ? '' : esc.token || '', allowed: !conn && !!esc.allowed, error: msg, clientName: g.name, amount: amount, open: false, justification: '', sendError: '', busy: false, to: 'ALL' } : null;
+        this.zlDone({ ok: false, finance: o.j.finance, error: !ff });
         // Failed financial checks: the panel below carries the message — no second copy in the summary box.
         this.setState(s => ({ errors: Object.assign({}, s.errors, { summary: ff ? null : msg }), shake: s.shake + 1, askNoDoc: false, finFail: ff }));
-        this.flash(msg, null, o.j.reason === 'INSUFFICIENT_BALANCE' || ff ? 'ph ph-flag' : 'ph ph-prohibit');
+        this.flash(msg, null, o.j.reason === 'ZOHO_CONNECTION_FAILED' ? 'ph ph-plugs' : o.j.reason === 'INSUFFICIENT_BALANCE' || ff ? 'ph ph-flag' : 'ph ph-prohibit');
       })
       .catch(err => {
         this._prechecking = false;
+        this.zlDone({ ok: false, error: true });
         const msg = 'Zoho could not be reached (' + err.message + '). Nothing was sent — try again.';
         this.setState(s => ({ errors: Object.assign({}, s.errors, { summary: msg }) }));
         this.flash(msg, null, 'ph ph-plugs');
@@ -192,7 +196,7 @@ const GATE_JS = `  verifyClient() {
     if (!r) return { open: true, closed: false, found: false, missing: true, back: back, missingText: ownOnly ? 'No access — request not created by you (or it was not submitted).' : 'This request is not on the platform — it was not submitted, or it has been removed.', full: back };
     const u = this.users()[r.by], me = this.me(), mgmt = this.isMgmt(me), st = r.status;
     const open = !mgmt && (['NEW', 'ACTION'].indexOf(st) >= 0 || st === 'MGMT_APPROVED'); // management decides escalations only
-    const mgmtDecide = mgmt && (st === 'ESCALATED' || st === 'MGMT_INFO'), canReply = st === 'MGMT_INFO' && (r.by === me.key || this.isOpsMaster(me));
+    const mgmtDecide = (st === 'ESCALATED' || st === 'MGMT_INFO') && this.escRecipient(r, me), canReply = this.canReplyMgmt(r, me);
     const canChase = st !== 'VOID', canVoid = st !== 'VOID' && (this.isSven(me) || mgmt);
     const facts = [
       { label: 'Purpose', value: r.purpose || '—' },
@@ -240,10 +244,12 @@ const GATE_JS = `  verifyClient() {
   /* Runs right after a request is sent: live balance check, approval or flag. The server posts the
      result to the group chat, notifies Sven and writes the funding sheet row. */
   autoZohoCheck(req) {
+    if (this.state.zl && !this.state.zl.done) this.zlStage(3); else this.zlStart('funding');
     this.zohoCall(req).then(out => {
       const id = (this._idAlias && this._idAlias[req.id]) || req.id; // the server may have given it a new number
-      if (!this.reqById(id)) return;
       const j = out.live ? out.json || {} : null;
+      this.zlDone({ ok: !!(j && j.approvalStatus && j.ok !== false), finance: j && j.finance, error: !(j && j.approvalStatus) });
+      if (!this.reqById(id)) return;
       if (j && j.approvalStatus) {
         // The server attaches the result to the request and pushes it to every screen (Sven's included).
         return this.flash(j.notes || j.approvalStatus, null, j.ok ? 'ph ph-seal-check' : 'ph ph-flag');
@@ -252,7 +258,7 @@ const GATE_JS = `  verifyClient() {
       this.apply(id, { flagged: true, zohoStatus: 'Not validated' }, 'Zoho balance check could not complete (' + why + ') — not approved, flagged for Sven',
         { to: 'sven', text: 'Zoho balance check could not complete for ' + req.company + ' (' + why + '). Validate before approving.' });
       this.flash('Zoho balance check could not complete — flagged for Sven', null, 'ph ph-warning');
-    });
+    }, () => this.zlDone({ ok: false, error: true }));
   }
 `;
 
@@ -319,19 +325,145 @@ const STATUS_META_TO = `      DECLINED: ['Not approved', 'var(--fgRed)', 'var(--
       ESCALATED: ['Awaiting Management Decision', 'var(--fgAmberDeep)', 'var(--chipAmberBg)', 'var(--chipAmberBd)'],
       MGMT_INFO: ['Management needs info', 'var(--fgAmber)', 'var(--chipAmberBg)', 'var(--chipAmberBd)'],
       MGMT_APPROVED: ['Management Approved – Proceed', 'var(--fgGreen)', 'var(--chipGreenBg)', 'var(--chipGreenBd)'],
-      VOID: ['Voided', 'var(--mut)', 'var(--tint)', 'var(--line)']
+      VOID: ['Voided', 'var(--mut)', 'var(--tint)', 'var(--line)'],
+      MGMT_REJECTED: ['Rejected by Management', 'var(--fgRed)', 'var(--chipRedBg)', 'var(--chipRedBd)']
     };`;
 
 const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══════════════
      Each action calls its own server endpoint. The item in the answer is merged in place, and into
      this._sync, so livePush() does not send the server's own copy straight back. */
   isMgmt(u) { return !!(u && u.dept === 'MANAGEMENT'); }
+  /* The tab always reads "OneLink Funds", whatever the bundled runtime does to document.title. */
+  keepTitle() {
+    if (typeof document === 'undefined') return;
+    const T = '${TITLE}';
+    if (document.title !== T) document.title = T;
+    if (this._titleObs || typeof MutationObserver === 'undefined' || !document.head) return;
+    this._titleObs = new MutationObserver(() => { if (document.title !== T) document.title = T; });
+    this._titleObs.observe(document.head, { subtree: true, childList: true, characterData: true });
+  }
   isSven(u) { return !!u && ((u.perms || []).indexOf('*') >= 0 || u.key === 'sven'); }
   nameOf(key) { const u = this.users()[key]; return u ? u.name : (key || '—'); }
   acctTitle(key) { const a = this.accounts().filter(x => x.key === key)[0]; return (a && a.title) || ''; }
   mgmtName(name, title) { return 'Mr. ' + (name || 'Management') + (title ? ' (' + title + ')' : ''); }
   mgmtPeople() {
     return this.accounts().filter(a => a.dept === 'MANAGEMENT' && a.active !== false).map(a => this.mgmtName(a.name, a.title));
+  }
+  mgmtAccounts() { return this.accounts().filter(a => a.dept === 'MANAGEMENT' && a.active !== false); }
+  /* Management Requests: Sven (master) and management only — Operations never see the section. */
+  canMgmtView(u) { return this.isSven(u) || this.isMgmt(u); }
+  landingRoute(key) { const u = this.users()[key]; return u && this.isMgmt(u) ? 'mgmt' : 'home'; }
+  /* The managers an escalation went to ("Mr. Adnan (CFO), Mr. Eduard (Chief Legal Officer)"). */
+  escToText(r, sep) {
+    const e = (r && r.escalation) || {}, t = e.to || [];
+    if (!t.length) return 'All management';
+    return t.map(x => this.mgmtName(x.name || this.nameOf(x.key), x.title || this.acctTitle(x.key))).join(sep || ', ');
+  }
+  /* A manager may decide only an escalation sent to them, and never one they raised themselves. */
+  escRecipient(r, u) {
+    const e = r && r.escalation;
+    if (!e || !this.isMgmt(u) || e.by === u.key) return false;
+    const t = e.to || [];
+    return !t.length || t.some(x => x.key === u.key);
+  }
+  /* Management asked a question: the request stays "Awaiting Management Decision" until the requester answers. */
+  infoReq(r) { const e = r && r.escalation; return e && e.infoRequest && r.status === 'ESCALATED' ? e.infoRequest : null; }
+  canReplyMgmt(r, me) { return !!r && (r.status === 'MGMT_INFO' || !!this.infoReq(r)) && (r.by === me.key || this.isOpsMaster(me)); }
+  infoLine(ir) { return 'More information requested by ' + this.mgmtName(ir.byName || this.nameOf(ir.by), ir.title || this.acctTitle(ir.by)) + (ir.note ? ': ' + ir.note : ''); }
+  /* Board bucket: an escalation with an open question sits with "Management needs something from you". */
+  boardKey(r) { return r.status === 'ESCALATED' && this.infoReq(r) ? 'MGMT_INFO' : r.status; }
+  sinceText(iso, atText) {
+    const t = Date.parse(iso || ''), m = isNaN(t) ? -1 : Math.max(0, Math.round((Date.now() - t) / 60000));
+    const ago = m < 0 ? '' : m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.floor(m / 60) + ' h ago' : Math.floor(m / 1440) + (Math.floor(m / 1440) === 1 ? ' day ago' : ' days ago');
+    return [atText, ago].filter(Boolean).join(' · ');
+  }
+  /* Which path decided, in words — never a figure. */
+  finRoute(fin) {
+    if (!fin) return '';
+    if (fin.route === 'BOOKS_CROSSCHECK') return 'Zoho Analytics → Zoho Books cross-verification';
+    if (fin.route === 'ANALYTICS') return 'Checked in Zoho Analytics';
+    return 'Checked in ' + (fin.source || 'Zoho Books + Zoho Analytics');
+  }
+  connVals(c) {
+    if (!c || typeof c !== 'object') return { show: false, items: [], at: '' };
+    const okOf = v => (v && typeof v === 'object' ? v.ok === true : v === true);
+    const items = [['Zoho Analytics', c.analytics], ['Zoho Books', c.books]].map(x => {
+      const ok = okOf(x[1]);
+      return { label: x[0], ok: ok, text: ok ? 'verified' : 'not verified', icon: ok ? 'ph ph-check-circle' : 'ph ph-x-circle', fg: ok ? 'var(--fgGreen)' : 'var(--fgRed)', bg: ok ? 'var(--chipGreenBg)' : 'var(--chipRedBg)', bd: ok ? 'var(--chipGreenBd)' : 'var(--chipRedBd)' };
+    });
+    return { show: true, items: items, at: c.atText ? 'Connections verified ' + c.atText : '', allOk: items.every(i => i.ok) };
+  }
+
+  /* ── Zoho loader: Send, the funding check after it, and the escalation ────────────
+     Animations are CSS keyframes; a light timer only re-renders the step list and the rotating line.
+     It never shows a balance, a figure or a management note. */
+  zlStart(kind) {
+    clearTimeout(this._zlHide);
+    this.setState({ zl: { kind: kind, at: Date.now(), stage: 0, done: false, ok: false, error: false, route: '' } });
+    if (!this._zlT) {
+      this._zlT = setInterval(() => {
+        const z = this.state.zl;
+        if (!z) { clearInterval(this._zlT); this._zlT = null; return; }
+        if (!z.done && Date.now() - z.at > 60000) return this.zlDone({ ok: false, error: true });
+        this.setState({ zlTick: ((this.state.zlTick || 0) + 1) % 1000 });
+      }, 350);
+      if (this._zlT && this._zlT.unref) this._zlT.unref();
+    }
+  }
+  zlStage(n, fin) {
+    this.setState(s => (s.zl && !s.zl.done ? { zl: Object.assign({}, s.zl, { stage: Math.max(s.zl.stage || 0, n), route: (fin && fin.route) || s.zl.route }) } : {}));
+  }
+  zlDone(res) {
+    const z = this.state.zl;
+    if (!z || z.done) return;
+    const r = res || {}, fin = r.finance;
+    this.setState({ zl: Object.assign({}, z, { done: true, doneAt: Date.now(), ok: !!r.ok, error: !!r.error, route: (fin && fin.route) || z.route }) });
+    const wait = Math.max(450, 1100 - (Date.now() - z.at));
+    this._zlHide = setTimeout(() => { if (this.state.zl && this.state.zl.done) this.setState({ zl: null }); }, wait);
+    if (this._zlHide && this._zlHide.unref) this._zlHide.unref();
+  }
+  zlVals() {
+    const z = this.state.zl;
+    if (!z) return { show: false, steps: [] };
+    const el = Date.now() - z.at, esc = z.kind === 'escalate';
+    const labels = esc
+      ? ['Verifying Zoho connections', 'Re-reading Zoho Analytics', 'Cross-checking Zoho Books', 'Sending to management']
+      : ['Verifying Zoho connections', 'Reading Zoho Analytics balance', 'Cross-checking Zoho Books: journals, credit & debit notes, payments', 'Final decision'];
+    const icons = ['ph ph-plugs-connected', 'ph ph-chart-line-up', 'ph ph-books', esc ? 'ph ph-paper-plane-tilt' : 'ph ph-gavel'];
+    const timed = el < 700 ? 0 : el < 1700 ? 1 : 2, active = z.done ? 4 : Math.max(timed, z.stage || 0);
+    const skipBooks = z.route === 'ANALYTICS' && (z.done || active >= 3);
+    const steps = labels.map((l, i) => {
+      const skip = i === 2 && skipBooks, done = !skip && i < active, cur = i === active;
+      return {
+        label: l,
+        note: skip ? 'Not needed — Zoho Analytics covered it' : cur ? 'In progress…' : '',
+        hasNote: skip || cur,
+        icon: done ? 'ph ph-check' : skip ? 'ph ph-minus' : cur ? 'ph ph-circle-notch' : 'ph ph-circle',
+        spin: cur ? 'spin .9s linear infinite' : 'none',
+        fg: done ? 'var(--fgGreen)' : cur ? 'var(--fgBlue)' : 'var(--mut3)',
+        bg: done ? 'var(--chipGreenBg)' : cur ? 'var(--chipBlueBg)' : 'var(--sf2)',
+        textFg: done || cur ? 'var(--ink2)' : 'var(--mut2)'
+      };
+    });
+    const MSG = ['Crunching numbers…', 'Checking journals…', 'Talking to Zoho…', 'Matching invoices to payments…', 'Counting credit notes…', 'Almost there…'];
+    const mi = Math.floor(el / 1400) % MSG.length;
+    const end = z.done ? (z.error ? 'Could not finish — nothing was sent' : z.ok ? (esc ? 'Sent to management' : 'All checks passed') : (esc ? 'Not sent' : 'The checks did not pass')) : '';
+    return {
+      show: true, done: !!z.done, running: !z.done,
+      title: esc ? 'Sending to management…' : 'Checking with Zoho…',
+      sub: esc ? 'The financial checks are re-read live, then the escalation goes to the managers you picked.' : 'Your request is checked live in Zoho Analytics and Zoho Books. This usually takes a few seconds.',
+      icon: z.done ? (z.ok ? 'ph ph-seal-check' : z.error ? 'ph ph-plugs' : 'ph ph-flag') : icons[Math.min(active, 3)],
+      iconAnim: z.done ? 'popIn .3s ease' : 'zlBob 1.6s ease-in-out infinite',
+      iconFg: z.done ? (z.ok ? 'var(--fgGreen)' : 'var(--fgRedDeep)') : 'var(--fgBlue)',
+      iconBg: z.done ? (z.ok ? 'var(--chipGreenBg)' : 'var(--chipRedBg)') : 'var(--chipBlueBg)',
+      ring: z.done ? 'none' : 'zlOrbit 1.4s linear infinite',
+      barW: z.done ? '100%' : '92%',
+      barAnim: z.done ? 'none' : 'zlFill 9s cubic-bezier(.12,.62,.24,1) both',
+      barBg: z.done && !z.ok ? 'linear-gradient(90deg,#f87171,#dc2626)' : z.done ? 'linear-gradient(90deg,#4ade80,#16a34a)' : 'linear-gradient(90deg,#60a5fa,#1d4ed8)',
+      msg: z.done ? end : MSG[mi], msgAnim: z.done ? 'none' : (mi % 2 ? 'zlMsgA .45s ease' : 'zlMsgB .45s ease'),
+      msgFg: z.done ? (z.ok ? 'var(--fgGreen)' : 'var(--fgRedDeep)') : 'var(--ink3)',
+      steps: steps
+    };
   }
   /* Management approved the escalation: Sven's final approval and the credit skip the balance gate. */
   overridden(r) { return !!(r && r.escalation && r.escalation.decision && r.escalation.decision.action === 'APPROVE'); }
@@ -341,7 +473,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
   }
   /* The server refuses to roll a request back into the escalation flow, so no Undo is offered when the
      status before the change (r is the copy from before) was an escalation status. */
-  undoable(r) { return !!r && ['ESCALATED', 'MGMT_INFO', 'MGMT_APPROVED'].indexOf(r.status) < 0; }
+  undoable(r) { return !!r && ['ESCALATED', 'MGMT_INFO', 'MGMT_APPROVED', 'MGMT_REJECTED'].indexOf(r.status) < 0; }
   /* Voided while still with management (escalated, or waiting on an answer for management). */
   voidedBeforeDecision(r) {
     const d = r && r.escalation && r.escalation.decision;
@@ -388,27 +520,52 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     const esc = r.escalation, d = esc && esc.decision;
     if (!esc) return '';
     if (this.voidedBeforeDecision(r)) return 'Closed — voided before a management decision' + (esc.id ? ' · ' + esc.id : '');
-    if (r.status === 'ESCALATED' || !d) return 'Waiting for management' + (esc.id ? ' · ' + esc.id : '');
+    if (r.status === 'ESCALATED' || !d) return 'Waiting for management' + (this.infoReq(r) ? ' — more information requested' : '') + (esc.id ? ' · ' + esc.id : '');
     const who = this.mgmtName(d.byName || this.nameOf(d.by), d.title || this.acctTitle(d.by));
     return ({ APPROVE: 'Approved by ', REJECT: 'Rejected by ', INFO: 'More information asked by ' }[d.action] || 'Decided by ') + who;
   }
 
   /* ── A. escalation from the new-request form ─────────── */
   setFinFail(p) { this.setState(s => (s.finFail ? { finFail: Object.assign({}, s.finFail, p) } : {})); }
+  /* "Send to": 'ALL' (default) or the keys of the managers picked. At least one is required. */
+  escTargets() {
+    const ff = this.state.finFail || {}, keys = this.mgmtAccounts().map(a => a.key);
+    if (!Array.isArray(ff.to)) return 'ALL';
+    return ff.to.filter(k => keys.indexOf(k) >= 0);
+  }
+  pickTarget(key) {
+    const cur = this.escTargets();
+    if (key === 'ALL') return this.setFinFail({ to: 'ALL', sendError: '' });
+    const list = cur === 'ALL' ? [key] : (cur.indexOf(key) >= 0 ? cur.filter(k => k !== key) : cur.concat([key]));
+    this.setFinFail({ to: list, sendError: '' });
+  }
   finFailVals() {
     const ff = this.state.finFail, g = this.gate(), f = this.state.form || this.blankForm();
-    if (!ff || g.status !== 'ok' || ff.clientName !== g.name || ff.amount !== Number(f.amount)) return { show: false, rows: [] };
-    const fin = ff.finance || {};
+    if (!ff || g.status !== 'ok' || ff.clientName !== g.name || ff.amount !== Number(f.amount)) return { show: false, rows: [], targets: [] };
+    const fin = ff.finance || {}, conn = ff.kind === 'conn';
     let failed = ff.failed || [];
     if (!failed.length && Array.isArray(fin.checks)) failed = fin.checks.filter(c => !c.ok);
-    const n = (ff.justification || '').trim().length, people = this.mgmtPeople();
+    const total = Array.isArray(fin.checks) && fin.checks.length ? fin.checks.length : 0;
+    const n = (ff.justification || '').trim().length, sel = this.escTargets(), all = sel === 'ALL';
+    const accts = this.mgmtAccounts(), picked = all ? accts : accts.filter(a => sel.indexOf(a.key) >= 0);
+    const chip = (on, label, go, icon) => ({ label: label, on: on, go: go, icon: on ? 'ph ph-check-circle' : icon, bg: on ? 'var(--chipBlueBg)' : 'var(--sf)', bd: on ? 'var(--fgBlue)' : 'var(--line3)', fg: on ? 'var(--fgBlue)' : 'var(--ink2)' });
+    const cv = this.connVals(ff.connections);
+    const rows = conn
+      ? (cv.show ? cv.items.map(i => ({ label: i.label, message: i.ok ? 'Connection verified' : 'Could not be verified', icon: i.icon, fg: i.fg })) : [])
+      : failed.map(x => ({ label: x.label || x.key || 'Check', message: x.message || 'Did not pass.', icon: 'ph ph-x-circle', fg: 'var(--fgRed)' }));
     return {
       show: true, error: ff.error || 'The financial checks failed. Nothing was sent.',
-      sub: ['Checked in ' + (fin.source || 'Zoho Books + Zoho Analytics'), fin.atText, fin.id].filter(Boolean).join(' · '),
-      rows: failed.map(x => ({ label: x.label || x.key || 'Check', message: x.message || 'Did not pass.' })),
+      headIcon: conn ? 'ph ph-plugs' : 'ph ph-shield-warning',
+      sub: conn ? 'Zoho connection verification' + (cv.at ? ' · ' + cv.at.replace('Connections verified ', '') : '') : [this.finRoute(fin) || 'Checked in Zoho Books + Zoho Analytics', fin.atText, fin.id].filter(Boolean).join(' · '),
+      count: conn ? 'Blocked' : failed.length ? (total ? failed.length + ' of ' + total + ' checks failed' : failed.length + (failed.length === 1 ? ' check failed' : ' checks failed')) : 'Checks failed',
+      rows: rows,
       canStart: !!ff.allowed && !!ff.token && !ff.open, open: !!ff.open,
       noEscalate: !ff.allowed || !ff.token,
-      recipients: 'Goes to ' + (people.length ? people.join(', ') : 'management') + '. Sven is kept informed.',
+      noEscalateText: conn ? 'Nothing was sent. Try again in a few minutes — the request cannot go ahead until both Zoho connections are verified.' : 'This request cannot be escalated. Contact Sven.',
+      targets: [chip(all, 'All management', () => this.pickTarget('ALL'), 'ph ph-users-three')].concat(accts.map(a => chip(!all && sel.indexOf(a.key) >= 0, this.mgmtName(a.name, a.title), () => this.pickTarget(a.key), 'ph ph-user'))),
+      targetHint: all ? 'Every manager is notified; any of them can decide.' : picked.length ? 'Only ' + picked.map(a => this.mgmtName(a.name, a.title)).join(', ') + (picked.length === 1 ? ' is' : ' are') + ' notified and can decide.' : 'Pick at least one manager.',
+      targetHintFg: !all && !picked.length ? 'var(--fgRed)' : 'var(--mut2)',
+      recipients: 'You choose who it goes to. Sven is kept informed.',
       start: () => this.setFinFail({ open: true, sendError: '' }),
       cancel: () => this.setFinFail({ open: false, sendError: '' }),
       justification: ff.justification || '',
@@ -426,10 +583,12 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     const why = (ff.justification || '').trim();
     if (why.length < 15) return this.setFinFail({ sendError: 'Write at least 15 characters so management can decide.' });
     if (!ff.token) return this.setFinFail({ sendError: 'This check has expired — send the request again to re-run the financial checks.' });
+    const to = this.escTargets();
+    if (to !== 'ALL' && !to.length) return this.setFinFail({ sendError: 'Pick at least one manager to send it to.' });
     if (this.state.formDocs.some(d => d.status !== 'done')) return this.setFinFail({ sendError: 'Hold on — the upload is still finishing.' });
     const d0 = new Date(f.date || Date.now()), d = isNaN(d0.getTime()) ? new Date() : d0, mo = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const body = {
-      escalateToken: ff.token, clientName: ff.clientName || g.name, justification: why,
+      escalateToken: ff.token, clientName: ff.clientName || g.name, justification: why, to: to,
       request: {
         company: String(f.company || '').trim() || g.name, person: g.name, purpose: f.purpose.trim(), zone: f.zone,
         requested: Number(f.amount), paid: f.paid, date: d.getDate() + ' ' + mo[d.getMonth()], notes: f.notes,
@@ -437,18 +596,20 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       }
     };
     this.setFinFail({ busy: true, sendError: '' });
+    this.zlStart('escalate');
     this.api('/api/requests/escalate', { method: 'POST', body: body }).then(o => {
-      if (!o.ok || o.json.ok === false || !o.json.id) return this.setFinFail({ busy: false, sendError: o.json.error || 'The server refused the escalation (HTTP ' + o.status + '). Nothing was sent.' });
+      if (!o.ok || o.json.ok === false || !o.json.id) { this.zlDone({ ok: false }); return this.setFinFail({ busy: false, sendError: o.json.error || 'The server refused the escalation (HTTP ' + o.status + '). Nothing was sent.' }); }
+      this.zlDone({ ok: true, finance: o.json.item && o.json.item.finance });
       const id = o.json.id;
       this._pre = null;
       this.mergeReq(o.json.item, { form: null, formDocs: [], errors: {}, askNoDoc: false, gate: { name: '', status: 'idle', hintErr: '' }, finFail: null, route: 'detail', prev: 'board', reqId: id, modal: null, notifOpen: false });
       this.flash('Escalated to management — ' + id, null, 'ph ph-arrow-fat-line-up');
-    }).catch(() => this.setFinFail({ busy: false, sendError: 'The live server could not be reached. Nothing was sent — try again.' }));
+    }).catch(() => { this.zlDone({ ok: false, error: true }); this.setFinFail({ busy: false, sendError: 'The live server could not be reached. Nothing was sent — try again.' }); });
   }
 
   /* ── B. request page: financial validation, escalation, void, chase ── */
   finVals(fin, restricted, latest) {
-    if (!fin) return { checks: [], sub: '', chip: '', checkLine: [] };
+    if (!fin) return { checks: [], sub: '', chip: '', checkLine: [], conn: [] };
     const checks = (fin.checks || []).map(c => {
       const ok = !!c.ok, detail = !restricted && c.detail ? String(c.detail) : '';
       const items = (c.items || []).map(it => ({ label: it.label || '', text: it.text || '', icon: it.ok ? 'ph ph-check' : 'ph ph-x', fg: it.ok ? 'var(--fgGreen)' : 'var(--fgRed)' }));
@@ -459,11 +620,15 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
         items: items, hasItems: items.length > 0
       };
     });
-    const n = checks.length, bad = checks.filter(c => c.bad).length;
+    const n = checks.length, bad = checks.filter(c => c.bad).length, cv = this.connVals(fin.connections);
+    const pr = fin.primary && fin.primary.text ? String(fin.primary.text) : '';
     return {
       sub: (latest ? ['Latest re-check'] : []).concat([fin.atText, fin.id]).filter(Boolean).join(' · '),
       source: fin.source || 'Zoho Books + Zoho Analytics',
-      chip: !n ? 'No checks recorded' : bad ? bad + ' of ' + n + ' checks failed' : n === 3 ? 'All three checks passed' : 'All ' + n + ' checks passed',
+      route: this.finRoute(fin), routeIcon: fin.route === 'BOOKS_CROSSCHECK' ? 'ph ph-arrows-left-right' : 'ph ph-chart-line-up',
+      hasPrimary: !!pr && fin.route === 'BOOKS_CROSSCHECK', primary: pr ? 'Zoho Analytics: ' + pr : '',
+      hasConn: cv.show, conn: cv.items, connAt: cv.at,
+      chip: !n ? 'No checks recorded' : bad ? bad + ' of ' + n + ' checks failed' : 'All ' + ({ 3: 'three', 4: 'four', 5: 'five' }[n] || n) + ' checks passed',
       chipIcon: bad || !n ? 'ph ph-warning-octagon' : 'ph ph-seal-check',
       chipFg: bad || !n ? 'var(--fgRedDeep)' : 'var(--fgGreen)', chipBg: bad || !n ? 'var(--chipRedBg)' : 'var(--chipGreenBg)', chipBd: bad || !n ? 'var(--chipRedBd)' : 'var(--chipGreenBd)',
       checks: checks,
@@ -475,8 +640,9 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     const esc = r.escalation;
     if (!esc) return { failed: [], log: [] };
     const d = esc.decision, st = r.status, closed = this.voidedBeforeDecision(r), waiting = !closed && (st === 'ESCALATED' || !d), act = waiting || closed ? '' : d.action;
-    const ACT = { APPROVE: 'Approved & proceed', REJECT: 'Escalation rejected', INFO: 'More information requested' };
+    const ACT = { APPROVE: 'Approved & proceed', REJECT: 'Rejected by management', INFO: 'More information requested' };
     const LOG = { CREATED: 'escalated to management', APPROVE: 'approved & proceed', REJECT: 'rejected the escalation', INFO: 'asked for more information', REPLY: 'replied to management' };
+    const ir = this.infoReq(r);
     const failed = (esc.failed || []).map(x => ({ label: x.label || x.key || 'Check', message: x.message || '' }));
     const log = (esc.log || []).slice().reverse().map(l => ({ at: l.atText || '', text: (l.whoName || this.nameOf(l.who)) + ' ' + (LOG[l.action] || String(l.action || '').toLowerCase()) + (l.note ? ' — ' + l.note : '') }));
     return {
@@ -484,7 +650,8 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       raised: 'Raised by ' + (esc.byName || this.nameOf(esc.by)) + (esc.atText ? ' · ' + esc.atText : ''),
       justification: esc.justification || '—',
       failed: failed, hasFailed: failed.length > 0,
-      to: (esc.to || []).map(t => this.mgmtName(t.name || this.nameOf(t.key), t.title || this.acctTitle(t.key))).join(' · ') || 'Management',
+      to: this.escToText(r, ', '),
+      hasInfo: !!ir, infoLine: ir ? this.infoLine(ir) : '', infoAt: ir && ir.atText ? ir.atText : '',
       decisionLine: closed ? 'Closed — voided before a management decision' : waiting ? 'Waiting for a management decision' : (ACT[act] || 'Decided') + ' — ' + this.mgmtName(d.byName || this.nameOf(d.by), d.title || this.acctTitle(d.by)) + (d.atText ? ' · ' + d.atText : ''),
       decisionNote: !waiting && !closed && d.note ? d.note : '', hasNote: !waiting && !closed && !!d.note,
       toneIcon: closed ? 'ph ph-lock-simple' : waiting ? 'ph ph-hourglass' : act === 'APPROVE' ? 'ph ph-seal-check' : act === 'REJECT' ? 'ph ph-prohibit' : 'ph ph-question',
@@ -492,9 +659,10 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       toneBg: closed ? 'var(--tint)' : act === 'APPROVE' ? 'var(--chipGreenBg)' : act === 'REJECT' ? 'var(--chipRedBg)' : 'var(--chipAmberBg)',
       toneBd: closed ? 'var(--line)' : act === 'APPROVE' ? 'var(--chipGreenBd)' : act === 'REJECT' ? 'var(--chipRedBd)' : 'var(--chipAmberBd)',
       log: log, hasLog: log.length > 0,
-      canDecide: this.isMgmt(me) && (st === 'ESCALATED' || st === 'MGMT_INFO'),
+      canDecide: (st === 'ESCALATED' || st === 'MGMT_INFO') && this.escRecipient(r, me),
       approve: () => this.openModal('mgmtApprove', r.id), reject: () => this.openModal('mgmtReject', r.id), info: () => this.openModal('mgmtInfo', r.id),
-      canReply: st === 'MGMT_INFO' && (r.by === me.key || this.isOpsMaster(me)),
+      // with the "waiting for management" card on the page, its Reply button is the one to use
+      canReply: this.canReplyMgmt(r, me) && !(st === 'ESCALATED' && this.isOpsUser(me)),
       reply: () => this.openModal('mgmtReply', r.id)
     };
   }
@@ -509,11 +677,86 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       // finance's latest re-check is the main result; the submission-time checks stay below it, compact
       hasFin: !!(r.financeLatest || r.finance), fin: this.finVals(r.financeLatest || r.finance, restricted, !!r.financeLatest),
       hasFinAt: !!(r.financeLatest && r.finance), finAt: this.finVals(r.financeLatest ? r.finance : null, restricted),
-      hasEsc: !!r.escalation, esc: this.escVals(r, me)
+      hasEsc: !!r.escalation, esc: this.escVals(r, me),
+      wait: this.waitVals(r, me, isOps)
     };
     // a voided request is locked: no uploads, notes, decisions, overrides, Zoho checks or chases
     if (locked) Object.assign(out, { canOverride: false, canZoho: false, canEscalate: false, zeroBalance: false, showDecide: false, decisions: [], hasAction: false });
     return out;
+  }
+  isOpsUser(u) { return !!u && (u.role === 'ops' || u.dept === 'OPERATIONS'); }
+  /* The requester's calm "waiting for management" card: who it went to and since when — no notes, except the
+     question when management asked for more information. */
+  waitVals(r, me, isOps) {
+    const e = r.escalation;
+    if (!isOps || !e || r.status !== 'ESCALATED') return { show: false };
+    const ir = this.infoReq(r), reply = this.canReplyMgmt(r, me);
+    return {
+      show: true, info: !!ir,
+      title: ir ? 'Management needs more information' : 'Waiting for management',
+      to: 'Sent to ' + this.escToText(r, ', '),
+      since: e.at || e.atText ? 'Since ' + this.sinceText(e.at, e.atText) : '',
+      line: ir ? 'Answer the question below — the request then goes back to management for a decision.' : 'Nothing for you to do yet. You get a notification as soon as management decides.',
+      infoLine: ir ? this.infoLine(ir) : '', canReply: !!ir && reply, reply: () => this.openModal('mgmtReply', r.id),
+      icon: ir ? 'ph ph-chat-circle-dots' : 'ph ph-briefcase',
+      fg: ir ? 'var(--fgAmberDeep)' : 'var(--fgBlue)', bg: ir ? 'var(--chipAmberBg)' : 'var(--chipBlueBg)', bd: ir ? 'var(--chipAmberBd)' : 'var(--line3)',
+      ring: ir ? 'rgba(217,119,6,.35)' : 'rgba(59,130,246,.35)'
+    };
+  }
+  /* ── Management Requests: every escalated request, for Sven and management ───── */
+  mgmtCount() {
+    const me = this.me();
+    if (!this.canMgmtView(me)) return 0;
+    return (this.state.requests || []).filter(r => r.escalation && (r.status === 'ESCALATED' || r.status === 'MGMT_INFO') && (!this.isMgmt(me) || this.escRecipient(r, me))).length;
+  }
+  mgmtVals() {
+    const me = this.me(), uAll = this.users();
+    if (!this.canMgmtView(me)) return { groups: [], empty: true, hasAny: false, stats: [] };
+    const mgmt = this.isMgmt(me);
+    const list = (this.state.requests || []).filter(r => r.escalation)
+      .slice().sort((a, b) => (Date.parse(b.escalation.at || '') || 0) - (Date.parse(a.escalation.at || '') || 0));
+    const G = [
+      ['await', 'Awaiting decision', r => r.status === 'ESCALATED' || r.status === 'MGMT_INFO', 'var(--fgAmberDeep)', 'ph ph-hourglass-medium', 'var(--chipAmberBg)'],
+      ['approved', 'Approved – waiting for Sven', r => r.status === 'MGMT_APPROVED', 'var(--fgGreen)', 'ph ph-seal-check', 'var(--chipGreenBg)'],
+      ['rejected', 'Rejected by management', r => r.status === 'MGMT_REJECTED', 'var(--fgRed)', 'ph ph-prohibit', 'var(--chipRedBg)'],
+      ['closed', 'Closed', () => true, 'var(--mut)', 'ph ph-archive', 'var(--tint)']
+    ];
+    const seen = {};
+    const groups = G.map(g => {
+      const rows = list.filter(r => !seen[r.id] && g[2](r));
+      rows.forEach(r => { seen[r.id] = true; });
+      return {
+        key: g[0], title: g[1], color: g[3], icon: g[4], iconBg: g[5], count: String(rows.length),
+        empty: rows.length === 0, emptyText: g[0] === 'await' ? (mgmt ? 'Nothing is waiting on you — all caught up.' : 'No escalation is waiting for a decision.') : '',
+        show: rows.length > 0 || g[0] === 'await',
+        rows: rows.map(r => {
+          const e = r.escalation, sm = this.statusMeta(r.status), u = uAll[r.by];
+          const info = !!this.infoReq(r) || r.status === 'MGMT_INFO', mine = mgmt && (r.status === 'ESCALATED' || r.status === 'MGMT_INFO') && this.escRecipient(r, me);
+          return {
+            id: r.id, company: r.company || '—', amount: this.fmt(r.requested),
+            by: 'Raised by ' + (e.byName || (u ? u.name : this.nameOf(r.by))),
+            to: 'To ' + this.escToText(r, ', '),
+            at: e.atText || r.date || '',
+            status: sm.label, stFg: sm.fg, stBg: sm.bg, stBd: sm.bd,
+            info: info, mine: mine, rail: mine ? 'var(--fgAmber)' : 'transparent',
+            go: () => this.open(r.id)
+          };
+        })
+      };
+    }).filter(g => g.show);
+    const n = k => (groups.filter(g => g.key === k)[0] || { rows: [] }).rows.length;
+    return {
+      title: 'Management Requests',
+      sub: mgmt ? 'Requests escalated to management after the financial checks failed. The ones waiting on your decision are marked.' : 'Every request escalated to management, and where it stands.',
+      hasAny: list.length > 0, empty: list.length === 0,
+      stats: [
+        { label: 'Awaiting decision', value: String(n('await')), fg: 'var(--fgAmberDeep)', bg: 'var(--chipAmberBg)' },
+        { label: 'Approved – with Sven', value: String(n('approved')), fg: 'var(--fgGreen)', bg: 'var(--chipGreenBg)' },
+        { label: 'Rejected', value: String(n('rejected')), fg: 'var(--fgRed)', bg: 'var(--chipRedBg)' },
+        { label: 'Closed', value: String(n('closed')), fg: 'var(--mut)', bg: 'var(--tint)' }
+      ],
+      groups: groups
+    };
   }
   /* Chase invoice: files are uploaded first (POST /api/files) and listed inside the modal. */
   takeChaseFiles(fileList) {
@@ -644,8 +887,8 @@ const OPEN_MODAL_JS = `  openModal(kind, id) {
       partial: () => ({ title: 'Approve a lower amount', body: who + ' asked for ' + this.fmt(r.requested) + '.', confirmLabel: 'Approve', field: { k: 'amount', label: 'Amount to approve (AED)', type: 'text', ph: String(r.requested) } }),
       info: () => ({ title: 'Ask for information', body: 'The request moves to Needs info until ' + who + ' replies.', confirmLabel: 'Ask', field: { k: 'note', label: 'What do you need?', type: 'area', ph: 'Please send the request by email with the estimate attached' } }),
       mgmtApprove: () => ({ title: 'Approve & proceed', body: 'Management approves ' + r.id + ' although the financial checks failed. Sven then makes the final approval and the credit.', confirmLabel: 'Approve & proceed', field: { k: 'note', label: 'Decision note *', type: 'area', ph: 'Approved — the client paid by bank transfer on Monday' } }),
-      mgmtReject: () => ({ title: 'Reject escalation', body: r.id + ' is closed as Not approved and ' + who + ' is told why.', confirmLabel: 'Reject escalation', field: { k: 'note', label: 'Reason *', type: 'area', ph: 'The client has to pay in full first' }, danger: true }),
-      mgmtInfo: () => ({ title: 'Request more information', body: who + ' is asked to reply before management decides.', confirmLabel: 'Send question', field: { k: 'note', label: 'What do you need? *', type: 'area', ph: 'Send the bank confirmation for the client payment' } }),
+      mgmtReject: () => ({ title: 'Reject escalation', body: r.id + ' becomes Rejected by Management and is closed. ' + who + ' and Sven are told; the reason stays with management.', confirmLabel: 'Reject escalation', field: { k: 'note', label: 'Reason *', type: 'area', ph: 'The client has to pay in full first' }, danger: true }),
+      mgmtInfo: () => ({ title: 'Request more information', body: who + ' is asked to reply. The request stays Awaiting Management Decision, and you can still decide at any time.', confirmLabel: 'Send question', field: { k: 'note', label: 'What do you need? *', type: 'area', ph: 'Send the bank confirmation for the client payment' } }),
       mgmtReply: () => ({ title: 'Reply to management', body: 'Your answer goes to ' + to() + ' and the request goes back to them for a decision.', confirmLabel: 'Send reply', field: { k: 'note', label: 'Your reply *', type: 'area', ph: 'Bank confirmation attached to the request' } }),
       void: () => ({ title: 'Void request', body: r.id + ' will be locked for good — nothing can be changed afterwards. The reason goes into the history and the audit log.', confirmLabel: 'Void request', field: { k: 'reason', label: 'Reason *', type: 'area', ph: 'Duplicate — raised twice by mistake' }, danger: true }),
       chase: () => ({ title: 'Chase invoice', body: 'Sven, the finance team and ' + who + ' are notified. Add a note, attach the invoice or receipt, or both.', confirmLabel: 'Send chase', field: { k: 'note', label: 'Note', type: 'area', ph: 'Invoice attached — please reconcile' }, files: true }),
@@ -663,7 +906,7 @@ const CONFIRM_NEW_KINDS = `    if (m.busy) return;
     if (m.kind === 'mgmtApprove' || m.kind === 'mgmtReject' || m.kind === 'mgmtInfo') {
       if (v.length < 3) return err('Write a short note — at least 3 characters.');
       const action = { mgmtApprove: 'APPROVE', mgmtReject: 'REJECT', mgmtInfo: 'INFO' }[m.kind];
-      const ok = { APPROVE: ['Approved by management — Sven makes the final approval', 'ph ph-seal-check'], REJECT: ['Escalation rejected — ' + m.id, 'ph ph-prohibit'], INFO: ['Question sent — ' + m.id, 'ph ph-question'] }[action];
+      const ok = { APPROVE: ['Approved by management — Sven makes the final approval', 'ph ph-seal-check'], REJECT: ['Rejected by management — ' + m.id, 'ph ph-prohibit'], INFO: ['Question sent — ' + m.id, 'ph ph-question'] }[action];
       return this.modalCall('/api/requests/' + rid + '/escalation', { action: action, note: v }, ok[0], ok[1]);
     }
     if (m.kind === 'mgmtReply') {
@@ -802,13 +1045,13 @@ const DECIDE_JS = `    if (m.kind === 'decline') {
 // Board: every status has a tab and a section, for Operations and for finance / management.
 const TAB_DEF_JS = `    const mgmtMe = this.isMgmt(me);
     const tabDef = isOps
-      ? [['tasks', 'Your tasks', ['CREDITED', 'ACTION', 'MGMT_INFO', 'DECLINED']], ['pending', 'Pending accounting', ['NEW', 'ESCALATED', 'MGMT_APPROVED']], ['await', 'Awaiting payment', ['APPROVED']], ['done', 'Completed', ['PAID', 'VOID']]]
-      : [['tasks', 'Your tasks', ['NEW', 'ACTION', 'ESCALATED', 'MGMT_INFO', 'MGMT_APPROVED']], ['pending', 'To credit', ['APPROVED']], ['await', 'Awaiting invoice', ['CREDITED']], ['done', 'Completed', ['PAID', 'DECLINED', 'VOID']]];
+      ? [['tasks', 'Your tasks', ['CREDITED', 'ACTION', 'MGMT_INFO', 'DECLINED', 'MGMT_REJECTED']], ['pending', 'Pending accounting', ['NEW', 'ESCALATED', 'MGMT_APPROVED']], ['await', 'Awaiting payment', ['APPROVED']], ['done', 'Completed', ['PAID', 'VOID']]]
+      : [['tasks', 'Your tasks', ['NEW', 'ACTION', 'ESCALATED', 'MGMT_INFO', 'MGMT_APPROVED']], ['pending', 'To credit', ['APPROVED']], ['await', 'Awaiting invoice', ['CREDITED']], ['done', 'Completed', ['PAID', 'DECLINED', 'MGMT_REJECTED', 'VOID']]];
 
 `;
 
 const SEC_DEF_JS = `    const secDef = isOps
-      ? { tasks: [['Pay now — money is on the card', ['CREDITED'], 'var(--fgGreen)'], ['Finance needs something from you', ['ACTION'], 'var(--fgAmber)'], ['Management needs something from you', ['MGMT_INFO'], 'var(--fgAmber)'], ['Not approved', ['DECLINED'], 'var(--fgRed)']],
+      ? { tasks: [['Pay now — money is on the card', ['CREDITED'], 'var(--fgGreen)'], ['Finance needs something from you', ['ACTION'], 'var(--fgAmber)'], ['Management needs something from you', ['MGMT_INFO'], 'var(--fgAmber)'], ['Not approved', ['DECLINED'], 'var(--fgRed)'], ['Rejected by management', ['MGMT_REJECTED'], 'var(--fgRed)']],
           pending: [['Waiting on Sven', ['NEW'], 'var(--fgPurple)'], ['Management approved — with Sven', ['MGMT_APPROVED'], 'var(--fgGreen)'], ['With management', ['ESCALATED'], 'var(--fgAmberDeep)']],
           await: [['Approved — waiting on the card top-up', ['APPROVED'], 'var(--fgBlue)']],
           done: [['Paid and closed', ['PAID'], 'var(--mut)'], ['Voided', ['VOID'], 'var(--mut)']] }
@@ -817,20 +1060,21 @@ const SEC_DEF_JS = `    const secDef = isOps
             : [['Final approval — management approved', ['MGMT_APPROVED'], 'var(--fgGreen)'], ['Decide now', ['NEW'], 'var(--fgPurple)'], ['Awaiting management decision', ['ESCALATED'], 'var(--fgAmberDeep)'], ['Waiting on operations', ['ACTION', 'MGMT_INFO'], 'var(--fgAmber)']],
           pending: [['Approved — top up the card', ['APPROVED'], 'var(--fgBlue)']],
           await: [['Credited — invoice outstanding', ['CREDITED'], 'var(--fgGreen)']],
-          done: [['Paid and closed', ['PAID'], 'var(--mut)'], ['Not approved', ['DECLINED'], 'var(--fgRed)'], ['Voided', ['VOID'], 'var(--mut)']] };
+          done: [['Paid and closed', ['PAID'], 'var(--mut)'], ['Not approved', ['DECLINED'], 'var(--fgRed)'], ['Rejected by management', ['MGMT_REJECTED'], 'var(--fgRed)'], ['Voided', ['VOID'], 'var(--mut)']] };
 
 `;
 
 const ACTION_FOR_JS = `    const actionFor = r => {
       if (r.status === 'VOID') return { note: 'Voided' };
-      if (mgmtMe && r.status === 'ESCALATED') return { label: 'Decide escalation', go: () => this.open(r.id), primary: true, nav: true };
+      if (mgmtMe && (r.status === 'ESCALATED' || r.status === 'MGMT_INFO') && this.escRecipient(r, me)) return { label: 'Decide escalation', go: () => this.open(r.id), primary: true, nav: true };
+      if (r.status === 'MGMT_REJECTED') return isOps ? { label: 'See reason', go: () => this.open(r.id), nav: true } : { note: 'Rejected by management' };
       if (isOps) {
         if (r.status === 'CREDITED') return { label: 'Paid — close', go: () => this.markPaid(r.id), primary: true };
         if (r.status === 'ACTION') return { label: 'Reply to Sven', go: () => this.open(r.id), primary: true, nav: true };
         if (r.status === 'MGMT_INFO') return { label: 'Reply to management', go: () => this.open(r.id), primary: true, nav: true };
         if (r.status === 'DECLINED') return { label: 'See reason', go: () => this.open(r.id), nav: true };
         if (r.status === 'NEW') return { note: 'With Sven' };
-        if (r.status === 'ESCALATED') return { note: 'With management' };
+        if (r.status === 'ESCALATED') return this.canReplyMgmt(r, me) ? { label: 'Reply to management', go: () => this.open(r.id), primary: true, nav: true } : { note: 'With management' };
         if (r.status === 'MGMT_APPROVED') return { note: 'With Sven' };
         if (r.status === 'APPROVED') return { note: 'Awaiting top-up' };
         return { note: 'Closed' };
@@ -838,7 +1082,7 @@ const ACTION_FOR_JS = `    const actionFor = r => {
       if (r.status === 'MGMT_APPROVED') return this.canApproveReq(r) && !mgmtMe
         ? { label: 'Final approval', go: () => this.approveFull(r.id), primary: true }
         : { note: r.by === me.key ? 'Your own request' : 'With Sven' };
-      if (r.status === 'ESCALATED') return { note: 'With management' };
+      if (r.status === 'ESCALATED') return { note: this.infoReq(r) ? 'Waiting on operations' : 'With management' };
       if (r.status === 'MGMT_INFO') return { note: 'Waiting on operations' };
       if (r.status === 'NEW') return this.canApproveReq(r) && !mgmtMe
         ? { label: 'Check and approve', go: () => this.approveFull(r.id), primary: true }
@@ -857,17 +1101,18 @@ const NEXT_TEXT_FROM = `        DECLINED: 'Not approved. The reason is in the hi
       }[r.status];
       const nextIcon = { NEW: 'ph ph-hourglass', ACTION: 'ph ph-warning', APPROVED: 'ph ph-bank', CREDITED: 'ph ph-hand-coins', PAID: 'ph ph-check-circle', DECLINED: 'ph ph-prohibit' }[r.status];`;
 const NEXT_TEXT_TO = `        DECLINED: 'Not approved. The reason is in the history.',
-        ESCALATED: isOps ? 'With management. Nothing for you to do yet.' : mgmtMe ? 'Escalated to management — your decision is needed.' : 'Escalated to management — waiting for their decision.',
+        ESCALATED: isOps ? (this.infoReq(r) ? 'Management needs more information. Reply to them below.' : 'With management. Nothing for you to do yet.') : this.escRecipient(r, me) ? 'Escalated to management — your decision is needed.' : this.infoReq(r) ? 'Management asked ' + uAll[r.by].name + ' for more information.' : 'Escalated to management — waiting for their decision.',
+        MGMT_REJECTED: isOps ? 'Rejected by management. This request is closed.' : 'Rejected by management — closed. The client is free for a new request.',
         MGMT_INFO: isOps ? 'Management needs more information. Reply to them below.' : 'Management asked ' + uAll[r.by].name + ' for more information.',
         MGMT_APPROVED: isOps ? 'Management approved. Sven makes the final approval.' : mgmtMe ? 'Management approved — waiting for Sven’s final approval.' : 'Management approved — the final approval is yours.',
         VOID: 'Voided. This request is locked — nothing can be changed.'
       }[r.status] || '';
-      const nextIcon = { NEW: 'ph ph-hourglass', ACTION: 'ph ph-warning', APPROVED: 'ph ph-bank', CREDITED: 'ph ph-hand-coins', PAID: 'ph ph-check-circle', DECLINED: 'ph ph-prohibit', ESCALATED: 'ph ph-arrow-fat-line-up', MGMT_INFO: 'ph ph-question', MGMT_APPROVED: 'ph ph-seal-check', VOID: 'ph ph-lock-simple' }[r.status] || 'ph ph-info';`;
+      const nextIcon = { NEW: 'ph ph-hourglass', ACTION: 'ph ph-warning', APPROVED: 'ph ph-bank', CREDITED: 'ph ph-hand-coins', PAID: 'ph ph-check-circle', DECLINED: 'ph ph-prohibit', ESCALATED: 'ph ph-arrow-fat-line-up', MGMT_INFO: 'ph ph-question', MGMT_APPROVED: 'ph ph-seal-check', VOID: 'ph ph-lock-simple', MGMT_REJECTED: 'ph ph-prohibit' }[r.status] || 'ph ph-info';`;
 
 const ST_TAB_FROM = `        ? ({ NEW: 'pending', ACTION: 'tasks', APPROVED: 'await', CREDITED: 'tasks', PAID: 'done', DECLINED: 'tasks' })[r.status]
         : ({ NEW: 'tasks', ACTION: 'tasks', APPROVED: 'pending', CREDITED: 'await', PAID: 'done', DECLINED: 'done' })[r.status];`;
-const ST_TAB_TO = `        ? ({ NEW: 'pending', ACTION: 'tasks', APPROVED: 'await', CREDITED: 'tasks', PAID: 'done', DECLINED: 'tasks', ESCALATED: 'pending', MGMT_INFO: 'tasks', MGMT_APPROVED: 'pending', VOID: 'done' })[r.status] || 'tasks'
-        : ({ NEW: 'tasks', ACTION: 'tasks', APPROVED: 'pending', CREDITED: 'await', PAID: 'done', DECLINED: 'done', ESCALATED: 'tasks', MGMT_INFO: 'tasks', MGMT_APPROVED: 'tasks', VOID: 'done' })[r.status] || 'tasks';`;
+const ST_TAB_TO = `        ? ({ NEW: 'pending', ACTION: 'tasks', APPROVED: 'await', CREDITED: 'tasks', PAID: 'done', DECLINED: 'tasks', ESCALATED: 'pending', MGMT_INFO: 'tasks', MGMT_APPROVED: 'pending', VOID: 'done', MGMT_REJECTED: 'tasks' })[this.boardKey(r)] || 'tasks'
+        : ({ NEW: 'tasks', ACTION: 'tasks', APPROVED: 'pending', CREDITED: 'await', PAID: 'done', DECLINED: 'done', ESCALATED: 'tasks', MGMT_INFO: 'tasks', MGMT_APPROVED: 'tasks', VOID: 'done', MGMT_REJECTED: 'done' })[r.status] || 'tasks';`;
 
 const MODAL_VALS_FROM = `        hasError: !!m.error, error: m.error,
         cancel: () => this.setState({ modal: null }), confirm: () => this.confirmModal()
@@ -897,16 +1142,17 @@ const BTN_SOFT = 'class="btn" style="font-size:12.5px; border-radius:11px; backg
 const FINFAIL_MARKUP = `          <sc-if value="{{ finFail.show }}" hint-placeholder-val="{{ false }}">
             <div role="alert" style="grid-column:{{ L.span }}; display:flex; flex-direction:column; gap:10px; padding:15px 17px; border-radius:16px; background:var(--chipRedBg); border:1px solid var(--chipRedBd); animation:riseIn .26s ease">
               <div style="display:flex; align-items:flex-start; gap:10px">
-                <i class="ph ph-shield-warning" style="font-size:19px; color:var(--fgRed); flex:none; margin-top:1px"></i>
-                <div style="display:flex; flex-direction:column; gap:2px; min-width:0">
+                <i class="{{ finFail.headIcon }}" style="font-size:19px; color:var(--fgRed); flex:none; margin-top:1px"></i>
+                <div style="flex:1; display:flex; flex-direction:column; gap:2px; min-width:0">
                   <span style="font-family:var(--font-heading); font-size:13.5px; line-height:1.45; color:var(--fgRedDeep)">{{ finFail.error }}</span>
                   <span style="font-size:11px; color:var(--fgRedDeep)">{{ finFail.sub }}</span>
                 </div>
+                <span style="flex:none; font-size:11px; padding:3px 9px; border-radius:8px; background:var(--sf); border:1px solid var(--chipRedBd); color:var(--fgRedDeep); white-space:nowrap">{{ finFail.count }}</span>
               </div>
               <div style="display:flex; flex-direction:column; gap:6px">
                 <sc-for list="{{ finFail.rows }}" as="fr" hint-placeholder-count="2">
                   <div style="display:flex; align-items:flex-start; gap:9px; padding:9px 11px; border-radius:12px; background:var(--sf); border:1px solid var(--chipRedBd)">
-                    <i class="ph ph-x-circle" style="font-size:15px; color:var(--fgRed); flex:none; margin-top:1px"></i>
+                    <i class="{{ fr.icon }}" style="font-size:15px; color:{{ fr.fg }}; flex:none; margin-top:1px"></i>
                     <span style="display:flex; flex-direction:column; gap:1px; min-width:0">
                       <span style="font-size:12.5px; color:var(--ink2)">{{ fr.label }}</span>
                       <span style="font-size:11.5px; color:var(--mut); line-height:1.45">{{ fr.message }}</span>
@@ -921,11 +1167,18 @@ const FINFAIL_MARKUP = `          <sc-if value="{{ finFail.show }}" hint-placeho
                 </div>
               </sc-if>
               <sc-if value="{{ finFail.noEscalate }}" hint-placeholder-val="{{ false }}">
-                <span style="font-size:11.5px; color:var(--fgRedDeep)">This request cannot be escalated. Contact Sven.</span>
+                <span style="font-size:11.5px; color:var(--fgRedDeep); line-height:1.45">{{ finFail.noEscalateText }}</span>
               </sc-if>
               <sc-if value="{{ finFail.open }}" hint-placeholder-val="{{ false }}">
                 <div style="display:flex; flex-direction:column; gap:8px; padding:12px; border-radius:13px; background:var(--sf); border:1px solid var(--chipRedBd)">
-                  <label style="font-size:12px; color:var(--ink2)">Why should management approve this request? *</label>
+                  <span style="font-size:12px; color:var(--ink2)">Send to *</span>
+                  <div role="group" aria-label="Send to" style="display:flex; flex-wrap:wrap; gap:7px">
+                    <sc-for list="{{ finFail.targets }}" as="tg" hint-placeholder-count="4">
+                      <button type="button" sc-camel-on-click="{{ tg.go }}" aria-pressed="{{ tg.on }}" class="btn" style="font-size:12px; padding:8px 12px; min-height:36px; border-radius:999px; background:{{ tg.bg }}; border:1px solid {{ tg.bd }}; color:{{ tg.fg }}; transition:all .15s ease"><i class="{{ tg.icon }}" style="font-size:14px"></i>{{ tg.label }}</button>
+                    </sc-for>
+                  </div>
+                  <span style="font-size:11px; color:{{ finFail.targetHintFg }}; line-height:1.45">{{ finFail.targetHint }}</span>
+                  <label style="font-size:12px; color:var(--ink2); margin-top:4px">Why should management approve this request? *</label>
                   <textarea class="input" placeholder="The client paid in cash today; the receipt will be in Zoho Books by Monday." value="{{ finFail.justification }}" sc-camel-on-change="{{ finFail.onJustification }}" style="border-radius:12px; min-height:84px; background:var(--sf2)"></textarea>
                   <span style="font-size:11px; color:{{ finFail.hintFg }}">{{ finFail.hint }}</span>
                   <sc-if value="{{ finFail.sendError }}" hint-placeholder-val="{{ false }}">
@@ -967,6 +1220,28 @@ const LABEL = 'font-size:10px; letter-spacing:0.08em; text-transform:uppercase; 
 
 // B1. financial validation, B2. escalation ticket
 const DETAIL_CARDS = `
+        <sc-if value="{{ detail.wait.show }}" hint-placeholder-val="{{ false }}">
+          <section role="status" style="${CARD}; display:flex; align-items:flex-start; gap:16px; flex-wrap:wrap; background:linear-gradient(135deg,var(--sf) 55%,{{ detail.wait.bg }} 140%)">
+            <span style="position:relative; width:54px; height:54px; flex:none; display:grid; place-items:center">
+              <span style="position:absolute; inset:0; border-radius:50%; background:{{ detail.wait.ring }}; animation:zlWait 2.8s ease-out infinite"></span>
+              <span style="position:absolute; inset:0; border-radius:50%; background:{{ detail.wait.ring }}; animation:zlWait 2.8s ease-out 1.4s infinite"></span>
+              <span style="position:relative; width:46px; height:46px; border-radius:50%; display:grid; place-items:center; background:{{ detail.wait.bg }}; border:1px solid {{ detail.wait.bd }}; color:{{ detail.wait.fg }}"><i class="{{ detail.wait.icon }}" style="font-size:22px; animation:zlBob 3.4s ease-in-out infinite"></i></span>
+            </span>
+            <div style="flex:1 1 220px; min-width:0; display:flex; flex-direction:column; gap:4px">
+              <span style="font-family:var(--font-heading); font-size:16px; letter-spacing:-0.01em; color:var(--ink)">{{ detail.wait.title }}</span>
+              <span style="font-size:12.5px; color:var(--ink2); line-height:1.5">{{ detail.wait.to }}</span>
+              <span style="font-size:11.5px; color:var(--mut2)">{{ detail.wait.since }}</span>
+              <sc-if value="{{ detail.wait.info }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex; align-items:flex-start; gap:8px; margin-top:6px; padding:10px 12px; border-radius:13px; background:var(--chipAmberBg); border:1px solid var(--chipAmberBd); color:var(--fgAmberDeep); font-size:12.5px; line-height:1.5; overflow-wrap:anywhere"><i class="ph ph-chat-circle-dots" style="font-size:15px; flex:none; margin-top:2px"></i>{{ detail.wait.infoLine }}</div>
+              </sc-if>
+              <span style="font-size:12px; color:var(--mut); line-height:1.5; margin-top:4px">{{ detail.wait.line }}</span>
+              <sc-if value="{{ detail.wait.canReply }}" hint-placeholder-val="{{ false }}">
+                <button type="button" sc-camel-on-click="{{ detail.wait.reply }}" class="btn" style="align-self:flex-start; margin-top:6px; border-radius:12px; color:#fff; background:linear-gradient(140deg,#3b82f6,#1d4ed8); box-shadow:0 6px 16px rgba(29,99,230,.26)"><i class="ph ph-chat-circle-text" style="font-size:15px"></i>Reply to management</button>
+              </sc-if>
+            </div>
+          </section>
+        </sc-if>
+
         <sc-if value="{{ detail.hasFin }}" hint-placeholder-val="{{ false }}">
           <section style="${CARD}">
             <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px">
@@ -974,6 +1249,20 @@ const DETAIL_CARDS = `
               <span style="font-size:11.5px; color:var(--mut3)">{{ detail.fin.sub }}</span>
               <span style="margin-left:auto; display:inline-flex; align-items:center; gap:6px; font-size:11.5px; padding:4px 10px; border-radius:9px; background:{{ detail.fin.chipBg }}; border:1px solid {{ detail.fin.chipBd }}; color:{{ detail.fin.chipFg }}"><i class="{{ detail.fin.chipIcon }}" style="font-size:14px"></i>{{ detail.fin.chip }}</span>
             </div>
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:-2px 0 12px">
+              <span style="display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--ink3)"><i class="{{ detail.fin.routeIcon }}" style="font-size:14px; color:var(--fgBlue)"></i>{{ detail.fin.route }}</span>
+              <sc-if value="{{ detail.fin.hasConn }}" hint-placeholder-val="{{ false }}">
+                <span style="display:inline-flex; align-items:center; gap:6px; flex-wrap:wrap; margin-left:auto">
+                  <sc-for list="{{ detail.fin.conn }}" as="cn" hint-placeholder-count="2">
+                    <span title="{{ cn.text }}" style="display:inline-flex; align-items:center; gap:4px; font-size:11px; padding:3px 8px; border-radius:8px; background:{{ cn.bg }}; border:1px solid {{ cn.bd }}; color:{{ cn.fg }}"><i class="{{ cn.icon }}" style="font-size:12px"></i>{{ cn.label }}</span>
+                  </sc-for>
+                  <span style="font-size:11px; color:var(--mut3)">{{ detail.fin.connAt }}</span>
+                </span>
+              </sc-if>
+            </div>
+            <sc-if value="{{ detail.fin.hasPrimary }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex; align-items:flex-start; gap:7px; margin:-4px 0 12px; font-size:12px; color:var(--mut); line-height:1.45"><i class="ph ph-arrow-bend-down-right" style="font-size:13px; flex:none; margin-top:2px"></i>{{ detail.fin.primary }}</div>
+            </sc-if>
             <div style="display:flex; flex-direction:column; gap:8px">
               <sc-for list="{{ detail.fin.checks }}" as="fc" hint-placeholder-count="3">
                 <div style="display:flex; align-items:flex-start; gap:11px; padding:12px 14px; border-radius:14px; background:{{ fc.bg }}; border:1px solid {{ fc.bd }}">
@@ -1033,6 +1322,15 @@ const DETAIL_CARDS = `
                 </sc-if>
               </div>
             </div>
+            <sc-if value="{{ detail.esc.hasInfo }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex; align-items:flex-start; gap:10px; margin-top:10px; padding:11px 14px; border-radius:14px; background:var(--chipAmberBg); border:1px solid var(--chipAmberBd)">
+                <i class="ph ph-chat-circle-dots" style="font-size:17px; color:var(--fgAmberDeep); flex:none; margin-top:1px"></i>
+                <div style="display:flex; flex-direction:column; gap:2px; min-width:0">
+                  <span style="font-size:12.5px; color:var(--fgAmberDeep); line-height:1.5; overflow-wrap:anywhere">{{ detail.esc.infoLine }}</span>
+                  <span style="font-size:11px; color:var(--fgAmberDeep); opacity:.8">{{ detail.esc.infoAt }}</span>
+                </div>
+              </div>
+            </sc-if>
             <div style="display:grid; grid-template-columns:{{ L.grid2 }}; gap:12px 22px; margin-top:14px">
               <div>
                 <div style="${LABEL}">Justification</div>
@@ -1223,6 +1521,156 @@ const RESET_PANE = `            <sc-if value="{{ master.m_reset }}" hint-placeho
                 </section>
               </div>
             </sc-if>
+`;
+
+
+// ─── Round 2: Zoho loader, Management Requests, escalation routing, brand ───
+
+// The page's own <head> (the bundler swaps the whole document for the template, so the server's head tags
+// would be lost without these): title, icons, theme colour.
+const HEAD_FROM = '<meta name="viewport" content="width=device-width, initial-scale=1">';
+const HEAD_TO = HEAD_FROM + `
+<title>${TITLE}</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/brand/icon-32.png">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
+<meta name="theme-color" content="#1f6bff">`;
+
+// loader / waiting-card keyframes (the global prefers-reduced-motion rule below them stills every one)
+const KEYFRAMES = `  @keyframes zlFill { 0% { width: 3%; } 15% { width: 30%; } 40% { width: 58%; } 70% { width: 80%; } 100% { width: 92%; } }
+  @keyframes zlBob { 0%,100% { transform: translateY(0) rotate(0deg); } 50% { transform: translateY(-3px) rotate(-7deg); } }
+  @keyframes zlOrbit { to { transform: rotate(360deg); } }
+  @keyframes zlMsgA { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+  @keyframes zlMsgB { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+  @keyframes zlWait { 0% { transform: scale(.82); opacity: .75; } 100% { transform: scale(1.65); opacity: 0; } }
+`;
+
+// brand marks → the OneLink logo, same box, rounded like the old badge
+const logo = (px, radius, shadow) => `<img src="/brand/logo.png" alt="OneLink" width="${px}" height="${px}" style="width:${px}px; height:${px}px; flex:none; display:block; border-radius:${radius}px; object-fit:cover; box-shadow:${shadow}">`;
+const BRAND_HEAD_FROM = `      <span style="width:30px; height:30px; border-radius:10px; display:grid; place-items:center; background:linear-gradient(140deg,#3b82f6,#1d4ed8); box-shadow:0 4px 12px rgba(29,99,230,.32); color:#fff; transition:transform .2s ease" style-hover="transform:rotate(-6deg) scale(1.05)">
+        <i class="ph ph-hand-coins" style="font-size:17px"></i>
+      </span>`;
+const BRAND_HEAD_TO = `      <span style="width:30px; height:30px; flex:none; border-radius:10px; display:grid; place-items:center; transition:transform .2s ease" style-hover="transform:rotate(-6deg) scale(1.05)">
+        ${logo(30, 10, '0 4px 12px rgba(29,99,230,.32)')}
+      </span>`;
+const BRAND_BOOT_FROM = `<span style="width:54px; height:54px; border-radius:18px; display:grid; place-items:center; color:#fff; background:var(--accentGrad); box-shadow:0 14px 34px rgba(29,99,230,.32); animation:breathe 1.8s ease-in-out infinite"><i class="ph ph-hand-coins" style="font-size:26px"></i></span>`;
+const BRAND_BOOT_TO = `<span style="width:54px; height:54px; border-radius:18px; display:grid; place-items:center; animation:breathe 1.8s ease-in-out infinite">${logo(54, 18, '0 14px 34px rgba(29,99,230,.32)')}</span>`;
+const BRAND_LOGIN_FROM = `<span style="width:38px; height:38px; border-radius:13px; display:grid; place-items:center; color:#fff; background:var(--accentGrad); box-shadow:0 8px 20px rgba(29,99,230,.3)"><i class="ph ph-hand-coins" style="font-size:19px"></i></span>`;
+const BRAND_LOGIN_TO = `<span style="width:38px; height:38px; flex:none; border-radius:13px; display:grid; place-items:center">${logo(38, 13, '0 8px 20px rgba(29,99,230,.3)')}</span>`;
+
+// desktop nav: icon + count badge (Management Requests)
+const NAV_BTN_FROM = 'box-shadow:{{ nv.sh }}">{{ nv.label }}</button>';
+const NAV_BTN_TO = `box-shadow:{{ nv.sh }}; display:inline-flex; align-items:center; gap:6px"><sc-if value="{{ nv.hasIcon }}" hint-placeholder-val="{{ false }}"><i class="{{ nv.icon }}" style="font-size:14px"></i></sc-if>{{ nv.label }}<sc-if value="{{ nv.badge }}" hint-placeholder-val="{{ false }}"><span style="min-width:18px; height:18px; padding:0 5px; border-radius:9px; display:inline-grid; place-items:center; font-size:10.5px; font-weight:600; background:var(--fgAmber); color:#fff">{{ nv.badge }}</span></sc-if></button>`;
+// phone bottom nav: the same badge
+const BOTTOM_NAV_FROM = '<i class="{{ b.icon }}" style="font-size:20px"></i>{{ b.label }}';
+const BOTTOM_NAV_TO = `<span style="position:relative; display:inline-flex"><i class="{{ b.icon }}" style="font-size:20px"></i><sc-if value="{{ b.badge }}" hint-placeholder-val="{{ false }}"><span style="position:absolute; top:-5px; right:-11px; min-width:16px; height:16px; padding:0 4px; border-radius:8px; display:grid; place-items:center; font-size:9.5px; font-weight:600; background:var(--fgAmber); color:#fff">{{ b.badge }}</span></sc-if></span>{{ b.label }}`;
+
+// Ops loader: full-screen overlay, animated bar easing toward 92 %, steps, rotating line — no figures, ever
+const LOADER = `  <sc-if value="{{ zl.show }}" hint-placeholder-val="{{ false }}">
+    <div role="status" aria-live="polite" aria-busy="{{ zl.running }}" style="position:fixed; inset:0; z-index:180; display:grid; place-items:center; padding:16px; background:rgba(15,32,54,.34); backdrop-filter:blur(3px); animation:fadeIn .18s ease">
+      <div style="width:min(440px,100%); max-height:calc(100vh - 32px); overflow:auto; box-sizing:border-box; padding:24px 22px 20px; border-radius:24px; background:var(--sf); border:1px solid var(--line); box-shadow:0 26px 70px rgba(16,38,66,.28); animation:scaleIn .22s cubic-bezier(.2,.9,.3,1.2)">
+        <div style="display:flex; align-items:center; gap:14px">
+          <span style="position:relative; width:54px; height:54px; flex:none; display:grid; place-items:center">
+            <span style="position:absolute; inset:0; border-radius:50%; border:2px solid var(--line); border-top-color:var(--fgBlue); border-right-color:var(--fgBlue); animation:{{ zl.ring }}"></span>
+            <span style="width:42px; height:42px; border-radius:14px; display:grid; place-items:center; background:{{ zl.iconBg }}; color:{{ zl.iconFg }}"><i class="{{ zl.icon }}" style="font-size:21px; animation:{{ zl.iconAnim }}"></i></span>
+          </span>
+          <div style="display:flex; flex-direction:column; gap:3px; min-width:0">
+            <span style="font-family:var(--font-heading); font-size:17px; letter-spacing:-0.01em; color:var(--ink)">{{ zl.title }}</span>
+            <span style="font-size:12px; color:var(--mut); line-height:1.45">{{ zl.sub }}</span>
+          </div>
+        </div>
+        <div style="position:relative; height:8px; margin-top:18px; border-radius:6px; background:var(--tint); overflow:hidden">
+          <span style="position:absolute; left:0; top:0; bottom:0; width:{{ zl.barW }}; border-radius:6px; background:{{ zl.barBg }}; animation:{{ zl.barAnim }}; transition:width .35s ease"></span>
+          <sc-if value="{{ zl.running }}" hint-placeholder-val="{{ true }}">
+            <span style="position:absolute; top:0; bottom:0; left:0; width:35%; background:linear-gradient(90deg,rgba(255,255,255,0),rgba(255,255,255,.55),rgba(255,255,255,0)); animation:sweep 1.5s ease-in-out infinite"></span>
+          </sc-if>
+        </div>
+        <div style="margin-top:10px; min-height:19px; font-size:12.5px; color:{{ zl.msgFg }}; animation:{{ zl.msgAnim }}">{{ zl.msg }}</div>
+        <div style="display:flex; flex-direction:column; gap:8px; margin-top:14px; padding-top:14px; border-top:1px solid var(--line2)">
+          <sc-for list="{{ zl.steps }}" as="zs" hint-placeholder-count="4">
+            <div style="display:flex; align-items:flex-start; gap:10px">
+              <span style="width:22px; height:22px; flex:none; border-radius:50%; display:grid; place-items:center; background:{{ zs.bg }}; color:{{ zs.fg }}; transition:background .25s ease"><i class="{{ zs.icon }}" style="font-size:12px; animation:{{ zs.spin }}"></i></span>
+              <span style="display:flex; flex-direction:column; gap:1px; min-width:0; padding-top:2px">
+                <span style="font-size:12.5px; color:{{ zs.textFg }}; line-height:1.4">{{ zs.label }}</span>
+                <sc-if value="{{ zs.hasNote }}" hint-placeholder-val="{{ false }}">
+                  <span style="font-size:11px; color:var(--mut3)">{{ zs.note }}</span>
+                </sc-if>
+              </span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+`;
+
+// Management Requests (Sven and management only)
+const MGMT_PAGE = `    <sc-if value="{{ r_mgmt }}" hint-placeholder-val="{{ false }}">
+      <div style="max-width:1060px; margin:0 auto; display:flex; flex-direction:column; gap:{{ L.gap }}; animation:riseIn .3s ease">
+        <section style="position:relative; overflow:hidden; border-radius:{{ L.heroRadius }}; padding:{{ L.secPad }}; background:linear-gradient(135deg,var(--sf4) 0%,var(--sf2) 52%,var(--sf) 100%); box-shadow:0 14px 40px rgba(16,38,66,.08), 0 0 0 1px var(--line)">
+          <span style="position:absolute; right:-70px; top:-80px; width:230px; height:230px; border-radius:50%; background:radial-gradient(circle at 30% 30%, rgba(59,130,246,.18), rgba(59,130,246,0) 70%); animation:floatY 10s ease-in-out infinite"></span>
+          <div style="position:relative; display:flex; align-items:center; gap:13px; flex-wrap:wrap">
+            <span style="width:44px; height:44px; flex:none; border-radius:15px; display:grid; place-items:center; background:var(--chipBlueBg); color:var(--fgBlue); box-shadow:0 6px 16px rgba(29,99,230,.14)"><i class="ph ph-briefcase" style="font-size:22px"></i></span>
+            <div style="flex:1; min-width:200px">
+              <h2 style="margin:0; font-size:22px; letter-spacing:-0.02em">{{ mgmtReq.title }}</h2>
+              <p style="margin:4px 0 0; font-size:13px; color:var(--ink3); max-width:64ch; line-height:1.5">{{ mgmtReq.sub }}</p>
+            </div>
+          </div>
+          <div style="position:relative; display:grid; grid-template-columns:repeat(auto-fit,minmax(128px,1fr)); gap:10px; margin-top:16px">
+            <sc-for list="{{ mgmtReq.stats }}" as="ms" hint-placeholder-count="4">
+              <div style="padding:11px 13px; border-radius:15px; background:var(--sf); border:1px solid var(--line); display:flex; flex-direction:column; gap:2px">
+                <span style="font-size:22px; letter-spacing:-0.02em; color:{{ ms.fg }}; font-variant-numeric:tabular-nums">{{ ms.value }}</span>
+                <span style="font-size:11.5px; color:var(--mut)">{{ ms.label }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </section>
+        <sc-if value="{{ mgmtReq.empty }}" hint-placeholder-val="{{ false }}">
+          <section style="${CARD}; text-align:center; padding:34px 22px">
+            <i class="ph ph-briefcase" style="font-size:30px; color:var(--mut3)"></i>
+            <div style="font-size:14px; color:var(--ink2); margin-top:8px">No request has been escalated to management yet.</div>
+            <div style="font-size:12px; color:var(--mut3); margin-top:4px">When the financial checks fail and Operations escalate, the request appears here.</div>
+          </section>
+        </sc-if>
+        <sc-for list="{{ mgmtReq.groups }}" as="mg" hint-placeholder-count="2">
+          <section style="border-radius:24px; background:var(--sf); box-shadow:0 4px 16px rgba(16,38,66,.06), 0 0 0 1px var(--line); overflow:hidden">
+            <div style="display:flex; align-items:center; gap:10px; padding:14px 18px">
+              <span style="width:30px; height:30px; flex:none; border-radius:10px; display:grid; place-items:center; background:{{ mg.iconBg }}; color:{{ mg.color }}"><i class="{{ mg.icon }}" style="font-size:16px"></i></span>
+              <h6 style="margin:0; color:var(--ink2); font-size:13.5px">{{ mg.title }}</h6>
+              <span style="font-size:11px; font-weight:600; min-width:20px; text-align:center; padding:1px 7px; border-radius:7px; background:var(--tint); color:var(--mut)">{{ mg.count }}</span>
+            </div>
+            <sc-if value="{{ mg.empty }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex; align-items:center; gap:8px; padding:12px 18px 16px; border-top:1px solid var(--line2); font-size:12.5px; color:var(--mut3)"><i class="ph ph-check-circle" style="font-size:15px; color:var(--fgGreen)"></i>{{ mg.emptyText }}</div>
+            </sc-if>
+            <sc-for list="{{ mg.rows }}" as="mr" hint-placeholder-count="2">
+              <button type="button" sc-camel-on-click="{{ mr.go }}" style="display:flex; align-items:center; gap:10px 14px; flex-wrap:wrap; width:100%; box-sizing:border-box; text-align:left; padding:{{ L.rowPad }}; border:0; border-top:1px solid var(--line2); background:transparent; cursor:pointer; color:inherit; font:inherit; box-shadow:inset 3px 0 0 {{ mr.rail }}; transition:background .15s ease" style-hover="background:var(--sf2)">
+                <span style="flex:1 1 260px; min-width:0; display:flex; flex-direction:column; gap:3px">
+                  <span style="display:flex; align-items:center; gap:8px; flex-wrap:wrap">
+                    <span style="font-size:11.5px; color:var(--mut2); font-variant-numeric:tabular-nums">{{ mr.id }}</span>
+                    <span style="font-size:13.5px; color:var(--ink)">{{ mr.company }}</span>
+                    <sc-if value="{{ mr.info }}" hint-placeholder-val="{{ false }}">
+                      <span style="display:inline-flex; align-items:center; gap:4px; font-size:10.5px; padding:2px 8px; border-radius:7px; background:var(--chipAmberBg); border:1px solid var(--chipAmberBd); color:var(--fgAmberDeep)"><i class="ph ph-chat-circle-dots" style="font-size:12px"></i>Info requested</span>
+                    </sc-if>
+                    <sc-if value="{{ mr.mine }}" hint-placeholder-val="{{ false }}">
+                      <span style="display:inline-flex; align-items:center; gap:4px; font-size:10.5px; padding:2px 8px; border-radius:7px; background:var(--chipBlueBg); border:1px solid var(--line3); color:var(--fgBlue)"><i class="ph ph-gavel" style="font-size:12px"></i>Your decision</span>
+                    </sc-if>
+                  </span>
+                  <span style="font-size:11.5px; color:var(--mut); line-height:1.45">{{ mr.by }} · {{ mr.at }}</span>
+                  <span style="font-size:11.5px; color:var(--mut2); line-height:1.45">{{ mr.to }}</span>
+                </span>
+                <span style="display:flex; align-items:center; gap:10px; margin-left:auto; flex-wrap:wrap; justify-content:flex-end">
+                  <span style="font-size:14px; color:var(--ink); font-variant-numeric:tabular-nums; white-space:nowrap">{{ mr.amount }}</span>
+                  <span style="font-size:11px; padding:3px 9px; border-radius:8px; background:{{ mr.stBg }}; border:1px solid {{ mr.stBd }}; color:{{ mr.stFg }}; white-space:nowrap">{{ mr.status }}</span>
+                  <i class="ph ph-caret-right" style="font-size:13px; color:var(--mut3)"></i>
+                </span>
+              </button>
+            </sc-for>
+          </section>
+        </sc-for>
+      </div>
+    </sc-if>
+
 `;
 
 export const TEMPLATE_RULES = [
@@ -1450,14 +1898,14 @@ ${PEEK_MORE}              <div style="display:flex; flex-direction:column; gap:8
   // C. board
   { start: '    const tabDef = isOps\n', end: '    const inTab = k => {', to: TAB_DEF_JS },
   { start: '    const actionFor = r => {\n', end: '    const rowVM = r => {', to: ACTION_FOR_JS },
-  ["        amountColor: r.status === 'DECLINED' ? 'var(--mut4)' : 'var(--ink)',", "        amountColor: r.status === 'DECLINED' || r.status === 'VOID' ? 'var(--mut4)' : 'var(--ink)',"],
+  ["        amountColor: r.status === 'DECLINED' ? 'var(--mut4)' : 'var(--ink)',", "        amountColor: r.status === 'DECLINED' || r.status === 'VOID' || r.status === 'MGMT_REJECTED' ? 'var(--mut4)' : 'var(--ink)',"],
   { start: '    const secDef = isOps\n', end: '    const sections = secDef', to: SEC_DEF_JS },
   ["DECLINED: ['ph ph-prohibit', 'var(--fgRed)', 'var(--chipRedBg)'] };",
-   "DECLINED: ['ph ph-prohibit', 'var(--fgRed)', 'var(--chipRedBg)'], ESCALATED: ['ph ph-arrow-fat-line-up', 'var(--fgAmberDeep)', 'var(--chipAmberBg)'], MGMT_INFO: ['ph ph-question', 'var(--fgAmber)', 'var(--chipAmberBg)'], MGMT_APPROVED: ['ph ph-seal-check', 'var(--fgGreen)', 'var(--chipGreenBg)'], VOID: ['ph ph-lock-simple', 'var(--mut)', 'var(--tint)'] };"],
+   "DECLINED: ['ph ph-prohibit', 'var(--fgRed)', 'var(--chipRedBg)'], ESCALATED: ['ph ph-arrow-fat-line-up', 'var(--fgAmberDeep)', 'var(--chipAmberBg)'], MGMT_INFO: ['ph ph-question', 'var(--fgAmber)', 'var(--chipAmberBg)'], MGMT_APPROVED: ['ph ph-seal-check', 'var(--fgGreen)', 'var(--chipGreenBg)'], VOID: ['ph ph-lock-simple', 'var(--mut)', 'var(--tint)'], MGMT_REJECTED: ['ph ph-prohibit', 'var(--fgRed)', 'var(--chipRedBg)'] };"],
 
   // B. request page view model
   ["    let detail = { tiles: [], fields: [], docs: [], timeline: [], decisions: [], st: this.statusMeta('NEW') };",
-   "    let detail = { tiles: [], fields: [], docs: [], timeline: [], decisions: [], st: this.statusMeta('NEW'), fin: { checks: [] }, finAt: { checkLine: [] }, esc: { failed: [], log: [] } };"],
+   "    let detail = { tiles: [], fields: [], docs: [], timeline: [], decisions: [], st: this.statusMeta('NEW'), fin: { checks: [], conn: [] }, finAt: { checkLine: [], conn: [] }, esc: { failed: [], log: [] }, wait: { show: false } };"],
   [NEXT_TEXT_FROM, NEXT_TEXT_TO],
   ["      if (!isOps && (r.status === 'NEW' || r.status === 'ACTION')) {",
    "      if (!isOps && !mgmtMe && (r.status === 'NEW' || r.status === 'ACTION' || r.status === 'MGMT_APPROVED')) {"],
@@ -1504,9 +1952,9 @@ ${PEEK_MORE}              <div style="display:flex; flex-direction:column; gap:8
   ["        APPROVED: isOps ? 'Approved. Sven still has to put the money on the card.' : 'Approved — top up the card so ' + uAll[r.by].name + ' can pay.',",
    "        APPROVED: isOps ? 'Approved. Sven still has to put the money on the card.' : mgmtMe ? 'Approved — Sven tops up the card.' : 'Approved — top up the card so ' + uAll[r.by].name + ' can pay.',"],
   ["      if (r.status === 'NEW') acc.undecided += r.requested;",
-   "      if (mgmtMe ? r.status === 'ESCALATED' : r.status === 'NEW') acc.undecided += r.requested;"],
+   "      if (mgmtMe ? r.status === 'ESCALATED' && !this.infoReq(r) && this.escRecipient(r, me) : r.status === 'NEW') acc.undecided += r.requested;"],
   ["    const myTasks = inTab('tasks').length;",
-   "    const myTasks = mgmtMe ? inTab('tasks').filter(r => r.status === 'ESCALATED').length : inTab('tasks').length;\n    const mgmtWaitOps = mgmtMe ? inTab('tasks').filter(r => r.status === 'MGMT_INFO').length : 0;"],
+   "    const myTasks = mgmtMe ? inTab('tasks').filter(r => r.status === 'ESCALATED' && !this.infoReq(r) && this.escRecipient(r, me)).length : inTab('tasks').length;\n    const mgmtWaitOps = mgmtMe ? inTab('tasks').filter(r => this.boardKey(r) === 'MGMT_INFO').length : 0;"],
   ["sub: isOps ? 'Money on the card to spend, questions from finance, and anything that came back unapproved.' : 'New requests to decide on and anything waiting on operations.',",
    "sub: isOps ? 'Money on the card to spend, questions from finance, and anything that came back unapproved.' : mgmtMe ? 'Escalations waiting on your decision' + (mgmtWaitOps ? ' · ' + mgmtWaitOps + ' waiting on operations for the information you asked for.' : '.') : 'New requests to decide on and anything waiting on operations.',"],
   ["        : (myTasks ? myTasks + (myTasks === 1 ? ' request is' : ' requests are') + ' waiting on your decision — '",
@@ -1516,7 +1964,43 @@ ${PEEK_MORE}              <div style="display:flex; flex-direction:column; gap:8
   [MODAL_CONFIRM_FROM, MODAL_CONFIRM_TO],
   [MODAL_CANCEL_FROM, MODAL_CANCEL_TO],
   // Master Control: the reset pane, after Security
-  ['            </sc-if>\n          </div>\n        </div>\n      </div>\n    </sc-if>\n\n</main>', '            </sc-if>\n' + RESET_PANE + '          </div>\n        </div>\n      </div>\n    </sc-if>\n\n</main>']
+  ['            </sc-if>\n          </div>\n        </div>\n      </div>\n    </sc-if>\n\n</main>', '            </sc-if>\n' + RESET_PANE + '          </div>\n        </div>\n      </div>\n    </sc-if>\n\n</main>'],
+
+  // ── round 2 ────────────────────────────────────────────
+  // brand: the page's own head (title, icons), the title kept, the OneLink logo instead of the coin badge
+  [HEAD_FROM, HEAD_TO],
+  ["    this._mountAt = Date.now();\n", "    this._mountAt = Date.now();\n    this.keepTitle();\n"],
+  [BRAND_HEAD_FROM, BRAND_HEAD_TO],
+  [BRAND_BOOT_FROM, BRAND_BOOT_TO],
+  [BRAND_LOGIN_FROM, BRAND_LOGIN_TO],
+  // loader keyframes, next to the export's own (before its reduced-motion rule)
+  ['  @media (prefers-reduced-motion: reduce) {\n', KEYFRAMES + '  @media (prefers-reduced-motion: reduce) {\n'],
+  // board buckets: an escalation with an open question for Operations sits with "Management needs something from you"
+  ['      return searched.filter(r => def[2].indexOf(r.status) >= 0);', '      return searched.filter(r => def[2].indexOf(this.boardKey(r)) >= 0);'],
+  ['      const rows = searched.filter(r => d[1].indexOf(r.status) >= 0);', '      const rows = searched.filter(r => d[1].indexOf(this.boardKey(r)) >= 0);'],
+  // Management Requests: nav item (desktop), bottom-nav item (phone, in place of "Request" — the header has +), palette
+  ["const navDef = [['home', 'Home'], ['board', 'Board']]", "const navDef = [['home', 'Home'], ['board', 'Board']].concat(this.canMgmtView(me) ? [['mgmt', 'Management Requests']] : [])"],
+  ["        return { label: nv[1], bg: active ? 'var(--sf)' : 'transparent',",
+   "        const mgN = nv[0] === 'mgmt' ? this.mgmtCount() : 0;\n        return { hasIcon: nv[0] === 'mgmt', icon: nv[0] === 'mgmt' ? 'ph ph-briefcase' : '', badge: mgN ? String(mgN) : '', label: nv[1], bg: active ? 'var(--sf)' : 'transparent',"],
+  [NAV_BTN_FROM, NAV_BTN_TO],
+  ["{ label: 'Request', icon: 'ph ph-plus-circle', route: 'new',",
+   "this.canMgmtView(me) ? { label: 'Management', icon: 'ph ph-briefcase', route: 'mgmt', go: () => this.go('mgmt'), badge: this.mgmtCount() ? String(this.mgmtCount()) : '' } : { label: 'Request', icon: 'ph ph-plus-circle', route: 'new',"],
+  ["return Object.assign({}, b, { fg: active ? 'var(--fgBlue)' : 'var(--mut2)', bg: active ? 'var(--tint)' : 'transparent' });",
+   "return Object.assign({}, b, { badge: b.badge || '', fg: active ? 'var(--fgBlue)' : 'var(--mut2)', bg: active ? 'var(--tint)' : 'transparent' });"],
+  [BOTTOM_NAV_FROM, BOTTOM_NAV_TO],
+  ["      { label: 'View zero balances', hint: 'Master control',",
+   "      { label: 'Management Requests', hint: 'Escalations', icon: 'ph ph-briefcase', skip: !this.canMgmtView(me), go: () => { this.setState({ palette: false }); this.go('mgmt'); } },\n      { label: 'View zero balances', hint: 'Master control',"],
+  ["].filter(c => !c.need || this.can(c.need));", "].filter(c => !c.skip && (!c.need || this.can(c.need)));"],
+  ["      r_master: s.route === 'master' && isM,",
+   "      r_master: s.route === 'master' && isM,\n      r_mgmt: s.route === 'mgmt' && this.canMgmtView(me), mgmtReq: this.mgmtVals(), zl: this.zlVals(),"],
+  ['    <sc-if value="{{ r_home }}" hint-placeholder-val="{{ true }}">', MGMT_PAGE + '    <sc-if value="{{ r_home }}" hint-placeholder-val="{{ true }}">'],
+  // management users land on Management Requests after sign-in (and when Sven views as one of them)
+  ["this.setState({ authed: true, booting: false, userKey: o.json.user.key, route: 'home',",
+   "this.setState({ authed: true, booting: false, userKey: o.json.user.key, route: o.json.user.dept === 'MANAGEMENT' ? 'mgmt' : this.landingRoute(o.json.user.key),"],
+  ["this.setState({ userKey: k, seatFrom: k === from ? null : from, userMenu: false, confirmOut: false, route: 'home',",
+   "this.setState({ userKey: k, seatFrom: k === from ? null : from, userMenu: false, confirmOut: false, route: this.landingRoute(k),"],
+  // the Zoho loader overlay
+  ['  <sc-if value="{{ booting }}" hint-placeholder-val="{{ false }}">', LOADER + '  <sc-if value="{{ booting }}" hint-placeholder-val="{{ false }}">']
 ];
 
 // Returns { text, hit, total }. All-or-nothing: if any rule does not match exactly once, the input is returned unchanged.

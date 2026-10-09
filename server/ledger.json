@@ -1,6 +1,686 @@
 {
  "requests": [
   {
+   "id": "FR-548",
+   "by": "amina",
+   "company": "Ilia Tutubalin",
+   "person": "Ilia Tutubalin",
+   "purpose": "Golden visa and current visa cancellation",
+   "zone": "Dubai South",
+   "requested": 11800,
+   "approved": 11800,
+   "credited": 11800,
+   "status": "CREDITED",
+   "date": "08 Oct",
+   "docs": [],
+   "notes": "Valeria’s client. Golden visa 10,500 + current visa cancellation 1,300. Valeria to send the sales report.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "08 Oct · 11:31",
+     "text": "Amina requested AED 11,800 — 10,500 + 1,300"
+    },
+    {
+     "at": "08 Oct · 11:34",
+     "text": "Sven: understood"
+    },
+    {
+     "at": "08 Oct · 14:10",
+     "text": "Sven approved and credited AED 11,800"
+    }
+   ]
+  },
+  {
+   "id": "FR-547",
+   "by": "anastasiya",
+   "company": "BPTR Ventures LTD",
+   "person": "Ioana Dolejska",
+   "purpose": "Licence liquidation",
+   "zone": "—",
+   "requested": 6250,
+   "approved": null,
+   "credited": 0,
+   "status": "NEW",
+   "date": "08 Oct",
+   "docs": [],
+   "notes": "",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "08 Oct · 10:51",
+     "text": "Anastasiya requested AED 6,250"
+    },
+    {
+     "at": "08 Oct · 11:19",
+     "text": "Anastasiya listed it as pending"
+    }
+   ]
+  },
+  {
+   "id": "FR-546",
+   "by": "anastasiya",
+   "company": "Nova2win Enterprises FZ-LLC",
+   "person": "Nicholas Jorden",
+   "purpose": "Licence renewal 1 year",
+   "zone": "RAKEZ",
+   "requested": 18010,
+   "approved": null,
+   "credited": 0,
+   "status": "NEW",
+   "date": "08 Oct",
+   "docs": [],
+   "notes": "Urgent.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "08 Oct · 10:32",
+     "text": "Anastasiya requested AED 18,010"
+    },
+    {
+     "at": "08 Oct · 10:40",
+     "text": "Anastasiya: we need to pay for this — urgent"
+    },
+    {
+     "at": "08 Oct · 11:19",
+     "text": "Anastasiya listed it as pending"
+    }
+   ]
+  },
+  {
+   "id": "FR-545",
+   "by": "anastasiya",
+   "company": "Nova Oil FZ-LLC",
+   "person": "Arman Dossymbekov",
+   "purpose": "New employee visa",
+   "zone": "RAK ICC",
+   "requested": 3800,
+   "approved": 3800,
+   "credited": 3800,
+   "status": "CREDITED",
+   "date": "07 Oct",
+   "docs": [],
+   "notes": "Needed to start the visa process.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "07 Oct · 15:48",
+     "text": "Anastasiya requested AED 3,800"
+    },
+    {
+     "at": "08 Oct · 11:19",
+     "text": "Anastasiya listed it as pending"
+    },
+    {
+     "at": "08 Oct · 15:13",
+     "text": "Sven approved and credited AED 3,800"
+    }
+   ]
+  },
+  {
+   "id": "FR-544",
+   "by": "anastasiya",
+   "company": "ETD Global LTD",
+   "person": "—",
+   "purpose": "VIP medical × 2",
+   "zone": "Innovation City",
+   "requested": 1400,
+   "approved": null,
+   "credited": 0,
+   "status": "ACTION",
+   "date": "07 Oct",
+   "docs": [],
+   "notes": "Eduard’s client. Sven asked for an email.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "07 Oct · 14:05",
+     "text": "Anastasiya requested AED 1,400"
+    },
+    {
+     "at": "07 Oct · 14:06",
+     "text": "Sven: please send an email"
+    }
+   ]
+  },
+  {
+   "id": "FR-543",
+   "by": "anastasiya",
+   "company": "Noble One Limited",
+   "person": "Evgeny",
+   "purpose": "VIP medical",
+   "zone": "—",
+   "requested": 700,
+   "approved": null,
+   "credited": 0,
+   "status": "ACTION",
+   "date": "07 Oct",
+   "docs": [],
+   "notes": "Veleriia’s client. Sven asked for invoices or receipts.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "07 Oct · 14:04",
+     "text": "Anastasiya requested AED 700"
+    },
+    {
+     "at": "07 Oct · 14:04",
+     "text": "Sven: invoices or receipts required"
+    }
+   ]
+  },
+  {
+   "id": "FR-542",
+   "by": "anastasiya",
+   "company": "ETD Global LTD",
+   "person": "—",
+   "purpose": "Biometrics",
+   "zone": "Innovation City",
+   "requested": 1000,
+   "approved": null,
+   "credited": 0,
+   "status": "NEW",
+   "date": "07 Oct",
+   "docs": [],
+   "notes": "Eduard’s client. Cash.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "07 Oct · 14:02",
+     "text": "Anastasiya requested AED 1,000 in cash"
+    },
+    {
+     "at": "08 Oct · 11:19",
+     "text": "Anastasiya listed it as pending — AED 1,000 cash"
+    }
+   ]
+  },
+  {
+   "id": "FR-541",
+   "by": "anastasiya",
+   "company": "Nova Brands FZ-LLC",
+   "person": "Elie Toufiq",
+   "purpose": "Not stated in the request",
+   "zone": "—",
+   "requested": 14010,
+   "approved": null,
+   "credited": 0,
+   "status": "NEW",
+   "date": "07 Oct",
+   "docs": [],
+   "notes": "The request gives the amount only.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "07 Oct · 12:50",
+     "text": "Anastasiya requested AED 14,010"
+    },
+    {
+     "at": "08 Oct · 11:19",
+     "text": "Anastasiya listed it as pending"
+    }
+   ]
+  },
+  {
+   "id": "FR-540",
+   "by": "amina",
+   "company": "Leon",
+   "person": "Leon",
+   "purpose": "Golden visa",
+   "zone": "Dubai South",
+   "requested": 10500,
+   "approved": 10500,
+   "credited": 10500,
+   "status": "CREDITED",
+   "date": "07 Oct",
+   "docs": [],
+   "notes": "Valeriia’s client.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "07 Oct · 11:44",
+     "text": "Amina requested AED 10,500"
+    },
+    {
+     "at": "07 Oct · 11:45",
+     "text": "Sven approved and credited AED 10,500"
+    }
+   ]
+  },
+  {
+   "id": "FR-539",
+   "by": "anastasiya",
+   "company": "Noble One Limited",
+   "person": "Evgeny",
+   "purpose": "Biometrics",
+   "zone": "—",
+   "requested": 500,
+   "approved": 500,
+   "credited": 0,
+   "status": "APPROVED",
+   "date": "07 Oct",
+   "docs": [],
+   "notes": "Veleriia’s client. Paid in cash.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "07 Oct · 11:32",
+     "text": "Anastasiya requested AED 500"
+    },
+    {
+     "at": "08 Oct · 10:22",
+     "text": "Sven approved AED 500"
+    },
+    {
+     "at": "08 Oct · 11:19",
+     "text": "Anastasiya listed it as pending — AED 500 cash"
+    }
+   ]
+  },
+  {
+   "id": "FR-538",
+   "by": "amina",
+   "company": "The Grod Agency FZ- LLC",
+   "person": "Mahmoud Samy Elkourdy",
+   "purpose": "Licence renewal",
+   "zone": "—",
+   "requested": 18010,
+   "approved": 18010,
+   "credited": 0,
+   "status": "APPROVED",
+   "date": "07 Oct",
+   "docs": [],
+   "notes": "Licence expired on 7 Oct.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "07 Oct · 11:16",
+     "text": "Amina requested AED 18,010 — licence expired today"
+    },
+    {
+     "at": "08 Oct · 10:11",
+     "text": "Amina asked for approval"
+    },
+    {
+     "at": "08 Oct · 10:12",
+     "text": "Sven approved AED 18,010"
+    },
+    {
+     "at": "08 Oct · 10:38",
+     "text": "Amina: licence expired yesterday — when can we pay?"
+    },
+    {
+     "at": "08 Oct · 11:26",
+     "text": "Amina listed it as pending"
+    }
+   ]
+  },
+  {
+   "id": "FR-537",
+   "by": "wafaa",
+   "company": "Geotec Investments",
+   "person": "Ali Melteg",
+   "purpose": "Company formation — Idea 1 year",
+   "zone": "Innovation City",
+   "requested": 6600,
+   "approved": 6600,
+   "credited": 0,
+   "status": "APPROVED",
+   "date": "06 Oct",
+   "docs": [],
+   "notes": "Replaces the declined Seed 1 year request of 5 Oct.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "06 Oct · 13:09",
+     "text": "Wafaa requested an Idea 1 year credit — AED 6,600"
+    },
+    {
+     "at": "06 Oct · 13:10",
+     "text": "Sven approved AED 6,600"
+    }
+   ]
+  },
+  {
+   "id": "FR-536",
+   "by": "anastasiya",
+   "company": "Arman Dossymbekov",
+   "person": "Arman Dossymbekov",
+   "purpose": "Document attestation",
+   "zone": "RAK ICC",
+   "requested": 3500,
+   "approved": 3500,
+   "credited": 3500,
+   "status": "CREDITED",
+   "date": "05 Oct",
+   "docs": [],
+   "notes": "First requested as AED 2,800 on 5 Oct; re-sent as AED 3,500 on 6 Oct and approved at that amount. Urgent.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "05 Oct · 16:34",
+     "text": "Anastasiya requested AED 2,800 — urgent"
+    },
+    {
+     "at": "05 Oct · 16:58",
+     "text": "Anastasiya asked if she can pay"
+    },
+    {
+     "at": "05 Oct · 17:09",
+     "text": "Sven: try again"
+    },
+    {
+     "at": "06 Oct · 11:52",
+     "text": "Anastasiya re-sent the request for AED 3,500"
+    },
+    {
+     "at": "06 Oct · 11:54",
+     "text": "Sven approved and credited AED 3,500"
+    }
+   ]
+  },
+  {
+   "id": "FR-535",
+   "by": "wafaa",
+   "company": "Geotec Investments",
+   "person": "Ali Melteg",
+   "purpose": "Company formation — Seed 1 year",
+   "zone": "Innovation City",
+   "requested": 7260,
+   "approved": 0,
+   "credited": 0,
+   "status": "DECLINED",
+   "date": "05 Oct",
+   "docs": [],
+   "notes": "No amount in the request — AED 7,260 is the Seed 1 year credit used in the other requests. Not approved, no reason given. Re-raised the next day as Idea 1 year.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "05 Oct · 13:39",
+     "text": "Wafaa requested a Seed 1 year credit"
+    },
+    {
+     "at": "05 Oct · 17:35",
+     "text": "Sven did not approve"
+    }
+   ]
+  },
+  {
+   "id": "FR-534",
+   "by": "amina",
+   "company": "Ingenious Speed - FZCO",
+   "person": "—",
+   "purpose": "Liquidator report",
+   "zone": "—",
+   "requested": 1050,
+   "approved": 1050,
+   "credited": 1050,
+   "status": "CREDITED",
+   "date": "05 Oct",
+   "docs": [
+    {
+     "name": "Invoice - Onelink (Liquidation-Ingenious Speed).pdf",
+     "type": "Invoice",
+     "status": "done"
+    }
+   ],
+   "notes": "Liquidator report for an old company. Approved on email confirmation. No payment link — Sven requested a bank transfer.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "05 Oct · 12:52",
+     "text": "Amina requested AED 1,050"
+    },
+    {
+     "at": "05 Oct · 12:55",
+     "text": "Sven approved AED 1,050 — email confirmation"
+    },
+    {
+     "at": "06 Oct · 12:07",
+     "text": "Amina sent the liquidation invoice"
+    },
+    {
+     "at": "07 Oct · 13:38",
+     "text": "Amina followed up"
+    },
+    {
+     "at": "07 Oct · 13:38",
+     "text": "Sven credited AED 1,050"
+    },
+    {
+     "at": "07 Oct · 13:39",
+     "text": "Amina asked Sven to pay it by transfer — there is no payment link"
+    },
+    {
+     "at": "07 Oct · 13:43",
+     "text": "Sven requested the transfer"
+    },
+    {
+     "at": "08 Oct · 11:26",
+     "text": "Amina listed it as waiting for the invoice to be paid"
+    }
+   ]
+  },
+  {
+   "id": "FR-533",
+   "by": "maram",
+   "company": "Stef’s Foundation",
+   "person": "—",
+   "purpose": "Foundation registration",
+   "zone": "RAK ICC",
+   "requested": 1500,
+   "approved": 1500,
+   "credited": 1500,
+   "status": "CREDITED",
+   "date": "05 Oct",
+   "docs": [],
+   "notes": "Adnan asked Sven to credit it. The UpperMoon Foundation registration for Thomas Olim Sarre (AED 1,500) was declined on 11 Sep; the chat does not say whether this is the same foundation.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "05 Oct · 12:50",
+     "text": "Maram asked to pay for Stef’s foundation"
+    },
+    {
+     "at": "05 Oct · 12:51",
+     "text": "Adnan asked Sven to credit it and proceed"
+    },
+    {
+     "at": "05 Oct · 12:54",
+     "text": "Sven approved and credited AED 1,500"
+    }
+   ]
+  },
+  {
+   "id": "FR-532",
+   "by": "maram",
+   "company": "Diamond member services",
+   "person": "Thomas Olim Sarre",
+   "purpose": "Company formation — Innovation City, 0 visa (application credit)",
+   "zone": "Innovation City",
+   "requested": 6600,
+   "approved": 6600,
+   "credited": 0,
+   "status": "APPROVED",
+   "date": "05 Oct",
+   "docs": [
+    {
+     "name": "Proforma Invioce - 11267.pdf",
+     "type": "Proforma",
+     "status": "done"
+    }
+   ],
+   "notes": "Zoho name: Thomas Olim Sarre. AED 6,600 application credit, approved by Adnan. The 8 Oct proforma was sent for Stef’s parents’ company without naming it — filed here.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "05 Oct · 09:42",
+     "text": "Maram requested the AED 6,600 application credit"
+    },
+    {
+     "at": "05 Oct · 09:43",
+     "text": "Adnan approved"
+    },
+    {
+     "at": "08 Oct · 17:29",
+     "text": "Maram sent Proforma Invoice 11267 — for Stef’s parents’ company"
+    },
+    {
+     "at": "08 Oct · 17:30",
+     "text": "Adnan approved and asked Sven to proceed for Stef"
+    },
+    {
+     "at": "08 Oct · 17:31",
+     "text": "Sven: alright"
+    }
+   ]
+  },
+  {
+   "id": "FR-531",
+   "by": "amina",
+   "company": "BRIDAL BY MAISA PARTIES L.L.C",
+   "person": "—",
+   "purpose": "New visa and inspection",
+   "zone": "Mainland",
+   "requested": 7800,
+   "approved": 7800,
+   "credited": 0,
+   "status": "APPROVED",
+   "date": "01 Oct",
+   "docs": [],
+   "notes": "New visa 7,200 + inspection 600. The client already had AED 4,000 with us and paid AED 3,800 more; report sent. Loay pays it — Amina’s 8 Oct list calls it Omar’s mom.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "01 Oct · 13:01",
+     "text": "Amina requested AED 7,800 — 7,200 + 600"
+    },
+    {
+     "at": "01 Oct · 16:26",
+     "text": "Sven asked whether the confirmation email was sent"
+    },
+    {
+     "at": "01 Oct · 16:37",
+     "text": "Amina: email sent"
+    },
+    {
+     "at": "01 Oct · 17:22",
+     "text": "Sven approved AED 7,800"
+    },
+    {
+     "at": "08 Oct · 11:26",
+     "text": "Amina listed it as still to be paid by Loay"
+    }
+   ]
+  },
+  {
+   "id": "FR-530",
+   "by": "wafaa",
+   "company": "UPGRADE BY BT LIMITED",
+   "person": "Bogdan",
+   "purpose": "Certificate of incumbency",
+   "zone": "RAK ICC",
+   "requested": 1000,
+   "approved": 1000,
+   "credited": 1000,
+   "status": "CREDITED",
+   "date": "01 Oct",
+   "docs": [
+    {
+     "name": "Sales Order Confirmation Document.pdf",
+     "type": "Invoice",
+     "status": "done"
+    }
+   ],
+   "notes": "Needed for the bank account application of Bogdan’s holding company. The client has paid.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "01 Oct · 12:03",
+     "text": "Wafaa requested AED 1,000"
+    },
+    {
+     "at": "01 Oct · 12:14",
+     "text": "Wafaa: the client has paid"
+    },
+    {
+     "at": "02 Oct · 14:13",
+     "text": "Sven approved and credited AED 1,000"
+    },
+    {
+     "at": "02 Oct · 14:22",
+     "text": "Wafaa sent the Sales Order Confirmation"
+    }
+   ]
+  },
+  {
+   "id": "FR-529",
+   "by": "anastasiya",
+   "company": "Bodega Labs LTD",
+   "person": "—",
+   "purpose": "Licence cancellation",
+   "zone": "—",
+   "requested": 5600,
+   "approved": 5600,
+   "credited": 5600,
+   "status": "CREDITED",
+   "date": "01 Oct",
+   "docs": [],
+   "notes": "Fines if it is not paid. Approved on 1 Oct, credited on 7 Oct.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "01 Oct · 11:21",
+     "text": "Anastasiya requested AED 5,600"
+    },
+    {
+     "at": "01 Oct · 16:40",
+     "text": "Sven approved AED 5,600"
+    },
+    {
+     "at": "05 Oct · 10:55",
+     "text": "Anastasiya chased it — fines otherwise"
+    },
+    {
+     "at": "07 Oct · 13:50",
+     "text": "Sven credited AED 5,600"
+    }
+   ]
+  },
+  {
+   "id": "FR-528",
+   "by": "wafaa",
+   "company": "Elevate and Exceed Consulting",
+   "person": "EVA JESSICA WERNERSSON",
+   "purpose": "Company formation",
+   "zone": "Meydan FZ",
+   "requested": 16370,
+   "approved": 16370,
+   "credited": 16370,
+   "status": "CREDITED",
+   "date": "01 Oct",
+   "docs": [],
+   "notes": "Zoho name: Optimal R&K AB. Approved on 1 Oct, credited on 5 Oct.",
+   "paid": "Yes — in full",
+   "timeline": [
+    {
+     "at": "01 Oct · 10:03",
+     "text": "Wafaa requested AED 16,370 — please approve and credit"
+    },
+    {
+     "at": "01 Oct · 16:22",
+     "text": "Sven asked for the client’s Zoho name"
+    },
+    {
+     "at": "01 Oct · 16:25",
+     "text": "Sven approved AED 16,370 — Zoho name Optimal R&K AB"
+    },
+    {
+     "at": "05 Oct · 15:26",
+     "text": "Sven credited AED 16,370"
+    }
+   ]
+  },
+  {
    "id": "FR-527",
    "by": "amina",
    "company": "Prosperitas Investment Consultancy - FZCO",
@@ -48,12 +728,12 @@
    "purpose": "Equivalency",
    "zone": "Dubai South",
    "requested": 650,
-   "approved": 0,
-   "credited": 0,
-   "status": "DECLINED",
+   "approved": 650,
+   "credited": 650,
+   "status": "CREDITED",
    "date": "29 Sep",
    "docs": [],
-   "notes": "Client has not paid the full amount. He paid AED 2,000 and wants the equivalency before paying for the golden visa.",
+   "notes": "Client had not paid the full amount — he paid AED 2,000 and wants the equivalency before paying for the golden visa. Declined on 29 Sep; approved and credited on 8 Oct after Andrei spoke to Sven and Adnan asked for the agreed approval. Loay pays it.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -75,6 +755,22 @@
     {
      "at": "29 Sep · 16:14",
      "text": "Sven: sorry, cannot be approved"
+    },
+    {
+     "at": "08 Oct · 10:27",
+     "text": "Amina asked again — Andrei spoke to Sven about this client"
+    },
+    {
+     "at": "08 Oct · 10:27",
+     "text": "Adnan: please approve as agreed"
+    },
+    {
+     "at": "08 Oct · 10:27",
+     "text": "Sven approved and credited AED 650"
+    },
+    {
+     "at": "08 Oct · 11:26",
+     "text": "Amina listed it as still to be paid by Loay"
     }
    ]
   },
@@ -319,12 +1015,24 @@
    "status": "NEW",
    "date": "28 Sep",
    "docs": [],
-   "notes": "On the pending list of 28 Sep — delayed almost one month.",
+   "notes": "On the pending lists of 28 Sep, 5 Oct and 8 Oct. Fines if it is not paid.",
    "paid": "Yes — in full",
    "timeline": [
     {
      "at": "28 Sep · 12:09",
      "text": "Anastasiya listed AED 14,010 as pending"
+    },
+    {
+     "at": "01 Oct · 14:31",
+     "text": "Anastasiya asked when she can pay — otherwise fines"
+    },
+    {
+     "at": "05 Oct · 09:38",
+     "text": "Anastasiya listed it as pending again"
+    },
+    {
+     "at": "08 Oct · 11:19",
+     "text": "Anastasiya listed it as pending again"
     }
    ]
   },
@@ -909,7 +1617,7 @@
    "status": "NEW",
    "date": "21 Sep",
    "docs": [],
-   "notes": "On the pending list of 28 Sep.",
+   "notes": "On the pending lists of 28 Sep, 5 Oct and 8 Oct.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -919,6 +1627,14 @@
     {
      "at": "28 Sep · 12:09",
      "text": "Anastasiya listed it as pending for almost a month"
+    },
+    {
+     "at": "05 Oct · 09:38",
+     "text": "Anastasiya listed it as pending again"
+    },
+    {
+     "at": "08 Oct · 11:19",
+     "text": "Anastasiya listed it as pending again"
     }
    ]
   },
@@ -935,7 +1651,7 @@
    "status": "NEW",
    "date": "21 Sep",
    "docs": [],
-   "notes": "On the pending list of 28 Sep — delayed almost one month.",
+   "notes": "On the pending lists of 28 Sep, 5 Oct and 8 Oct — delayed more than a month.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -945,6 +1661,14 @@
     {
      "at": "28 Sep · 12:09",
      "text": "Anastasiya listed it as pending for almost a month"
+    },
+    {
+     "at": "05 Oct · 09:38",
+     "text": "Anastasiya listed it as pending again"
+    },
+    {
+     "at": "08 Oct · 11:19",
+     "text": "Anastasiya listed it as pending again"
     }
    ]
   },
@@ -961,7 +1685,7 @@
    "status": "CREDITED",
    "date": "21 Sep",
    "docs": [],
-   "notes": "Establishment card renewal 575 + labour file 625. Valeriia sent the report.",
+   "notes": "Establishment card renewal 575 + labour file 625. Valeriia sent the report. On 8 Oct Amina still listed the AED 625 labour file for Loay to pay.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -979,6 +1703,10 @@
     {
      "at": "29 Sep · 17:14",
      "text": "Sven credited AED 1,200"
+    },
+    {
+     "at": "08 Oct · 11:26",
+     "text": "Amina listed AED 625 (labour file) as still to be paid by Loay"
     }
    ]
   },
@@ -1017,11 +1745,11 @@
    "zone": "Meydan FZ",
    "requested": 12010,
    "approved": 12010,
-   "credited": 0,
-   "status": "APPROVED",
+   "credited": 12010,
+   "status": "CREDITED",
    "date": "18 Sep",
    "docs": [],
-   "notes": "Sat for eleven days before approval.",
+   "notes": "Sat for eleven days before approval. Credited on 6 Oct.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -1031,6 +1759,10 @@
     {
      "at": "29 Sep · 10:05",
      "text": "Sven approved AED 12,010"
+    },
+    {
+     "at": "06 Oct · 12:57",
+     "text": "Sven credited AED 12,010"
     }
    ]
   },
@@ -1109,11 +1841,11 @@
    "zone": "RAK ICC",
    "requested": 56545,
    "approved": 56545,
-   "credited": 0,
-   "status": "APPROVED",
+   "credited": 56545,
+   "status": "PAID",
    "date": "16 Sep",
    "docs": [],
-   "notes": "One single payment to RAK. Sales report sent. Amina chased the approval four times.",
+   "notes": "One single payment to RAK. Sales report sent. Amina chased the approval four times. Credited on 24 Sep; Amina paid it three minutes later.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -1131,6 +1863,14 @@
     {
      "at": "17 Sep · 16:28",
      "text": "Sven approved AED 56,545"
+    },
+    {
+     "at": "24 Sep · 14:00",
+     "text": "Sven credited AED 56,545 as one payment to RAK"
+    },
+    {
+     "at": "24 Sep · 14:03",
+     "text": "Amina paid"
     }
    ]
   },
@@ -1241,11 +1981,11 @@
    "zone": "Meydan FZ",
    "requested": 12010,
    "approved": 12010,
-   "credited": 0,
-   "status": "APPROVED",
+   "credited": 12010,
+   "status": "CREDITED",
    "date": "15 Sep",
    "docs": [],
-   "notes": "Licence had already expired — fines risk while it sat undecided.",
+   "notes": "Licence had already expired — fines risk while it sat undecided. Credited on 6 Oct.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -1259,6 +1999,10 @@
     {
      "at": "29 Sep · 10:06",
      "text": "Sven re-confirmed the approval of AED 12,010"
+    },
+    {
+     "at": "06 Oct · 12:57",
+     "text": "Sven credited AED 12,010"
     }
    ]
   },
@@ -1296,12 +2040,12 @@
    "purpose": "New business set-up on Innovation City credits",
    "zone": "Innovation City",
    "requested": 15490,
-   "approved": null,
-   "credited": 0,
-   "status": "ACTION",
+   "approved": 8470,
+   "credited": 2020,
+   "status": "CREDITED",
    "date": "14 Sep",
    "docs": [],
-   "notes": "Stef’s client. AED 6,600 of our credit plus the balance. Finance pays net-off amounts — the costs have to be clarified first.",
+   "notes": "Stef’s client. Finance pays net-off amounts, so the costs were re-stated: AED 2,020 credited to the card and AED 6,450 taken from the RAK DAO credits.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -1323,6 +2067,22 @@
     {
      "at": "14 Sep · 16:44",
      "text": "Sven asked for the costs to be clarified — we pay net-off amounts"
+    },
+    {
+     "at": "15 Sep · 11:04",
+     "text": "Sven asked her to update the costs"
+    },
+    {
+     "at": "15 Sep · 11:05",
+     "text": "Anastasiya re-sent it — AED 6,450 of our credits plus AED 8,950 to pay"
+    },
+    {
+     "at": "15 Sep · 17:23",
+     "text": "Anastasiya re-sent it — AED 6,450 of our credits plus AED 2,020 to pay"
+    },
+    {
+     "at": "15 Sep · 17:25",
+     "text": "Sven approved and credited AED 2,020 — the rest from the RAK DAO credits (AED 6,450)"
     }
    ]
   },
@@ -1335,11 +2095,11 @@
    "zone": "Dubai South",
    "requested": 206,
    "approved": 206,
-   "credited": 0,
-   "status": "APPROVED",
+   "credited": 206,
+   "status": "CREDITED",
    "date": "14 Sep",
    "docs": [],
-   "notes": "",
+   "notes": "Credited on 15 Sep.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -1349,6 +2109,10 @@
     {
      "at": "14 Sep · 16:08",
      "text": "Sven approved AED 206"
+    },
+    {
+     "at": "15 Sep · 16:47",
+     "text": "Sven credited AED 206"
     }
    ]
   },
@@ -1456,12 +2220,12 @@
    "purpose": "Licence renewal and Ejari",
    "zone": "Mainland",
    "requested": 16100,
-   "approved": null,
-   "credited": 0,
-   "status": "NEW",
+   "approved": 16100,
+   "credited": 16100,
+   "status": "CREDITED",
    "date": "14 Sep",
    "docs": [],
-   "notes": "Licence PV 13,500 plus Ejari 2,600. Valeriia sent the report on 11 Sep. Licence expires 18 Sep with no grace period.",
+   "notes": "Licence PV 13,500 plus Ejari 2,600. Valeriia sent the report on 11 Sep. Licence expires 18 Sep with no grace period. Approved and credited on 15 Sep.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -1475,6 +2239,10 @@
     {
      "at": "14 Sep · 10:46",
      "text": "Amina noted her clients paid in advance, so they cannot carry the fines"
+    },
+    {
+     "at": "15 Sep · 17:27",
+     "text": "Sven approved and credited AED 16,100"
     }
    ]
   },
@@ -1491,7 +2259,7 @@
    "status": "APPROVED",
    "date": "14 Sep",
    "docs": [],
-   "notes": "AED 2,500 for the IFZA cancellation and AED 1,575 in liquidator fees. Declined on 17 Sep while the payment had not cleared; approved on 21 Sep once it was received.",
+   "notes": "AED 2,500 for the IFZA cancellation and AED 1,575 in liquidator fees. Declined on 17 Sep while the payment had not cleared; approved on 21 Sep once it was received. On 29 Sep the AED 2,500 went into the AED 20,960 cancellation-plus-fines request (FR-527), credited the same day.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -1517,6 +2285,14 @@
     {
      "at": "21 Sep · 10:04",
      "text": "Sven approved AED 4,075 — report sent"
+    },
+    {
+     "at": "29 Sep · 16:34",
+     "text": "Amina: the AED 2,500 was already approved — now requested with the IFZA fines (AED 20,960)"
+    },
+    {
+     "at": "29 Sep · 17:12",
+     "text": "Sven approved and credited the AED 20,960 that includes the AED 2,500"
     }
    ]
   },
@@ -2133,6 +2909,10 @@
     {
      "at": "07 Sep · 15:02",
      "text": "Sven asked for the request by email before proceeding"
+    },
+    {
+     "at": "21 Sep · 10:14",
+     "text": "Anastasiya asked Ahmed to approve the payment for the licence cancellation"
     }
    ]
   },
@@ -2449,7 +3229,7 @@
    "status": "CREDITED",
    "date": "01 Sep",
    "docs": [],
-   "notes": "Pending almost a month. Approved and credited on 29 Sep; Amina confirmed paid.",
+   "notes": "Pending almost a month. Approved and credited on 29 Sep, but Anastasiya still listed it as pending on 5 and 8 Oct with late renewal fines; Sven credited it again on 8 Oct.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -2475,6 +3255,18 @@
     {
      "at": "29 Sep · 17:15",
      "text": "Amina: paid"
+    },
+    {
+     "at": "05 Oct · 09:38",
+     "text": "Anastasiya listed it as pending again"
+    },
+    {
+     "at": "08 Oct · 11:19",
+     "text": "Anastasiya listed it as pending — late renewal fines"
+    },
+    {
+     "at": "08 Oct · 14:24",
+     "text": "Sven credited AED 12,520 again"
     }
    ]
   },
@@ -2517,7 +3309,7 @@
    "status": "NEW",
    "date": "31 Aug",
    "docs": [],
-   "notes": "On the pending payment list of 4 and 8 Sep — still no decision.",
+   "notes": "On the pending payment lists of 4 and 8 Sep, 28 Sep, 5 Oct and 8 Oct — still no decision.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -2535,6 +3327,14 @@
     {
      "at": "28 Sep · 12:09",
      "text": "Anastasiya listed it again — delayed almost one month"
+    },
+    {
+     "at": "05 Oct · 09:38",
+     "text": "Anastasiya listed it as pending again"
+    },
+    {
+     "at": "08 Oct · 11:19",
+     "text": "Anastasiya listed it as pending again"
     }
    ]
   },
@@ -2587,8 +3387,8 @@
    "zone": "RAK ICC",
    "requested": 2750,
    "approved": 2750,
-   "credited": 56545,
-   "status": "PAID",
+   "credited": 2750,
+   "status": "CREDITED",
    "date": "31 Aug",
    "docs": [
     {
@@ -2597,7 +3397,7 @@
      "status": "done"
     }
    ],
-   "notes": "Client paid the week before; the share transfer cannot start until this is paid.",
+   "notes": "Client paid the week before; the share transfer cannot start until this is paid. The AED 56,545 RAK payment of 24 Sep belongs to the licence upgrade request (FR-493).",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -2611,14 +3411,6 @@
     {
      "at": "02 Sep · 13:57",
      "text": "Sven approved and credited AED 2,750"
-    },
-    {
-     "at": "24 Sep · 14:00",
-     "text": "Sven credited AED 56,545 as one payment to RAK"
-    },
-    {
-     "at": "24 Sep · 14:03",
-     "text": "Amina paid"
     }
    ]
   },
@@ -4425,8 +5217,8 @@
    "zone": "Dubai South",
    "requested": 3520,
    "approved": 3520,
-   "credited": 0,
-   "status": "APPROVED",
+   "credited": 3520,
+   "status": "CREDITED",
    "date": "31 Jul",
    "docs": [
     {
@@ -4435,7 +5227,7 @@
      "status": "done"
     }
    ],
-   "notes": "Money in transit.",
+   "notes": "Money was in transit. Credited on 7 Aug.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -4449,6 +5241,10 @@
     {
      "at": "31 Jul · 11:24",
      "text": "Sven confirmed the money is in transit"
+    },
+    {
+     "at": "07 Aug · 10:23",
+     "text": "Mai credited AED 3,520"
     }
    ]
   },
@@ -4593,8 +5389,8 @@
    "zone": "Meydan FZ",
    "requested": 10820,
    "approved": 10820,
-   "credited": 0,
-   "status": "APPROVED",
+   "credited": 10820,
+   "status": "CREDITED",
    "date": "30 Jul",
    "docs": [
     {
@@ -4603,7 +5399,7 @@
      "status": "done"
     }
    ],
-   "notes": "Approved but cannot pay yet — awaiting funds.",
+   "notes": "Approved but could not be paid until the funds arrived. Credited on 7 Aug.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -4613,6 +5409,10 @@
     {
      "at": "30 Jul · 10:55",
      "text": "Sven approved AED 10,820 — cannot pay yet"
+    },
+    {
+     "at": "07 Aug · 11:04",
+     "text": "Mai credited AED 10,820"
     }
    ]
   },
@@ -4717,8 +5517,8 @@
    "zone": "Meydan FZ",
    "requested": 6000,
    "approved": 6000,
-   "credited": 0,
-   "status": "APPROVED",
+   "credited": 6000,
+   "status": "CREDITED",
    "date": "29 Jul",
    "docs": [
     {
@@ -4727,7 +5527,7 @@
      "status": "done"
     }
    ],
-   "notes": "",
+   "notes": "Credited on 4 Aug.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -4737,6 +5537,10 @@
     {
      "at": "29 Jul · 14:38",
      "text": "Sven approved AED 6,000"
+    },
+    {
+     "at": "04 Aug · 13:34",
+     "text": "Mai credited AED 6,000"
     }
    ]
   },
@@ -4749,8 +5553,8 @@
    "zone": "IFZA",
    "requested": 31260,
    "approved": 31260,
-   "credited": 0,
-   "status": "APPROVED",
+   "credited": 31260,
+   "status": "CREDITED",
    "date": "28 Jul",
    "docs": [
     {
@@ -4764,7 +5568,7 @@
      "status": "done"
     }
    ],
-   "notes": "Approved, but the client balance in Zoho does not cover it yet — finance has to verify availability before the transfer is released.",
+   "notes": "Approved, but the client balance in Zoho did not cover it yet — finance had to verify availability before the transfer was released. Credited on 4 Aug.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -4778,6 +5582,10 @@
     {
      "at": "28 Jul · 15:30",
      "text": "Escalated to Adnan — no client balance available yet"
+    },
+    {
+     "at": "04 Aug · 13:33",
+     "text": "Mai credited AED 31,260"
     }
    ]
   },
@@ -7427,12 +8235,18 @@
    "purpose": "Secretary change",
    "zone": "Meydan FZ",
    "requested": 1535,
-   "approved": null,
-   "credited": 0,
-   "status": "ACTION",
+   "approved": 1535,
+   "credited": 1535,
+   "status": "PAID",
    "date": "02 Apr",
-   "docs": [],
-   "notes": "Hallrey had already paid extra as per the allocation — Sven had to check with Valeria first.",
+   "docs": [
+    {
+     "name": "HALLREY COMMERCIAL FZCO - tax invoice.pdf",
+     "type": "Invoice",
+     "status": "done"
+    }
+   ],
+   "notes": "Hallrey had already paid extra as per the allocation — Sven had to check with Valeria first. Paid together with the Ranveld secretary change; the Hallrey tax invoice came in on 10 Apr.",
    "paid": "Yes — in full",
    "timeline": [
     {
@@ -7446,6 +8260,14 @@
     {
      "at": "02 Apr · 13:40",
      "text": "Sven asked for the invoice so he can correct the GP"
+    },
+    {
+     "at": "10 Apr · 11:28",
+     "text": "Anastasiya sent the HALLREY tax invoice"
+    },
+    {
+     "at": "10 Apr · 11:49",
+     "text": "Sven: both payments made — Hallrey invoice received, Ranveld invoice still needed"
     }
    ]
   },
@@ -9354,6 +10176,411 @@
    "kind": "msg",
    "text": "@Loay may I please get the receipts or invoices for these payments that have been made?",
    "req": null
+  },
+  {
+   "id": "c161",
+   "day": "01 Oct",
+   "at": "10:03",
+   "who": "wafaa",
+   "kind": "req",
+   "text": "EVA JESSICA WERNERSSON · Elevate and Exceed Consulting\nCompany formation (Meydan) · AED 16,370",
+   "req": "FR-528"
+  },
+  {
+   "id": "c162",
+   "day": "01 Oct",
+   "at": "11:21",
+   "who": "anastasiya",
+   "kind": "req",
+   "text": "Bodega Labs LTD\nLicence cancellation · AED 5,600",
+   "req": "FR-529"
+  },
+  {
+   "id": "c163",
+   "day": "01 Oct",
+   "at": "12:03",
+   "who": "wafaa",
+   "kind": "req",
+   "text": "Bogdan · UPGRADE BY BT LIMITED\nCertificate of incumbency (RAK ICC) · AED 1,000\nNotes: for the bank account application of Bogdan’s holding company",
+   "req": "FR-530"
+  },
+  {
+   "id": "c164",
+   "day": "01 Oct",
+   "at": "13:01",
+   "who": "amina",
+   "kind": "req",
+   "text": "BRIDAL BY MAISA PARTIES L.L.C\nNew visa + inspection · 7,200 + 600 = AED 7,800\nNotes: client already has 4,000 with us and paid 3,800; report sent",
+   "req": "FR-531"
+  },
+  {
+   "id": "c165",
+   "day": "01 Oct",
+   "at": "16:25",
+   "who": "sven",
+   "kind": "ok",
+   "text": "APPROVED · Elevate and Exceed Consulting (Zoho: Optimal R&K AB) · company formation · AED 16,370",
+   "req": "FR-528"
+  },
+  {
+   "id": "c166",
+   "day": "01 Oct",
+   "at": "16:40",
+   "who": "sven",
+   "kind": "ok",
+   "text": "APPROVED · Bodega Labs LTD · licence cancellation · AED 5,600",
+   "req": "FR-529"
+  },
+  {
+   "id": "c167",
+   "day": "01 Oct",
+   "at": "17:22",
+   "who": "sven",
+   "kind": "ok",
+   "text": "APPROVED · BRIDAL BY MAISA PARTIES L.L.C · new visa + inspection · AED 7,800",
+   "req": "FR-531"
+  },
+  {
+   "id": "c168",
+   "day": "02 Oct",
+   "at": "14:13",
+   "who": "sven",
+   "kind": "ok",
+   "text": "APPROVED & CREDITED · UPGRADE BY BT LIMITED · certificate of incumbency · AED 1,000",
+   "req": "FR-530"
+  },
+  {
+   "id": "c169",
+   "day": "05 Oct",
+   "at": "09:42",
+   "who": "maram",
+   "kind": "req",
+   "text": "Thomas Olim Sarre · Diamond member services\nCompany formation — Innovation City, 0 visa · AED 6,600 application credit",
+   "req": "FR-532"
+  },
+  {
+   "id": "c170",
+   "day": "05 Oct",
+   "at": "09:43",
+   "who": "adnan",
+   "kind": "msg",
+   "text": "Approved",
+   "req": "FR-532"
+  },
+  {
+   "id": "c171",
+   "day": "05 Oct",
+   "at": "12:52",
+   "who": "amina",
+   "kind": "req",
+   "text": "Ingenious Speed - FZCO\nLiquidator report · AED 1,050",
+   "req": "FR-534"
+  },
+  {
+   "id": "c172",
+   "day": "05 Oct",
+   "at": "12:54",
+   "who": "sven",
+   "kind": "ok",
+   "text": "APPROVED & CREDITED · Stef’s Foundation · foundation registration · AED 1,500",
+   "req": "FR-533"
+  },
+  {
+   "id": "c173",
+   "day": "05 Oct",
+   "at": "12:55",
+   "who": "sven",
+   "kind": "ok",
+   "text": "APPROVED · Ingenious Speed - FZCO · liquidator report · AED 1,050 (email confirmation)",
+   "req": "FR-534"
+  },
+  {
+   "id": "c174",
+   "day": "05 Oct",
+   "at": "13:39",
+   "who": "wafaa",
+   "kind": "req",
+   "text": "Ali Melteg · Geotec Investments\nNew company formation (Innovation City) · Seed 1 year",
+   "req": "FR-535"
+  },
+  {
+   "id": "c175",
+   "day": "05 Oct",
+   "at": "15:26",
+   "who": "sven",
+   "kind": "ok",
+   "text": "CREDITED · Elevate and Exceed Consulting · company formation · AED 16,370",
+   "req": "FR-528"
+  },
+  {
+   "id": "c176",
+   "day": "05 Oct",
+   "at": "16:34",
+   "who": "anastasiya",
+   "kind": "req",
+   "text": "Arman Dossymbekov\nDocument attestation · AED 2,800\nUrgent please",
+   "req": "FR-536"
+  },
+  {
+   "id": "c177",
+   "day": "05 Oct",
+   "at": "17:35",
+   "who": "sven",
+   "kind": "no",
+   "text": "NOT APPROVED · Geotec Investments · new company formation · Seed 1 year",
+   "req": "FR-535"
+  },
+  {
+   "id": "c178",
+   "day": "06 Oct",
+   "at": "11:54",
+   "who": "sven",
+   "kind": "ok",
+   "text": "APPROVED & CREDITED · Arman Dossymbekov · document attestation · AED 3,500",
+   "req": "FR-536"
+  },
+  {
+   "id": "c179",
+   "day": "06 Oct",
+   "at": "12:57",
+   "who": "sven",
+   "kind": "ok",
+   "text": "CREDITED · A Magic Shop LLC · licence renewal · AED 12,010",
+   "req": "FR-489"
+  },
+  {
+   "id": "c180",
+   "day": "06 Oct",
+   "at": "12:57",
+   "who": "sven",
+   "kind": "ok",
+   "text": "CREDITED · Shop Outlet LLC · licence renewal · AED 12,010",
+   "req": "FR-496"
+  },
+  {
+   "id": "c181",
+   "day": "06 Oct",
+   "at": "13:09",
+   "who": "wafaa",
+   "kind": "req",
+   "text": "Ali Melteg · Geotec Investments\nNew company formation (Innovation City) · Idea 1 year · AED 6,600",
+   "req": "FR-537"
+  },
+  {
+   "id": "c182",
+   "day": "06 Oct",
+   "at": "13:10",
+   "who": "sven",
+   "kind": "ok",
+   "text": "APPROVED · Geotec Investments · Idea 1 year · AED 6,600",
+   "req": "FR-537"
+  },
+  {
+   "id": "c183",
+   "day": "07 Oct",
+   "at": "11:16",
+   "who": "amina",
+   "kind": "req",
+   "text": "Mahmoud Samy Elkourdy · The Grod Agency FZ- LLC\nLicence renewal · AED 18,010\nNotes: licence expired today",
+   "req": "FR-538"
+  },
+  {
+   "id": "c184",
+   "day": "07 Oct",
+   "at": "11:32",
+   "who": "anastasiya",
+   "kind": "req",
+   "text": "Evgeny · Noble One Limited\nBiometrics · AED 500\nVeleriia’s client",
+   "req": "FR-539"
+  },
+  {
+   "id": "c185",
+   "day": "07 Oct",
+   "at": "11:44",
+   "who": "amina",
+   "kind": "req",
+   "text": "Leon\nGolden visa · AED 10,500\nNotes: Valeriia’s client",
+   "req": "FR-540"
+  },
+  {
+   "id": "c186",
+   "day": "07 Oct",
+   "at": "11:45",
+   "who": "sven",
+   "kind": "ok",
+   "text": "APPROVED & CREDITED · Leon · golden visa · AED 10,500",
+   "req": "FR-540"
+  },
+  {
+   "id": "c187",
+   "day": "07 Oct",
+   "at": "12:50",
+   "who": "anastasiya",
+   "kind": "req",
+   "text": "Elie Toufiq · Nova Brands FZ-LLC\nAED 14,010",
+   "req": "FR-541"
+  },
+  {
+   "id": "c188",
+   "day": "07 Oct",
+   "at": "13:38",
+   "who": "sven",
+   "kind": "ok",
+   "text": "CREDITED · Ingenious Speed - FZCO · liquidator report · AED 1,050",
+   "req": "FR-534"
+  },
+  {
+   "id": "c189",
+   "day": "07 Oct",
+   "at": "13:50",
+   "who": "sven",
+   "kind": "ok",
+   "text": "CREDITED · Bodega Labs LTD · licence cancellation · AED 5,600",
+   "req": "FR-529"
+  },
+  {
+   "id": "c190",
+   "day": "07 Oct",
+   "at": "14:02",
+   "who": "anastasiya",
+   "kind": "req",
+   "text": "ETD GLOBAL\nBiometrics · AED 1,000 cash\nEduard’s client",
+   "req": "FR-542"
+  },
+  {
+   "id": "c191",
+   "day": "07 Oct",
+   "at": "14:04",
+   "who": "anastasiya",
+   "kind": "req",
+   "text": "Evgeny · Noble One Limited\nVIP medical · AED 700\nVeleriia’s client",
+   "req": "FR-543"
+  },
+  {
+   "id": "c192",
+   "day": "07 Oct",
+   "at": "14:04",
+   "who": "sven",
+   "kind": "msg",
+   "text": "Invoices or receipts required",
+   "req": "FR-543"
+  },
+  {
+   "id": "c193",
+   "day": "07 Oct",
+   "at": "14:05",
+   "who": "anastasiya",
+   "kind": "req",
+   "text": "ETD GLOBAL\n2 VIP medical · AED 1,400\nEduard’s client",
+   "req": "FR-544"
+  },
+  {
+   "id": "c194",
+   "day": "07 Oct",
+   "at": "14:06",
+   "who": "sven",
+   "kind": "msg",
+   "text": "Please send email",
+   "req": "FR-544"
+  },
+  {
+   "id": "c195",
+   "day": "07 Oct",
+   "at": "15:48",
+   "who": "anastasiya",
+   "kind": "req",
+   "text": "Arman Dossymbekov · Nova Oil FZ-LLC\nNew employee visa · AED 3,800\nWe need to start the process",
+   "req": "FR-545"
+  },
+  {
+   "id": "c196",
+   "day": "08 Oct",
+   "at": "10:12",
+   "who": "sven",
+   "kind": "ok",
+   "text": "APPROVED · The Grod Agency FZ- LLC · licence renewal · AED 18,010",
+   "req": "FR-538"
+  },
+  {
+   "id": "c197",
+   "day": "08 Oct",
+   "at": "10:22",
+   "who": "sven",
+   "kind": "ok",
+   "text": "APPROVED · Noble One Limited · biometrics · AED 500",
+   "req": "FR-539"
+  },
+  {
+   "id": "c198",
+   "day": "08 Oct",
+   "at": "10:27",
+   "who": "sven",
+   "kind": "ok",
+   "text": "APPROVED & CREDITED · Neelakantam Kodali · equivalency · AED 650",
+   "req": "FR-526"
+  },
+  {
+   "id": "c199",
+   "day": "08 Oct",
+   "at": "10:32",
+   "who": "anastasiya",
+   "kind": "req",
+   "text": "Nicholas Jorden · Nova2win Enterprises FZ-LLC\nLicence renewal 1 year (RAKEZ) · AED 18,010",
+   "req": "FR-546"
+  },
+  {
+   "id": "c200",
+   "day": "08 Oct",
+   "at": "10:51",
+   "who": "anastasiya",
+   "kind": "req",
+   "text": "Ioana Dolejska · BPTR Ventures LTD\nLicence liquidation · AED 6,250",
+   "req": "FR-547"
+  },
+  {
+   "id": "c201",
+   "day": "08 Oct",
+   "at": "11:31",
+   "who": "amina",
+   "kind": "req",
+   "text": "Ilia Tutubalin\nGolden visa + current visa cancellation · 10,500 + 1,300\nNotes: Valeria’s client",
+   "req": "FR-548"
+  },
+  {
+   "id": "c202",
+   "day": "08 Oct",
+   "at": "14:10",
+   "who": "sven",
+   "kind": "ok",
+   "text": "APPROVED & CREDITED · Ilia Tutubalin · golden visa + visa cancellation · AED 11,800",
+   "req": "FR-548"
+  },
+  {
+   "id": "c203",
+   "day": "08 Oct",
+   "at": "14:24",
+   "who": "sven",
+   "kind": "ok",
+   "text": "CREDITED · Redacted Group LLC - FZ · licence renewal 1 year · AED 12,520",
+   "req": "FR-454"
+  },
+  {
+   "id": "c204",
+   "day": "08 Oct",
+   "at": "15:13",
+   "who": "sven",
+   "kind": "ok",
+   "text": "APPROVED AND CREDITED · Nova Oil FZ-LLC · new employee visa · AED 3,800",
+   "req": "FR-545"
+  },
+  {
+   "id": "c205",
+   "day": "08 Oct",
+   "at": "17:30",
+   "who": "adnan",
+   "kind": "msg",
+   "text": "Approved — @Sven please proceed for Stef",
+   "req": "FR-532"
   }
  ],
  "notifications": [
@@ -10072,5 +11299,28 @@
    "req": "",
    "client": ""
   }
- ]
+ ],
+ "previous": {
+  "FR-403": "848815ce670dfb03ffa8",
+  "FR-424": "48020e0d4c2aaf3e4b67",
+  "FR-425": "ad59a6cee0533f54e8a5",
+  "FR-426": "9fdf609a98c741cc8d48",
+  "FR-430": "80b814b1151a815d9083",
+  "FR-450": "2ebdee5e4c89bc6f8e62",
+  "FR-452": "4ac7aa0ad948de56739a",
+  "FR-454": "f99baac8dce5716d2178",
+  "FR-464": "54eff17c6d8cec07e21b",
+  "FR-482": "70e58b4c8f8d07d5a9d6",
+  "FR-483": "aff3a3ed3c7c5d749e71",
+  "FR-487": "02f7edf8cd1e71f3431a",
+  "FR-488": "cbbdebbd31a652575428",
+  "FR-489": "7b69350c25fd1081da79",
+  "FR-493": "efad120bfbf35681553b",
+  "FR-496": "6217b71ebcc4255f0e24",
+  "FR-498": "28a2ac0564b8dbe59711",
+  "FR-499": "6fd6cedf63e9be991c29",
+  "FR-500": "205bbd05698f6890fd0d",
+  "FR-518": "3e0c98f25694ba0aad24",
+  "FR-526": "a537976f492eb94cbcd0"
+ }
 }

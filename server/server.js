@@ -2,11 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { google } from 'googleapis';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { patchPage } from './client-workflow.js';
-import { evaluateFinance, financeForOps } from './finance-rules.js';
+import { evaluateFinance, evaluateBooksCrossCheck, crossCheckWindow, financeForOps } from './finance-rules.js';
+import { ledgerHash, LEDGER_KEYS } from './ledger-hash.js';
 
 // ---- cloud.js ----
 const M_cloud = await (async () => {
@@ -199,26 +201,45 @@ function parseCsv(text) {
 const BALANCE_TTL = 60_000, JOB_DEADLINE = 25_000;
 const zaErr = (msg, code = 'ANALYTICS') => Object.assign(new Error(msg), { code });
 
+// One Analytics HTTP call. A timeout / abort, a network error or a 5xx is retried once, always inside the job's deadline
+// (each attempt's timeout is cut to the time left), so a slow moment at Zoho does not fail a whole refresh.
+async function zaFetch(url, headers, deadline, what) {
+  for (let attempt = 0; ; attempt++) {
+    const left = deadline - Date.now();
+    if (left <= 0) throw zaErr(`Zoho Analytics export did not finish within ${JOB_DEADLINE / 1000} s`);
+    const again = () => attempt === 0 && deadline - Date.now() > 1000;
+    let res;
+    try { res = await fetch(url, { headers, signal: AbortSignal.timeout(Math.min(15_000, left)) }); }
+    catch (e) {
+      const timeout = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
+      if ((timeout || e instanceof TypeError) && again()) { console.warn(`Zoho Analytics ${what}: ${e.message} — retrying once`); continue; }
+      throw timeout ? zaErr(`Zoho Analytics ${what} timed out`) : e;
+    }
+    if (res.status >= 500 && again()) { await res.text().catch(() => {}); console.warn(`Zoho Analytics ${what}: HTTP ${res.status} — retrying once`); continue; }
+    return res;
+  }
+}
+
 async function analyticsSql(sql, what = 'balance') {
   const t = await accessToken();
-  const h = { headers: { Authorization: 'Zoho-oauthtoken ' + t, 'ZANALYTICS-ORGID': zaOrg() }, signal: AbortSignal.timeout(15_000) };
+  const h = { Authorization: 'Zoho-oauthtoken ' + t, 'ZANALYTICS-ORGID': zaOrg() };
   const base = `https://analyticsapi.zoho.${dc()}/restapi/v2/bulk/workspaces/${zaWs()}`;
   const check = async (res, what) => {
     if (res.ok) return res;
     if (res.status === 429) throw zaErr('Zoho Analytics rate limit', 'RATE');
     throw zaErr(`Zoho Analytics ${what} ${res.status} ${(await res.text()).slice(0, 200)}`);
   };
-  const t0 = Date.now();
-  const r1 = await check(await fetch(`${base}/data?CONFIG=${encodeURIComponent(JSON.stringify({ sqlQuery: sql, responseFormat: 'csv' }))}`, h), 'export');
+  const t0 = Date.now(), deadline = t0 + JOB_DEADLINE;
+  const r1 = await check(await zaFetch(`${base}/data?CONFIG=${encodeURIComponent(JSON.stringify({ sqlQuery: sql, responseFormat: 'csv' }))}`, h, deadline, what + ' export'), 'export');
   const jobId = (await r1.json())?.data?.jobId;
   if (!jobId) throw zaErr('Zoho Analytics returned no export job');
   for (let wait = 300; Date.now() - t0 < JOB_DEADLINE; wait = Math.min(wait * 1.4, 1000)) {
     await new Promise(r => setTimeout(r, wait));
-    const r2 = await check(await fetch(`${base}/exportjobs/${jobId}`, h), 'job');
+    const r2 = await check(await zaFetch(`${base}/exportjobs/${jobId}`, h, deadline, what + ' job'), 'job');
     const code = String((await r2.json())?.data?.jobCode || '');
     if (code === '1003' || code === '1005') throw zaErr('Zoho Analytics export job failed (' + code + ')');
     if (code !== '1004') continue;
-    const r3 = await check(await fetch(`${base}/exportjobs/${jobId}/data`, h), 'download');
+    const r3 = await check(await zaFetch(`${base}/exportjobs/${jobId}/data`, h, deadline, what + ' download'), 'download');
     const rows = parseCsv(await r3.text());
     console.log(`Zoho Analytics: ${rows.length} ${what} rows in ${Date.now() - t0} ms`);
     return rows;
@@ -237,11 +258,13 @@ function refreshBalances() {
         return balances;
       })
       .finally(() => { balancesLoading = null; });
+    // Logged once per refresh, however many callers wait on it.
+    balancesLoading.catch(e => console.error('Zoho Analytics balance refresh failed:', e.message));
   }
   return balancesLoading;
 }
-// Fire-and-forget pre-load (called while the user is typing a client name).
-function prefetchBalances() { if (Date.now() - balancesAt > BALANCE_TTL) refreshBalances().catch(e => console.error('Zoho Analytics pre-load failed:', e.message)); }
+// Fire-and-forget pre-load (called while the user is typing a client name); a failure is logged by refreshBalances.
+function prefetchBalances() { if (Date.now() - balancesAt > BALANCE_TTL) refreshBalances().catch(() => {}); }
 const balancesFresh = () => !!balances && Date.now() - balancesAt <= BALANCE_TTL;
 const invalidateBalances = () => { balancesAt = 0; };
 
@@ -252,12 +275,47 @@ async function analyticsBalance(contactId) {
   return balances.get(String(contactId)) || null;
 }
 
-return { zohoReady, accessToken, exact, norm, num, analyticsSql, booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, prefetchBalances, balancesFresh, invalidateBalances, col, toRecord, config: () => ({ booksOrg: booksOrg() + ' (ELITE ONELINK CORPORATE SERVICES L.L.C S.O.C)', analyticsOrg: zaOrg(), workspace: zaWs(), table: zaTable() }) };
+// Connection verification before every balance check: both APIs must answer with the current OAuth token.
+// Zoho Analytics and Zoho Books cannot authenticate each other — this proves each one is reachable and authorised now.
+// A success is kept for CONN_TTL; a failure is never kept (the next check probes again).
+const CONN_TTL = 60_000;
+let lastConn = null, connOkAt = 0, connLoading = null;
+const dubaiNow = d => d.toLocaleString('en-GB', { timeZone: 'Asia/Dubai', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).replace(',', ' ·');
+function verifyConnections() {
+  if (lastConn && lastConn.ok && Date.now() - connOkAt < CONN_TTL) return Promise.resolve(lastConn);
+  if (connLoading) return connLoading;
+  const probe = async fn => { const t0 = Date.now(); try { await fn(); return { ok: true, ms: Date.now() - t0 }; } catch (e) { return { ok: false, ms: Date.now() - t0, error: String((e && e.message) || e).slice(0, 200) }; } };
+  connLoading = (async () => {
+    let t = null, tokenError = null;
+    try { t = await accessToken(); } catch (e) { tokenError = { ok: false, ms: 0, error: 'Zoho OAuth: ' + String(e.message || e).slice(0, 180) }; }
+    const [analytics, booksR] = tokenError ? [tokenError, tokenError] : await Promise.all([
+      probe(async () => {
+        const r = await fetch(`https://analyticsapi.zoho.${dc()}/restapi/v2/workspaces/${zaWs()}`, { headers: { Authorization: 'Zoho-oauthtoken ' + t, 'ZANALYTICS-ORGID': zaOrg() }, signal: AbortSignal.timeout(10_000) });
+        await r.text().catch(() => {});
+        if (r.status !== 200) throw new Error('Zoho Analytics workspace ' + r.status);
+      }),
+      probe(async () => {
+        const j = await books('contacts', { per_page: '1' });
+        if (!j || !Array.isArray(j.contacts)) throw new Error('Zoho Books contacts: unexpected answer');
+      })
+    ]);
+    const at = new Date();
+    const res = { ok: analytics.ok && booksR.ok, at: at.toISOString(), atText: dubaiNow(at), analytics, books: booksR };
+    lastConn = res;
+    if (res.ok) connOkAt = Date.now();
+    return res;
+  })().finally(() => { connLoading = null; });
+  return connLoading;
+}
+// The last verification without error text (public health endpoint).
+const lastConnections = () => lastConn && { ok: lastConn.ok, at: lastConn.at, atText: lastConn.atText, analytics: { ok: lastConn.analytics.ok, ms: lastConn.analytics.ms }, books: { ok: lastConn.books.ok, ms: lastConn.books.ms } };
+
+return { zohoReady, accessToken, exact, norm, num, books, verifyConnections, lastConnections, analyticsSql, booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, prefetchBalances, balancesFresh, invalidateBalances, col, toRecord, config: () => ({ booksOrg: booksOrg() + ' (ELITE ONELINK CORPORATE SERVICES L.L.C S.O.C)', analyticsOrg: zaOrg(), workspace: zaWs(), table: zaTable() }) };
 })();
 
 // ---- finance.js ----
 const M_finance = await (async () => {
-const { analyticsSql, analyticsBalance, booksGetContact, num, invalidateBalances } = M_zoho;
+const { analyticsSql, analyticsBalance, booksGetContact, num, invalidateBalances, books } = M_zoho;
 // Data for the three financial checks (decided in finance-rules.js). Elite OneLink's Zoho Analytics workspace holds the
 // Books ledger: the Customer Fund Disbursement account (7050654000000685179) and Cost of Goods Sold (7050654000000034003),
 // invoices and customer payments. Like the balance table, each source is one SQL export over every client, kept for
@@ -275,11 +333,18 @@ const SQL = {
   pay: `SELECT ${CUST('C."Customer ID"')} AS "Customer", COUNT(*) AS "Payments", ROUND(SUM(C."Amount (BCY)"), 2) AS "Received", ROUND(SUM(C."Unused Amount (BCY)"), 2) AS "Unapplied", ROUND(SUM(C."Refund Amount (BCY)"), 2) AS "Refunded", MAX(C."Payment Date") AS "Last" FROM "Customer Payments" C ${ALIAS('C."Customer ID"')} GROUP BY ${CUST('C."Customer ID"')}`,
   alias: `SELECT TO_STRING(A."Source Customer ID") AS "Source", TO_STRING(A."Canonical Customer ID") AS "Canonical" FROM "CFD Automatic Customer Aliases" A`,
   // Per client: what its invoices total, what is still open or written off, and what payments and credit notes were applied.
+  // Every CFD / COGS ledger line of the last 46 days (all customers — a Books movement Analytics filed under another
+  // customer is still synced), plus every credit-note line ever (so a credit note already in the ledger is never added twice).
+  recent: since => `SELECT ${CUST('R."Resolved Customer ID"')} AS "Customer", TO_STRING(R."Account ID") AS "Account", TO_STRING(R."Entity ID") AS "Entity ID", TO_STRING(R."Transaction ID") AS "Transaction ID", R."Entity Type" AS "Entity Type", ROUND(COALESCE(R."Credit Amount", 0), 2) AS "Credit", ROUND(COALESCE(R."Debit Amount", 0), 2) AS "Debit", R."Transaction Date" AS "Date" FROM "CFD Customer Resolved" R ${ALIAS('R."Resolved Customer ID"')} WHERE R."Transaction Date" >= '${since}' OR R."Entity Type" = 'creditnote'`,
+  // How far Analytics has synced: the newest "Last Modified Time" in the ledger lines.
+  watermark: `SELECT MAX(R."Last Modified Time") AS "Watermark" FROM "CFD Customer Resolved" R`,
   inv: `WITH IP AS (SELECT "Invoice ID" AS Invoice_ID, SUM("Amount (BCY)") AS Paid FROM "Invoice Payments" GROUP BY "Invoice ID"), CN AS (SELECT "Invoice ID" AS Invoice_ID, SUM("Amount (BCY)") AS Credited FROM "Creditnotes Invoice" GROUP BY "Invoice ID") SELECT ${CUST('I."Customer ID"')} AS "Customer", COUNT(*) AS "Invoices", ROUND(SUM(I."Total (BCY)"), 2) AS "Invoiced", ROUND(SUM(I."Balance (BCY)"), 2) AS "Outstanding", ROUND(SUM(COALESCE(I."Write Off Amount (BCY)", 0)), 2) AS "Written off", ROUND(SUM(COALESCE(IP.Paid, 0)), 2) AS "Paid", ROUND(SUM(COALESCE(CN.Credited, 0)), 2) AS "Credited" FROM "Invoices" I ${ALIAS('I."Customer ID"')} LEFT JOIN IP ON I."Invoice ID" = IP.Invoice_ID LEFT JOIN CN ON I."Invoice ID" = CN.Invoice_ID WHERE I."Invoice Status" NOT IN ('Draft', 'Void') GROUP BY ${CUST('I."Customer ID"')}`
 };
 const key = v => String(v ?? '').trim().replace(/\.0+$/, '');
 const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const day = v => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v || '')); return m ? `${m[3]} ${MO[Number(m[2]) - 1]} ${m[1]}` : String(v || ''); };
+const todayDubai = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dubai' }); // 'YYYY-MM-DD'
+const daysBack = n => { const d = new Date(todayDubai() + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); };
 
 let data = null, dataAt = 0, loading = null;
 // Duplicate Books contacts are folded onto one canonical contact in every Analytics table (CFD Customer Balances
@@ -305,15 +370,25 @@ function refresh() {
       // afterwards it refreshes in the background.
       .then(async res => {
         if (!aliasesAt) { refreshAliases(); await aliasLoading; } else refreshAliases();
-        let inv = null; // second batch: Analytics runs at most five export jobs at a time
-        try { inv = await analyticsSql(SQL.inv, 'invoice settlement'); }
-        catch (e) {
-          console.error('Zoho Analytics invoice settlement not read:', e.message);
-          if (!(data && data.inv)) throw e; // never decide on a missing source — the check answers "Zoho unavailable"
+        // Second batch: Analytics runs at most five export jobs at a time. The recent ledger lines and the watermark are
+        // read right after the split, as one snapshot with it; they are only needed by the Books cross-verification.
+        const [invR, recR, wmR] = await Promise.allSettled([analyticsSql(SQL.inv, 'invoice settlement'), analyticsSql(SQL.recent(daysBack(46)), 'recent ledger line'), analyticsSql(SQL.watermark, 'ledger watermark')]);
+        let inv = null;
+        if (invR.status === 'fulfilled') inv = invR.value;
+        else {
+          console.error('Zoho Analytics invoice settlement not read:', invR.reason.message);
+          if (!(data && data.inv)) throw invR.reason; // never decide on a missing source — the check answers "Zoho unavailable"
         }
-        return [...res, inv];
+        // Never an older copy of the recent lines next to a newer split: a failed read leaves none (the cross-check then fails closed).
+        if (recR.status === 'rejected') console.error('Zoho Analytics recent ledger lines not read:', recR.reason.message);
+        if (wmR.status === 'rejected') console.error('Zoho Analytics ledger watermark not read:', wmR.reason.message);
+        const recent = recR.status === 'fulfilled' ? {
+          lines: recR.value.map(r => ({ customer: key(r.Customer), account: key(r.Account), entityId: key(r['Entity ID']), txnId: key(r['Transaction ID']), type: r['Entity Type'] || '', credit: num(r.Credit), debit: num(r.Debit), date: r.Date || '' })),
+          watermark: wmR.status === 'fulfilled' && wmR.value[0] ? wmR.value[0].Watermark || null : null
+        } : null;
+        return [...res, inv, recent];
       })
-      .then(([split, open, pay, inv]) => {
+      .then(([split, open, pay, inv, recent]) => {
         const S = new Map(), O = new Map(), P = new Map();
         for (const r of split) {
           const k = key(r.Customer), acc = key(r.Account), side = acc === CFD_ACCOUNT ? 'cfd' : acc === COGS_ACCOUNT ? 'cogs' : null;
@@ -337,37 +412,124 @@ function refresh() {
           e.invoices += num(r.Invoices); e.invoiced += num(r.Invoiced); e.outstanding += num(r.Outstanding); e.writtenOff += num(r['Written off']); e.paid += num(r.Paid); e.credited += num(r.Credited);
           I.set(k, e);
         }
-        data = { split: S, open: O, pay: P, inv: I }; dataAt = Date.now();
+        data = { split: S, open: O, pay: P, inv: I, recent }; dataAt = Date.now();
         return data;
       })
       .finally(() => { loading = null; });
+    // Logged once per refresh — not once for every caller waiting on the same refresh.
+    loading.catch(e => console.error('Zoho Analytics finance refresh failed:', e.message));
   }
   return loading;
 }
 const fresh = () => !!data && Date.now() - dataAt <= FIN_TTL;
 const STALE_OK = 15 * 60_000;
 // The data for a check: fresh, or up to STALE_OK old while a refresh runs behind it, or — on the first load — awaited.
-const current = () => fresh() ? Promise.resolve(data) : data && Date.now() - dataAt <= STALE_OK ? (refresh().catch(e => console.error('Zoho Analytics finance refresh failed:', e.message)), Promise.resolve(data)) : refresh();
-function prefetch() { if (!fresh()) refresh().catch(e => console.error('Zoho Analytics finance pre-load failed:', e.message)); }
+const current = () => fresh() ? Promise.resolve(data) : data && Date.now() - dataAt <= STALE_OK ? (refresh().catch(() => {}), Promise.resolve(data)) : refresh();
+function prefetch() { if (!fresh()) refresh().catch(() => {}); }
 const invalidate = () => { dataAt = 0; invalidateBalances(); };
 
 const dubai = d => d.toLocaleString('en-GB', { timeZone: 'Asia/Dubai', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).replace(',', ' ·');
-// All three checks for one Books contact. books: the live contact if the caller already read it.
+// ---- Zoho Books cross-verification data (only when the Analytics CFD check fails) ----
+// Books allows ~100 calls a minute per organisation: every source is cached for BOOKS_TTL (per client for the per-customer
+// lists, per window for the account transactions and journals) and concurrent checks share one call. Failures are never cached.
+const BOOKS_TTL = 60_000, MAX_PAGES = 5, MAX_DRAFT_JOURNALS = 10, MAX_GROUP = 5;
+const bcache = new Map(); // key -> { at, p, pending }
+function cachedBooks(k, fn) {
+  const e = bcache.get(k);
+  if (e && (e.pending || Date.now() - e.at < BOOKS_TTL)) return e.p;
+  const ent = { at: Date.now(), pending: true, p: null };
+  ent.p = fn();
+  ent.p.then(() => { ent.pending = false; ent.at = Date.now(); }, () => { if (bcache.get(k) === ent) bcache.delete(k); });
+  bcache.set(k, ent);
+  if (bcache.size > 500) for (const [kk, v] of bcache) { if (bcache.size <= 400) break; if (!v.pending) bcache.delete(kk); }
+  return ent.p;
+}
+const booksErr = msg => Object.assign(new Error(msg), { code: 'BOOKS' });
+// A Books list, page by page (200 a page, at most MAX_PAGES). 404 = nothing. A body without the list = an error, never "empty".
+async function pages(p, params, field) {
+  const rows = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const j = await books(p, { ...params, per_page: '200', page: String(page) });
+    if (j === null) return { rows, truncated: false };
+    if (typeof j.code === 'number' && j.code !== 0) throw booksErr(`Zoho Books ${p} answered code ${j.code}`);
+    if (!Array.isArray(j[field])) throw booksErr(`Zoho Books ${p}: no ${field} list in the answer`);
+    rows.push(...j[field]);
+    const more = j.page_context && typeof j.page_context.has_more_page === 'boolean' ? j.page_context.has_more_page : j[field].length >= 200;
+    if (!more) return { rows, truncated: false };
+  }
+  return { rows, truncated: true };
+}
+const settle = p => p.then(v => ({ ok: true, ...v }), e => ({ ok: false, rows: null, error: e.message, code: e.code }));
+const accountTx = (account, since) => cachedBooks(`tx:${account}:${since}`, () => pages('chartofaccounts/transactions', { account_id: account, 'date.start': since }, 'transactions'));
+async function perClient(kind, field, ids) {
+  if (ids.length > MAX_GROUP) throw booksErr(`${ids.length} Books contacts are folded onto this client — more than one check reads`);
+  const parts = await Promise.all(ids.map(id => cachedBooks(`${kind}:${id}`, () => pages(kind, { customer_id: id }, field))));
+  return { rows: parts.flatMap(x => x.rows), truncated: parts.some(x => x.truncated) };
+}
+// Journals since the window start; the draft / pending ones (at most MAX_DRAFT_JOURNALS) are opened to see their customers.
+const journals = since => cachedBooks(`journals:${since}`, async () => {
+  const list = await pages('journals', { 'date.start': since }, 'journals');
+  const pend = list.rows.filter(j => j && ['draft', 'pending_approval', 'submitted'].includes(String(j.status || '').toLowerCase()));
+  const details = {};
+  await Promise.all(pend.slice(0, MAX_DRAFT_JOURNALS).map(async j => {
+    const id = key(j.journal_id);
+    if (!/^\d{1,30}$/.test(id)) return;
+    const d = await cachedBooks('journal:' + id, () => books('journals/' + id, {}));
+    if (d === null) { details[id] = []; return; } // deleted since the list was read
+    if (!d || !d.journal || !Array.isArray(d.journal.line_items)) throw booksErr('Zoho Books journal ' + id + ': no line items in the answer');
+    details[id] = d.journal.line_items;
+  }));
+  return { rows: list.rows, truncated: list.truncated, details };
+});
+// Every Books contact that is this client: the picked one, its canonical contact, and every contact folded onto that.
+function groupIds(raw) {
+  const k = canonical(raw), out = new Set([key(raw), k]);
+  for (const [src, can] of aliases) if (can === k) out.add(src);
+  return [...out].filter(x => /^\d{1,30}$/.test(x));
+}
+async function crossCheck({ raw, contact, d, rec, amount, paid, committed }) {
+  const k = canonical(raw), ids = groupIds(raw);
+  const since = crossCheckWindow(d.recent && d.recent.watermark, todayDubai());
+  const [cfdTx, cogsTx, creditnotes, invoices, payments, jr] = await Promise.all([
+    settle(accountTx(CFD_ACCOUNT, since)), settle(accountTx(COGS_ACCOUNT, since)),
+    settle(perClient('creditnotes', 'creditnotes', ids)), settle(perClient('invoices', 'invoices', ids)), settle(perClient('customerpayments', 'customerpayments', ids)),
+    settle(journals(since))
+  ]);
+  for (const [n, r] of Object.entries({ cfdTx, cogsTx, creditnotes, invoices, payments, journals: jr })) if (!r.ok) console.error(`Zoho Books cross-verification: ${n} not read for ${k} —`, r.error);
+  const { _raw, ...pay } = d.pay.get(k) || { payments: 0, received: 0, unapplied: 0, refunded: 0, last: '' };
+  return evaluateBooksCrossCheck({
+    amount, paid, committed, contact, rec, split: d.split.get(k) || null, pay,
+    inv: d.inv ? d.inv.get(k) || { invoices: 0, invoiced: 0, outstanding: 0, writtenOff: 0, paid: 0, credited: 0 } : null,
+    ids, names: contact ? [contact.contactName, contact.companyName] : [], accounts: { cfd: CFD_ACCOUNT, cogs: COGS_ACCOUNT },
+    recent: d.recent, windowStart: since, books: { cfdTx, cogsTx, creditnotes, invoices, payments, journals: jr }
+  });
+}
+
+// The financial checks for one Books contact. books: the live contact if the caller already read it.
 // committed: amounts already approved or credited for this client on the platform, not yet booked in the ledger.
-async function run({ contactId, amount, paid, books, committed }) {
+// connections: the verification that ran just before (M_zoho.verifyConnections).
+// Step 1, always: the Zoho Analytics checks (CFD, COGS, invoices). If the Analytics CFD balance covers the request, they decide.
+// Step 2, only when it does not: the Zoho Books cross-verification decides, with five checks.
+async function run({ contactId, amount, paid, books: contactIn, committed, connections }) {
   const raw = key(contactId);
   if (!/^\d{1,30}$/.test(raw)) throw Object.assign(new Error('Zoho Books contact id required'), { code: 'BOOKS' });
-  const [contact, d] = await Promise.all([books ? Promise.resolve(books) : booksGetContact(raw), current()]);
+  const [contact, d] = await Promise.all([contactIn ? Promise.resolve(contactIn) : booksGetContact(raw), current()]);
   const k = canonical(raw), rec = await analyticsBalance(k);
   const { _raw, ...pay } = d.pay.get(k) || { payments: 0, received: 0, unapplied: 0, refunded: 0, last: '' };
   const f = evaluateFinance({ amount, paid, books: contact, rec, split: d.split.get(k) || null, open: d.open.get(k) || [], pay, committed, grouped: grouped(raw),
     inv: d.inv ? d.inv.get(k) || { invoices: 0, invoiced: 0, outstanding: 0, writtenOff: 0, paid: 0, credited: 0 } : null });
-  const t = new Date();
+  const cfd = f.checks.find(c => c.key === 'CFD');
+  const primary = { ok: cfd.ok, code: cfd.code, text: cfd.message, detail: cfd.detail };
+  const out = cfd.ok
+    ? { ...f, route: 'ANALYTICS', source: 'Zoho Books (live contact) + Zoho Analytics (CFD, COGS, invoices, payments)' }
+    : { ...(await crossCheck({ raw, contact, d, rec, amount, paid, committed })), route: 'BOOKS_CROSSCHECK',
+        source: 'Zoho Analytics (CFD) → Zoho Books live cross-verification (CFD, COGS, credit / debit notes, journals, payments)' };
+  const t = new Date(), c = connections || {};
   return { id: 'FV-' + crypto.randomBytes(4).toString('hex').toUpperCase(), at: t.toISOString(), atText: dubai(t), clientId: k,
-    source: 'Zoho Books (live contact) + Zoho Analytics (CFD, COGS, invoices, payments)', ...f };
+    connections: { analytics: !!(c.analytics && c.analytics.ok), books: !!(c.books && c.books.ok), atText: c.atText || '' }, primary, ...out };
 }
 // What a request stores: the checks, never the headline strings.
-const record = f => f && ({ id: f.id, at: f.at, atText: f.atText, amount: f.amount, ok: f.ok, source: f.source, checks: f.checks });
+const record = f => f && ({ id: f.id, at: f.at, atText: f.atText, amount: f.amount, ok: f.ok, source: f.source, route: f.route, connections: f.connections, primary: f.primary, checks: f.checks });
 
 // Everything debited to the client's CFD and COGS accounts so far (the card spend booked against its funds).
 const totalDebits = (d, contactId) => { const e = d.split.get(canonical(contactId)); return e ? Math.round((e.cfd.debits + e.cogs.debits) * 100) / 100 : 0; };
@@ -394,7 +556,7 @@ const MSG = {
   INSUFFICIENT: 'Client does not have sufficient balance in Zoho Analytics. Flagging Sven for review.',
   PASSED: 'Pending Sven Approval.',
   // Operations never see balances, so their message carries no amount.
-  OPS_INSUFFICIENT: 'Client does not have sufficient balance to request funds. Please contact Sven.',
+  OPS_INSUFFICIENT: 'Client does not have sufficient balance. You may escalate to Management.',
   LOCKED: 'A request for this client is already pending approval by Sven. No new requests can be submitted until the current one is approved.',
   MANDATORY: 'All mandatory fields must be completed before submitting the request.',
   NOT_VALIDATED: "The client's balance was not validated in Zoho Analytics just before sending. Pick the client again and resend."
@@ -421,6 +583,18 @@ function decide({ req, books, rec, fin }) {
   if (!books) return { ...base, ok: false, clientMatched: false, relevancePassed: false, available: 0, reason: 'CLIENT_NOT_FOUND', approvalStatus: STATUS.NOT, approvedAmount: 0, notes: MSG.NOT_FOUND };
 
   const out = { ...base, clientMatched: true, clientId: books.contactId, companyName: books.companyName || req.company };
+  // Zoho Analytics alone did not cover the request, so the Zoho Books cross-verification (five checks) decided the balance.
+  if (fin && fin.route === 'BOOKS_CROSSCHECK') {
+    const live = typeof fin.available === 'number' ? fin.available : 0;
+    Object.assign(out, { available: rec ? rec.available : 0, allocated: rec ? rec.allocated : 0, used: rec ? rec.used : 0, booksAvailable: typeof fin.available === 'number' ? fin.available : null });
+    if (rec) {
+      const rel = relevance(req, rec);
+      if (!rel.ok) return { ...out, ok: false, relevancePassed: false, remaining: Math.max(0, live), reason: 'NOT_RELEVANT', approvalStatus: STATUS.FLAGGED, approvedAmount: 0, notes: !rel.catOk ? `Purpose "${req.purpose}" is not a category on the client's ledger (${rec.categories.join(', ')}).` : `Company "${req.company}" does not belong to this client record.` };
+    }
+    if (!fin.ok) return { ...out, ok: false, relevancePassed: true, remaining: Math.max(0, live - requested), reason: 'FINANCIAL_CHECKS_FAILED', approvalStatus: STATUS.FLAGGED, approvedAmount: 0, notes: 'Zoho Books cross-verification failed — ' + fin.staffError,
+      publicNotes: 'Financial validation failed — ' + fin.failed.map(f => f.label).join(', ') + '. Flagging Sven for review.' };
+    return { ...out, ok: true, relevancePassed: true, remaining: live - requested, reason: 'VALIDATION_PASSED', approvalStatus: STATUS.PROVISIONAL, approvedAmount: requested, notes: MSG.PASSED + ' (Zoho Analytics did not cover it; Zoho Books cross-verification passed.)' };
+  }
   // 2. The balance must be validated in Zoho Analytics — no row means no validated balance.
   if (!rec) return { ...out, ok: false, relevancePassed: false, available: 0, allocated: 0, used: 0, remaining: 0, reason: 'NO_ANALYTICS_RECORD', approvalStatus: STATUS.FLAGGED, approvedAmount: 0, notes: MSG.INSUFFICIENT + ' (No balance record for this client in Zoho Analytics.)' };
   Object.assign(out, { available: rec.available, allocated: rec.allocated, used: rec.used });
@@ -811,17 +985,41 @@ function mergeMissing(col, items) {
 // an empty server takes all of it; a server with data only gains the requests it is missing.
 // A platform reset records what it removed (db.purged) and when (db.resetAt): removed history never comes back,
 // and an emptied server is not mistaken for a first start.
+// A newer ledger.json may also carry updated versions of history requests (later messages approved / credited / paid
+// them): `previous` maps each such id to the ledgerHash of the entry as the old ledger.json had it. A history request the
+// platform never touched still has exactly that fingerprint (and no field beyond the ledger's own): it is replaced by
+// the new entry. One that was edited on the platform keeps the platform's version.
+function applyLedgerUpdates(gone) {
+  const prev = LEDGER.previous && typeof LEDGER.previous === 'object' && !Array.isArray(LEDGER.previous) ? LEDGER.previous : {};
+  const ids = Object.keys(prev);
+  if (!ids.length) return 0;
+  const entries = new Map((LEDGER.requests || []).filter(r => r && typeof r.id === 'string').map(r => [r.id, r]));
+  let updated = 0, kept = 0;
+  for (const id of ids) {
+    const entry = entries.get(id), i = db.requests.findIndex(r => r.id === id);
+    if (!entry || gone.has(id) || i < 0) continue;
+    const cur = db.requests[i];
+    if (cur.createdAt) continue; // created on the live platform, not history
+    const h = ledgerHash(cur);
+    if (h === ledgerHash(entry) && Object.keys(cur).every(k => LEDGER_KEYS.includes(k))) continue; // already the new version
+    if (h === prev[id] && Object.keys(cur).every(k => LEDGER_KEYS.includes(k))) { db.requests[i] = JSON.parse(JSON.stringify(entry)); updated++; }
+    else kept++;
+  }
+  console.log(`Ledger: updated ${updated} history requests (${kept} left as edited on the platform).`);
+  return updated;
+}
 let LEDGER = { requests: [], chat: [], notifications: [], audit: [] };
 try {
-  LEDGER = JSON.parse(fs.readFileSync(new URL('./ledger.json', import.meta.url), 'utf8'));
+  LEDGER = JSON.parse(fs.readFileSync(process.env.LEDGER_FILE ? path.resolve(process.env.LEDGER_FILE) : new URL('./ledger.json', import.meta.url), 'utf8'));
   const gone = new Set(db.purged || []);
   if (!db.requests.length && !db.resetAt) {
     for (const c of COLS) if (Array.isArray(LEDGER[c])) db[c] = LEDGER[c];
     db.rev++; persist(); console.log('Ledger: loaded', db.requests.length, 'requests into an empty server.');
   } else {
     const n = mergeMissing('requests', (LEDGER.requests || []).filter(r => !gone.has(r.id)));
-    if (n) { db.rev++; persist(); }
     console.log('Ledger:', n ? 'added ' + n + ' missing requests.' : 'server already up to date.');
+    const u = applyLedgerUpdates(gone);
+    if (n || u) { db.rev++; persist(); } // persisted once
   }
 } catch (e) { console.error('Ledger not applied:', e.message); }
 const LEDGER_IDS = Object.fromEntries(COLS.map(c => [c, new Set((LEDGER[c] || []).map(x => x && x.id))]));
@@ -851,16 +1049,40 @@ const hideAmounts = t => String(t ?? '')
   .replace(/re-validated at AED [\d,]+(?:\.\d+)? available/gi, 're-validated in Zoho Analytics')
   .replace(/(Zoho (?:Analytics )?balance:?) (?:of )?AED [\d,]+(?:\.\d+)?(?: available)?/gi, '$1')
   .replace(/,? ?AED [\d,]+(?:\.\d+)? in Zoho Analytics/gi, '');
+// Management decision notes are not for Operations. Lines written before this rule carried the note after the decision
+// words ('… rejected the escalation — <note>'): Operations get them without it.
+const hideDecisionNote = t => String(t ?? '').replace(/((?:approved the escalation — proceed|rejected the escalation))(?: — [\s\S]*)$/, '$1');
+let mgmtKeys = { at: 0, set: new Set() };
+const managementKeys = () => { if (Date.now() - mgmtKeys.at > 5000) { try { mgmtKeys = { at: Date.now(), set: new Set(loadUsers().filter(x => x.dept === 'MANAGEMENT').map(x => x.key)) }; } catch {} } return mgmtKeys.set; };
+// What an Operations user may see of an escalation: notes only from the log entries they wrote themselves, the open
+// question management asked (infoRequest), and the justification unless a member of management wrote it.
+function escalationForOps(u, e) {
+  if (!e || typeof e !== 'object') return e;
+  const out = { ...e };
+  if (Array.isArray(e.log)) out.log = e.log.map(x => { if (!x || typeof x !== 'object' || x.who === u.key) return x; const { note, ...rest } = x; return rest; });
+  if (e.decision && typeof e.decision === 'object' && e.decision.by !== u.key) { const { note, ...d } = e.decision; out.decision = d; }
+  if (e.by !== u.key && managementKeys().has(e.by)) delete out.justification;
+  return out;
+}
 function redact(u, col, item) {
   if (!item || !ops(u)) return item; // every Operations user, Master Operations Control included, sees no balances or amounts
   if (col === 'requests') {
     const { zohoBalance, ...r } = item;
-    if (Array.isArray(r.timeline)) r.timeline = r.timeline.map(t => ({ ...t, text: hideAmounts(t.text) }));
+    if (Array.isArray(r.timeline)) r.timeline = r.timeline.map(t => ({ ...t, text: hideDecisionNote(hideAmounts(t.text)) }));
     for (const k of ['finance', 'financeLatest']) if (r[k]) r[k] = M_finance.forOps(r[k]); // every financial check record
+    if (r.escalation) r.escalation = escalationForOps(u, r.escalation);
+    if (typeof r.notes === 'string' && /^Escalation rejected by /.test(r.notes)) r.notes = r.notes.replace(/^(Escalation rejected by .+?) — [\s\S]*$/, '$1');
     return r;
   }
   if (col === 'chat' && item.zoho) { const { zoho, ...c } = item; return { ...c, text: hideAmounts(c.text) }; }
-  if (col === 'audit' && item.detail) return { ...item, detail: String(item.detail).replace(/AED\s?[\d,]+(?:\.\d+)?K?/gi, 'AED •••') }; // e.g. 'balance moved to AED 3,000'
+  if (col === 'notifications' && item.text) return { ...item, text: hideDecisionNote(item.text) };
+  if (col === 'audit') {
+    const { opsDetail, ...a } = item;
+    if (opsDetail !== undefined) a.detail = opsDetail; // the server wrote a version without the management note
+    else if (['ESCALATION_APPROVED', 'ESCALATION_REJECTED'].includes(a.action) && typeof a.detail === 'string') a.detail = a.detail.replace(/^(ESC-[0-9A-F]+ · [^·]+ · .*?) — [\s\S]*$/, '$1');
+    if (a.detail) a.detail = String(a.detail).replace(/AED\s?[\d,]+(?:\.\d+)?K?/gi, 'AED •••'); // e.g. 'balance moved to AED 3,000'
+    return a;
+  }
   return item;
 }
 // An Operations browser only holds the stripped copy: when it saves a request, put the hidden parts back.
@@ -872,8 +1094,8 @@ function restoreHidden(item, prev) {
 
 // One open request per Zoho Books client: New, waiting on information, or with management. Approving, declining or voiding unlocks.
 const OPEN = ['NEW', 'ACTION', 'ESCALATED', 'MGMT_INFO', 'MGMT_APPROVED'];
-// Only the server moves a request into these (escalation endpoints, void) — and out of ESCALATED / MGMT_INFO.
-const SERVER_STATUS = ['ESCALATED', 'MGMT_INFO', 'MGMT_APPROVED', 'VOID'];
+// Only the server moves a request into these (escalation endpoints, void) — and out of ESCALATED / MGMT_INFO / MGMT_REJECTED.
+const SERVER_STATUS = ['ESCALATED', 'MGMT_INFO', 'MGMT_APPROVED', 'MGMT_REJECTED', 'VOID'];
 // Set only by the server: whatever a browser sends for these is replaced by the stored value.
 const SERVER_FIELDS = ['finance', 'financeLatest', 'escalation', 'voided', 'requestorId', 'clientId', 'createdAt', 'creditedAt', 'ledgerDebitsAtCredit'];
 // Operations cannot change the money or the client on a request once it exists (Master Operations Control included).
@@ -938,7 +1160,7 @@ function mayWrite(u, col, item, prev) {
   if (col === 'requests') {
     if (prev && prev.status === 'VOID') return false;                       // voided: locked for everyone
     if (!prev && item.status !== 'NEW') return false;                       // new requests start at Pending Sven Approval
-    if (prev && prev.status !== item.status && (SERVER_STATUS.includes(item.status) || prev.status === 'ESCALATED' || prev.status === 'MGMT_INFO')) return false; // management decides
+    if (prev && prev.status !== item.status && (SERVER_STATUS.includes(item.status) || ['ESCALATED', 'MGMT_INFO', 'MGMT_REJECTED'].includes(prev.status))) return false; // management decides
   }
   if (isMaster(u)) return true;
   if (col === 'requests') {
@@ -1085,6 +1307,9 @@ const hex = n => crypto.randomBytes(n).toString('hex').toUpperCase();
 const str = (v, max) => String(v ?? '').trim().slice(0, max);
 const titled = u => 'Mr. ' + u.name + (u.title ? ' (' + u.title + ')' : '');
 const management = () => loadUsers().filter(x => x.dept === 'MANAGEMENT');
+const andList = a => a.length <= 1 ? a.join('') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1];
+// Who an escalation went to. Escalations from before routing went to all of management.
+const recipientsOf = r => (r.escalation && Array.isArray(r.escalation.to) && r.escalation.to.length ? r.escalation.to : management().map(p => ({ key: p.key, name: p.name, title: p.title || '' })));
 const financeTeam = () => loadUsers().filter(x => x.active !== false && (isMaster(x) || x.dept === 'FINANCE'));
 // Lines and files the server adds carry srv: true — a browser's older copy of the request can never drop them (see /api/sync/put).
 const tlAt = () => AUDIT_DAY().replace(/^0/, ''); // history lines use the page's own format ('8 Oct · 14:05')
@@ -1132,16 +1357,30 @@ function mountRequests(app) {
     if (just.length < 15) return fail(s, 422, 'Give management a justification of at least 15 characters.');
     if (!str(R.company, 200) || !str(R.purpose, 500) || !str(pass.p, 60)) return fail(s, 422, M_rules.MSG.MANDATORY, { reason: 'MANDATORY_FIELDS' });
     if (Array.isArray(pass.o) && pass.o.length && !pass.o.includes(str(R.company, 200))) return fail(s, 422, 'Pick the company from the Zoho Books list.', { reason: 'COMPANY_NOT_FROM_BOOKS' });
+    // Who decides: 'ALL' management (the default) or the members chosen. Only they are notified, only they may decide.
+    const everyone = management(), wantTo = b.to === undefined || b.to === null ? 'ALL' : b.to;
+    let routing, people;
+    if (wantTo === 'ALL') { routing = 'ALL'; people = everyone; }
+    else if (Array.isArray(wantTo)) {
+      const keys = [...new Set(wantTo.map(x => String(x ?? '').trim().toLowerCase()))];
+      if (!keys.length) return fail(s, 422, 'Choose at least one member of management to send the escalation to.', { reason: 'RECIPIENTS_REQUIRED' });
+      const unknown = keys.filter(k => !everyone.some(p => p.key === k));
+      if (unknown.length) return fail(s, 422, 'Not a member of management: ' + unknown.join(', ').slice(0, 200) + '.', { reason: 'UNKNOWN_RECIPIENT' });
+      people = everyone.filter(p => keys.includes(p.key));
+      const off = people.filter(p => p.active === false);
+      if (off.length) return fail(s, 422, `${andList(off.map(titled))} cannot receive escalations yet — the account is not active.`, { reason: 'RECIPIENT_INACTIVE' });
+      routing = 'SELECTED';
+    } else return fail(s, 422, 'Choose who the escalation goes to.', { reason: 'RECIPIENTS_REQUIRED' });
+    if (!people.some(p => p.key !== u.key)) return fail(s, 422, 'Choose a member of management other than yourself — you cannot decide your own escalation.', { reason: 'RECIPIENTS_REQUIRED' });
     const names = [pass.n].concat(Array.isArray(pass.o) ? pass.o : []);
     const pend = pendingRequestFor(pass.c, names);
     if (pend) return fail(s, 409, M_rules.MSG.LOCKED, { reason: 'REQUEST_PENDING', pendingId: pend.id });
     const docs = await cleanDocs(R.docs);
     if (pendingRequestFor(pass.c, names)) return fail(s, 409, M_rules.MSG.LOCKED, { reason: 'REQUEST_PENDING' });
     const at = new Date().toISOString(), atText = AUDIT_DAY(), id = nextRequestId(), amount = Number(pass.a);
-    const people = management();
     const escalation = {
       id: 'ESC-' + hex(3), at, atText, by: u.key, byName: u.name, justification: just, failed: fin.failed,
-      to: people.map(p => ({ key: p.key, name: p.name, title: p.title || '' })), decision: null,
+      to: people.map(p => ({ key: p.key, name: p.name, title: p.title || '' })), routing, decision: null,
       log: [{ at, atText, who: u.key, whoName: u.name, action: 'CREATED', note: just }]
     };
     const failedLabels = fin.failed.map(f => f.label).join(', ');
@@ -1161,50 +1400,66 @@ function mountRequests(app) {
     postSystem('requests', item);
     audit(u, 'ESCALATION_CREATED', `${escalation.id} · ${item.company} — ${aed(amount)} · failed: ${failedLabels} · ${just}`, item);
     notifyMany(people.map(p => p.key), `ESCALATION ${escalation.id} — ${u.name} needs a management decision on ${id} · ${item.company} · ${aed(amount)}. Failed: ${failedLabels}. Reason: ${just}`, id, u.key);
-    notify('sven', `Escalated to management — ${id} · ${item.company} · ${aed(amount)} (${failedLabels} failed). You give the final approval if management approves.`, id);
+    notifyMany(['sven'], `Escalated to ${routing === 'ALL' ? 'management' : andList(people.map(titled))} — ${id} · ${item.company} · ${aed(amount)} (${failedLabels} failed). You give the final approval if management approves.`, id, u.key);
     s.json({ ok: true, id, item: reqOut(u, item) });
   });
 
-  // Management decision: any one of the three decides. APPROVE overrides the failed checks (Sven still gives the
-  // final approval), REJECT declines and unlocks the client, INFO sends it back to the requester.
+  // Management decision: one of the managers the escalation was sent to decides. APPROVE overrides the failed checks
+  // (Sven still gives the final approval), REJECT ends it as Rejected by Management and unlocks the client, INFO asks the
+  // requester a question while the request stays Awaiting Management Decision. Decision notes never reach Operations.
   app.post('/api/requests/:id/escalation', requireAuth, (q, s) => {
     const u = q.user, b = q.body || {};
     if (!isManagement(u)) return fail(s, 403, 'Only management (Mr. Adnan, Mr. Ahmed, Mr. Eduard) can decide an escalation.');
     const r = find(q, s); if (!r) return;
     if (!r.escalation || !['ESCALATED', 'MGMT_INFO'].includes(r.status)) return fail(s, 409, 'This request is not waiting for a management decision.');
     if (r.by === u.key || r.escalation.by === u.key) return fail(s, 403, 'You raised this escalation — one of the other members of management decides it.');
+    const to = recipientsOf(r);
+    if (!to.some(t => t.key === u.key)) return fail(s, 403, `This escalation was sent to ${andList(to.map(titled))}.`);
     const action = String(b.action || '').toUpperCase(), note = str(b.note, 2000);
     if (!['APPROVE', 'REJECT', 'INFO'].includes(action)) return fail(s, 400, 'Choose approve, reject or request more information.');
     if (note.length < 3) return fail(s, 422, 'Add a note for the record.');
     const at = new Date().toISOString(), atText = AUDIT_DAY(), who = titled(u);
-    const decision = { action, by: u.key, byName: u.name, title: u.title || '', at, atText, note };
-    const escalation = { ...r.escalation, decision, log: (r.escalation.log || []).concat([{ at, atText, who: u.key, whoName: u.name, action, note }]) };
-    const words = { APPROVE: 'approved the escalation — proceed', REJECT: 'rejected the escalation', INFO: 'asked for more information' }[action];
-    const next = { ...r, escalation, status: { APPROVE: 'MGMT_APPROVED', REJECT: 'DECLINED', INFO: 'MGMT_INFO' }[action], timeline: line(r, `${who} ${words} — ${note}`) };
-    if (action === 'REJECT') Object.assign(next, { approved: 0, notes: `Escalation rejected by ${who} — ${note}`, flagged: false });
+    const escalation = { ...r.escalation, log: (r.escalation.log || []).concat([{ at, atText, who: u.key, whoName: u.name, action, note }]) };
+    let next;
+    if (action === 'INFO') {
+      escalation.infoRequest = { by: u.key, byName: u.name, title: u.title || '', at, atText, note };
+      if (escalation.decision && escalation.decision.action === 'INFO') escalation.decision = null; // a legacy "needs info" decision
+      next = { ...r, escalation, status: 'ESCALATED', timeline: line(r, `${who} asked for more information — ${note}`) };
+    } else {
+      escalation.decision = { action, by: u.key, byName: u.name, title: u.title || '', at, atText, note };
+      delete escalation.infoRequest;
+      // The history line carries no note — it lives in escalation.log, which Operations do not see.
+      next = { ...r, escalation, status: action === 'APPROVE' ? 'MGMT_APPROVED' : 'MGMT_REJECTED', timeline: line(r, `${who} ${action === 'APPROVE' ? 'approved the escalation — proceed' : 'rejected the escalation'}`) };
+      if (action === 'REJECT') Object.assign(next, { approved: 0, flagged: false });
+    }
     postSystem('requests', next);
-    audit(u, { APPROVE: 'ESCALATION_APPROVED', REJECT: 'ESCALATION_REJECTED', INFO: 'ESCALATION_INFO_REQUESTED' }[action], `${escalation.id} · ${r.id} · ${r.company} — ${note}`, next);
-    const text = `${r.id} · ${r.company}: ${who} ${words} — ${note}`;
-    notify(r.by, action === 'INFO' ? `Management needs more information — ${text}` : text, r.id);
-    if (action === 'APPROVE') notify('sven', `Management approved — your final approval is needed. ${text}`, r.id);
-    else notify('sven', text, r.id);
-    notifyMany(management().map(p => p.key), text, r.id, u.key);
+    const base = `${escalation.id} · ${r.id} · ${r.company}`;
+    audit(u, { APPROVE: 'ESCALATION_APPROVED', REJECT: 'ESCALATION_REJECTED', INFO: 'ESCALATION_INFO_REQUESTED' }[action], `${base} — ${note}`, next, action === 'INFO' ? undefined : base);
+    const head = `${r.id} · ${r.company}: ${who}`;
+    // The requester: the question (INFO) — never the note of an approval or a rejection.
+    const toRequester = { APPROVE: `${head} approved the escalation — proceed. Sven gives the final approval.`, REJECT: `${head} rejected the escalation. The client is free for a new request.`, INFO: `Management needs more information — ${head} asks: ${note}` }[action];
+    const full = { APPROVE: `Management approved — your final approval is needed. ${head} approved the escalation — proceed. Note: ${note}`, REJECT: `${head} rejected the escalation (Rejected by Management). Note: ${note}`, INFO: `${head} asked the requester for more information: ${note}` }[action];
+    if (r.by !== u.key) notify(r.by, r.by === 'sven' ? full : toRequester, r.id);
+    notifyMany(['sven'].concat(to.map(t => t.key)).filter(k => k !== r.by), full, r.id, u.key);
     s.json({ ok: true, item: reqOut(u, next) });
   });
 
-  // The requester answers management's question: back to Awaiting Management Decision.
+  // The requester (or Master Operations Control) answers management's question: Awaiting Management Decision again.
   app.post('/api/requests/:id/escalation/reply', requireAuth, (q, s) => {
     const u = q.user, r = find(q, s); if (!r) return;
-    if (r.status !== 'MGMT_INFO') return fail(s, 409, 'Management has not asked for more information on this request.');
+    const asked = r.status === 'ESCALATED' && r.escalation && r.escalation.infoRequest;
+    if (!r.escalation || !(asked || r.status === 'MGMT_INFO')) return fail(s, 409, 'Management has not asked for more information on this request.');
     if (!(r.by === u.key || isOpsMaster(u))) return fail(s, 403, 'Only the requester can answer management.');
     const note = str(q.body?.note, 2000);
     if (note.length < 3) return fail(s, 422, 'Write the information management asked for.');
     const at = new Date().toISOString(), atText = AUDIT_DAY();
-    const escalation = { ...r.escalation, decision: null, log: (r.escalation.log || []).concat([{ at, atText, who: u.key, whoName: u.name, action: 'REPLY', note }]) };
+    const escalation = { ...r.escalation, log: (r.escalation.log || []).concat([{ at, atText, who: u.key, whoName: u.name, action: 'REPLY', note }]) };
+    delete escalation.infoRequest;
+    if (escalation.decision && escalation.decision.action === 'INFO') escalation.decision = null;
     const next = { ...r, escalation, status: 'ESCALATED', timeline: line(r, `${u.name} answered management — ${note}`) };
     postSystem('requests', next);
     audit(u, 'ESCALATION_INFO_PROVIDED', `${escalation.id} · ${r.id} · ${r.company} — ${note}`, next);
-    notifyMany(management().map(p => p.key).concat('sven'), `${u.name} answered management on ${r.id} · ${r.company}: ${note}`, r.id, u.key);
+    notifyMany(recipientsOf(r).map(p => p.key).concat('sven'), `${u.name} answered management on ${r.id} · ${r.company}: ${note}`, r.id, u.key);
     s.json({ ok: true, item: reqOut(u, next) });
   });
 
@@ -1221,7 +1476,7 @@ function mountRequests(app) {
     postSystem('requests', next);
     audit(u, 'REQUEST_VOIDED', `${r.id} · ${r.company} — was ${r.status} — ${reason}`, next);
     notifyMany([r.by], `${r.id} · ${r.company} was voided by ${who}: ${reason}. A new request can be raised for this client.`, r.id, u.key);
-    notifyMany(['sven'].concat(r.escalation ? management().map(p => p.key) : []), `${r.id} · ${r.company} voided by ${who} — ${reason}`, r.id, u.key);
+    notifyMany(['sven'].concat(r.escalation ? recipientsOf(r).map(p => p.key) : []), `${r.id} · ${r.company} voided by ${who} — ${reason}`, r.id, u.key);
     s.json({ ok: true, item: reqOut(u, next) });
   });
 
@@ -1529,9 +1784,10 @@ function mount(app) {
 
 // Security log, written by the server: every request created, edited, decided, viewed, or refused.
 const AUDIT_DAY = () => new Date().toLocaleString('en-GB', { timeZone: 'Asia/Dubai', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).replace(',', ' ·');
-function audit(u, action, detail, r) {
+// opsDetail: the version of detail Operations see (e.g. without a management note).
+function audit(u, action, detail, r, opsDetail) {
   postSystem('audit', { id: 'sa' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex'), at: AUDIT_DAY(), user: u.name, userId: u.key, dept: u.dept,
-    action, detail, req: r ? r.id : '', client: r ? (r.zohoClient || r.person || r.company || '') : '', clientId: r ? r.zohoClientId || '' : '', by: 'server' });
+    action, detail, ...(opsDetail !== undefined ? { opsDetail } : {}), req: r ? r.id : '', client: r ? (r.zohoClient || r.person || r.company || '') : '', clientId: r ? r.zohoClientId || '' : '', by: 'server' });
 }
 const viewed = new Map(); // `${user}:${req}` -> last logged
 
@@ -1603,7 +1859,31 @@ function stamp(d = new Date()) {
 }
 const aed = n => 'AED ' + Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
 
-app.get('/api/health', async (_q, s) => s.json({ ok: true, zoho: await zohoReady, live: zohoConfig(), balancesFresh: balancesFresh(), financeFresh: M_finance.fresh(), sheet: !!(E.GOOGLE_SHEET_ID && E.GOOGLE_SERVICE_ACCOUNT_B64), lastReset: store.status().lastReset, time: new Date().toISOString() }));
+// Before every balance check: Zoho Analytics and Zoho Books must both answer with the current token. If either does not,
+// nothing is decided — the request is blocked and Sven is told (one notification per 30 minutes).
+const CONN_ALERT_MS = 30 * 60_000;
+let connAlertAt = 0;
+const CONN_FAILED = 'Zoho Analytics and Zoho Books could not both be verified — the request is blocked and Sven has been notified.';
+async function connectionsOk(q, s) {
+  let c;
+  try { c = await M_zoho.verifyConnections(); }
+  catch (e) { const at = new Date(); c = { ok: false, at: at.toISOString(), atText: stamp(at).both, analytics: { ok: false, ms: 0, error: e.message }, books: { ok: false, ms: 0, error: e.message } }; }
+  if (c && c.ok) return c;
+  const word = x => (x && x.ok ? 'OK' : 'FAILED');
+  if (Date.now() - connAlertAt > CONN_ALERT_MS) {
+    connAlertAt = Date.now();
+    const text = `Zoho connection check failed (Analytics: ${word(c.analytics)}, Books: ${word(c.books)}) — funding checks are blocked until it recovers.`;
+    store.postSystem('notifications', { id: 'zc' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex'), to: 'sven', at: stamp().both, read: false, req: null, text, _at: Date.now() });
+    console.error(text, 'Analytics:', c.analytics && c.analytics.error || 'ok', '· Books:', c.books && c.books.error || 'ok');
+    notifySven(text).catch(() => {});
+  }
+  const strip = x => ({ ok: !!(x && x.ok), ms: x && x.ms || 0 });
+  const connections = store.hidesAmounts(q.user) ? { ok: false, at: c.at, atText: c.atText, analytics: strip(c.analytics), books: strip(c.books) } : c;
+  s.status(503).json({ ok: false, reason: 'ZOHO_CONNECTION_FAILED', error: CONN_FAILED, connections });
+  return null;
+}
+
+app.get('/api/health', async (_q, s) => s.json({ ok: true, zoho: await zohoReady, live: zohoConfig(), connections: M_zoho.lastConnections(), balancesFresh: balancesFresh(), financeFresh: M_finance.fresh(), sheet: !!(E.GOOGLE_SHEET_ID && E.GOOGLE_SERVICE_ACCOUNT_B64), lastReset: store.status().lastReset, time: new Date().toISOString() }));
 
 app.get('/api/zoho/test', async (_q, s) => {
   try { await accessToken(); s.json({ ok: true, oauth: 'refreshed', live: zohoConfig() }); } catch (e) { zohoErr(s, e); }
@@ -1679,6 +1959,8 @@ app.post('/api/zoho/precheck', async (q, s) => {
   let v;
   try { v = gate.verify(b.validationToken, typeof b.clientName === 'string' ? b.clientName : ''); } catch (e) { return zohoErr(s, e); }
   if (!v.ok) return s.status(403).json({ ok: false, reason: 'INVALID_VALIDATION_TOKEN', why: v.why, error: NOT_FOUND_MSG });
+  const connections = await connectionsOk(q, s);
+  if (!connections) return;
   let contact;
   try { contact = await booksGetContact(v.clientId); } catch (e) { return zohoErr(s, e); }
   const names = contact ? [contact.contactName, contact.companyName].filter(Boolean) : [b.clientName];
@@ -1694,7 +1976,7 @@ app.post('/api/zoho/precheck', async (q, s) => {
     return s.status(429).json({ ok: false, reason: 'TOO_MANY_AMOUNTS', error: 'Too many checks for this client. Contact Sven.' });
   }
   let fin;
-  try { fin = await M_finance.run({ contactId: v.clientId, amount, paid, books: contact, committed: store.committedFor(v.clientId, null, await M_finance.ledgerDebits(v.clientId)) }); } catch (e) { return zohoErr(s, e); }
+  try { fin = await M_finance.run({ contactId: v.clientId, amount, paid, books: contact, connections, committed: store.committedFor(v.clientId, null, await M_finance.ledgerDebits(v.clientId)) }); } catch (e) { return zohoErr(s, e); }
   store.finPut(fin, q.user.key);
   const view = opsUser ? M_finance.forOps(M_finance.record(fin)) : M_finance.record(fin);
   const cfd = fin.checks.find(c => c.key === 'CFD');
@@ -1784,6 +2066,8 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
   // A history request (from before the Zoho client link) names no Books client: Operations cannot point it at one.
   if (known && !known.zohoClientId && store.hidesAmounts(q.user))
     return s.status(409).json({ ok: false, reason: 'NO_ZOHO_CLIENT', error: 'This request predates the Zoho client link — Sven checks it before approving.' });
+  const connections = await connectionsOk(q, s);
+  if (!connections) return;
   // Outside finance, one check per request (or client) every two minutes: each check notifies Sven and writes the sheet.
   if (!store.isFinanceUser(q.user) && checkThrottled(q.user.key, known ? known.id : (b.validationToken ? 't:' + String(b.validationToken).slice(0, 80) : 'n:' + req.clientName)))
     return s.status(429).json({ ok: false, reason: 'CHECKED_RECENTLY', error: 'This request was checked a moment ago — try again in two minutes.' });
@@ -1823,7 +2107,7 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
   let rec, fin, held = 0;
   try {
     const committed = store.committedFor(books.contactId, stored ? stored.id : null, await M_finance.ledgerDebits(books.contactId));
-    [rec, fin] = await Promise.all([analyticsBalance(M_finance.canonical(books.contactId)), M_finance.run({ contactId: books.contactId, amount: req.requestedAmount, paid: stored ? stored.paid : String(b.paid || ''), books, committed })]);
+    [rec, fin] = await Promise.all([analyticsBalance(M_finance.canonical(books.contactId)), M_finance.run({ contactId: books.contactId, amount: req.requestedAmount, paid: stored ? stored.paid : String(b.paid || ''), books, committed, connections })]);
     held = committed.amount;
   } catch (e) { return zohoErr(s, e); }
 
@@ -1856,10 +2140,10 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
     availableBalance: d.availableNet ?? d.available ?? 0, ledgerBalance: d.available ?? 0, heldBalance: d.held ?? 0, allocatedBalance: d.allocated ?? 0, usedBalance: d.used ?? 0,
     remainingAfterRequest: d.remaining ?? 0, requestedAmount: req.requestedAmount,
     notes: d.notes, flagSven: d.flagSven, svenNotified, svenSummary, sheet, reviewer: REVIEWER, exported, requestId: req.requestId || null, attachedToRequest: attached,
-    source: 'Zoho Books + Zoho Analytics', validationId, checkedAt, finance: M_finance.record(fin)
+    source: 'Zoho Books + Zoho Analytics', route: fin.route, booksAvailable: d.booksAvailable ?? null, validationId, checkedAt, finance: M_finance.record(fin)
   };
   if (store.hidesAmounts(q.user)) { // the result, never the balance
-    for (const k of ['availableBalance', 'ledgerBalance', 'heldBalance', 'allocatedBalance', 'usedBalance', 'remainingAfterRequest', 'svenSummary', 'exported']) delete out[k];
+    for (const k of ['availableBalance', 'ledgerBalance', 'heldBalance', 'allocatedBalance', 'usedBalance', 'remainingAfterRequest', 'svenSummary', 'exported', 'booksAvailable']) delete out[k];
     out.finance = M_finance.forOps(out.finance);
     if (!d.ok) out.notes = d.reason === 'FINANCIAL_CHECKS_FAILED' ? fin.opsError : MSG.OPS_INSUFFICIENT;
   }
@@ -1933,6 +2217,20 @@ const LIVE_RULES = [
   [/' messages · \d{1,2} to \d{1,2} [A-Z][a-z]+ \d{4}'/, "' messages · updated live'"],
   [/ — \d{1,2} to \d{1,2} [A-Z][a-z]+\.'/, ".'"]
 ];
+// Brand: the OneLink mark in the tab, on the home screen and in the page title.
+const BRAND_DIR = fileURLToPath(new URL('./brand', import.meta.url));
+app.use('/brand', express.static(BRAND_DIR, { maxAge: '1d', index: false, fallthrough: false }));
+app.get('/favicon.ico', (_q, s) => s.sendFile(path.join(BRAND_DIR, 'favicon.ico'), { maxAge: '1d' }, e => { if (e && !s.headersSent) s.status(404).end(); }));
+const BRAND_HEAD = '<title>OneLink Funds</title>\n  <link rel="icon" type="image/png" sizes="32x32" href="/brand/icon-32.png">\n  <link rel="icon" href="/favicon.ico" sizes="any">\n  <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">\n  <meta name="theme-color" content="#1f6bff">';
+// Only the document's own <head> is touched (the bundled template further down is left alone).
+function brandHead(html) {
+  const end = html.search(/<\/head>/i);
+  if (end < 0) return html;
+  let head = html.slice(0, end);
+  if (head.includes('href="/brand/icon-32.png"')) return html;
+  head = /<title>[^<]*<\/title>/i.test(head) ? head.replace(/<title>[^<]*<\/title>/i, BRAND_HEAD) : head.replace(/<head([^>]*)>/i, '<head$1>\n  ' + BRAND_HEAD);
+  return head + html.slice(end);
+}
 let liveHtml = { mtime: 0, body: null };
 function servedHtml() {
   const mtime = fs.statSync(__html).mtimeMs;
@@ -1940,7 +2238,7 @@ function servedHtml() {
     let body = fs.readFileSync(__html, 'utf8'), hit = 0;
     for (const [from, to] of LIVE_RULES) { const next = body.replace(from, to); if (next !== body) hit++; body = next; }
     const wf = patchPage(body);
-    body = wf.html;
+    body = brandHead(wf.html);
     liveHtml = { mtime, body };
     console.log('Live dates: applied', hit, 'of', LIVE_RULES.length, 'rules to index.html');
     if (wf.hit) console.log('Zoho client workflow: applied', wf.hit, 'of', wf.total, 'rules');

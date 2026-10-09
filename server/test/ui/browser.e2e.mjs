@@ -1,7 +1,10 @@
 // Browser end-to-end test: the real server (Zoho stubbed) serving the real patched page, driven in Chromium.
 //   node test/ui/browser.e2e.mjs            (from the server directory)
-// Covers: Operations submit (all three checks pass), a failing client with escalation to management, management
-// approval, Sven's final approval, void, chase invoice, notification peek, Master Control platform reset.
+// Covers: Operations submit (all three checks pass) behind the Zoho loader, a failing client escalated to chosen
+// managers (recipients picker), Management Requests (management + Sven only, management lands there), management
+// approval, Sven's final approval, void, chase invoice, notification peek, management rejection → Rejected by
+// Management, brand (logo, title, favicon), Master Control platform reset.
+// Screenshots (desktop + phone width) go to $SHOTS when set.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -13,29 +16,34 @@ const { chromium } = await import(process.env.PLAYWRIGHT || '/opt/node22/lib/nod
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'onelink-e2e-'));
 const PORT = 8800 + Math.floor(Math.random() * 100), BASE = `http://localhost:${PORT}`;
 const CFD = '7050654000000685179', COGS = '7050654000000034003';
-const ALPHA = '7050654000000100001', BETA = '7050654000000100002', GAMMA = '7050654000000100003';
+const ALPHA = '7050654000000100001', BETA = '7050654000000100002', GAMMA = '7050654000000100003', DELTA = '7050654000000100004';
+const OPS_SHORT = 'Client does not have sufficient balance. You may escalate to Management.';
 const fixture = {
   contacts: [
     { contact_id: ALPHA, contact_name: 'Alpha Trading LLC', company_name: 'Alpha Trading LLC', status: 'active', outstanding_receivable_amount: 0 },
     { contact_id: BETA, contact_name: 'Beta Holdings FZE', company_name: 'Beta Holdings FZE', status: 'active', outstanding_receivable_amount: 2500 },
-    { contact_id: GAMMA, contact_name: 'Gamma Ventures LTD', company_name: 'Gamma Ventures LTD', status: 'active', outstanding_receivable_amount: 0 }
+    { contact_id: GAMMA, contact_name: 'Gamma Ventures LTD', company_name: 'Gamma Ventures LTD', status: 'active', outstanding_receivable_amount: 0 },
+    { contact_id: DELTA, contact_name: 'Delta Logistics FZCO', company_name: 'Delta Logistics FZCO', status: 'active', outstanding_receivable_amount: 0 }
   ],
   balances: [
     { 'Resolved Customer ID': ALPHA, 'Resolved Customer Name': 'Alpha Trading LLC', 'Credits AED': 60000, 'Debits AED': 10000, 'Balance AED': 50000, 'Balance Status': 'Customer Advance', 'Balance Alert': '' },
     { 'Resolved Customer ID': BETA, 'Resolved Customer Name': 'Beta Holdings FZE', 'Credits AED': 3000, 'Debits AED': 2000, 'Balance AED': 1000, 'Balance Status': 'Customer Advance', 'Balance Alert': '' },
-    { 'Resolved Customer ID': GAMMA, 'Resolved Customer Name': 'Gamma Ventures LTD', 'Credits AED': 'AED 40.00K', 'Debits AED': 0, 'Balance AED': 40000, 'Balance Status': 'Customer Advance', 'Balance Alert': '' }
+    { 'Resolved Customer ID': GAMMA, 'Resolved Customer Name': 'Gamma Ventures LTD', 'Credits AED': 'AED 40.00K', 'Debits AED': 0, 'Balance AED': 40000, 'Balance Status': 'Customer Advance', 'Balance Alert': '' },
+    { 'Resolved Customer ID': DELTA, 'Resolved Customer Name': 'Delta Logistics FZCO', 'Credits AED': 500, 'Debits AED': 0, 'Balance AED': 500, 'Balance Status': 'Customer Advance', 'Balance Alert': '' }
   ],
   split: [
     { Customer: ALPHA, Account: CFD, Credits: 60000, Debits: 10000, Lines: 4, Untagged: 0 },
     { Customer: ALPHA, Account: COGS, Credits: 0, Debits: 5000, Lines: 2, Untagged: 0 },
     { Customer: BETA, Account: CFD, Credits: 3000, Debits: 2000, Lines: 2, Untagged: 0 },
-    { Customer: GAMMA, Account: CFD, Credits: 40000, Debits: 0, Lines: 1, Untagged: 0 }
+    { Customer: GAMMA, Account: CFD, Credits: 40000, Debits: 0, Lines: 1, Untagged: 0 },
+    { Customer: DELTA, Account: CFD, Credits: 500, Debits: 0, Lines: 1, Untagged: 0 }
   ],
   invoices: [{ Customer: BETA, Invoice: 'INV-000777', Status: 'Overdue', Due: '01 Oct 2026', Total: 5000, Balance: 2500 }],
   payments: [
     { Customer: ALPHA, Payments: 2, Received: 60000, Unapplied: 0, Refunded: 0, Last: '2026-10-05 00:00:00.0' },
     { Customer: BETA, Payments: 1, Received: 2500, Unapplied: 0, Refunded: 0, Last: '2026-09-20 00:00:00.0' },
-    { Customer: GAMMA, Payments: 1, Received: 40000, Unapplied: 0, Refunded: 0, Last: '2026-10-01 00:00:00.0' }
+    { Customer: GAMMA, Payments: 1, Received: 40000, Unapplied: 0, Refunded: 0, Last: '2026-10-01 00:00:00.0' },
+    { Customer: DELTA, Payments: 1, Received: 500, Unapplied: 0, Refunded: 0, Last: '2026-10-02 00:00:00.0' }
   ]
 };
 fs.writeFileSync(path.join(tmp, 'fixture.json'), JSON.stringify(fixture));
@@ -54,10 +62,11 @@ if (!/Zoho client workflow: applied (\d+) of \1 rules/.test(srvLog)) {
 
 const results = [];
 let failed = 0;
-async function step(name, fn) {
+async function step(name, fn, soft) {
   try { await fn(); results.push('  ✓ ' + name); }
-  catch (e) { failed++; results.push('  ✗ ' + name + '\n      ' + String(e && e.message || e).split('\n').slice(0, 6).join('\n      ')); throw e; }
+  catch (e) { failed++; results.push('  ✗ ' + name + '\n      ' + String(e && e.message || e).split('\n').slice(0, 6).join('\n      ')); if (!soft) throw e; }
 }
+const soft = (name, fn) => step(name, fn, true);
 const expect = (cond, msg) => { if (!cond) throw new Error(msg); };
 
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined });
@@ -84,7 +93,9 @@ const api = async (token, p, body) => {
 };
 const login = async u => (await (await fetch(BASE + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: u === 'sven' ? 'master-pass-123456' : 'team-pass-123' }) })).json()).token;
 const shots = process.env.SHOTS || tmp;
+fs.mkdirSync(shots, { recursive: true });
 const shot = async (page, name) => { const f = path.join(shots, name + '.png'); await page.screenshot({ path: f, fullPage: /^\d/.test(name) }); return f; };
+const PHONE = { width: 390, height: 844 }, DESK = { width: 1360, height: 900 };
 
 // In-app navigation through the command palette (a page reload would sign the user out).
 async function palette(page, label) {
@@ -92,7 +103,7 @@ async function palette(page, label) {
   await page.keyboard.press('Control+k');
   await page.getByRole('button', { name: new RegExp(label) }).first().click();
 }
-async function newRequest(page, { client, purpose, amount, paid }) {
+async function newRequest(page, { client, purpose, amount, paid, loaderShot }) {
   await palette(page, 'Raise a funds request');
   const box = page.getByPlaceholder('Type 2+ letters of the client or company name');
   await box.fill(client.slice(0, 5));
@@ -104,38 +115,77 @@ async function newRequest(page, { client, purpose, amount, paid }) {
   await page.getByRole('button', { name: 'Send to finance' }).click();
   const anyway = page.getByRole('button', { name: 'Send without it' });
   await anyway.waitFor({ timeout: 5000 }); await anyway.click();
+  // the Zoho loader: progress bar, step list, rotating line — never a figure
+  const loader = page.locator('[role="status"][aria-live="polite"]').filter({ hasText: 'Checking with Zoho' });
+  await loader.waitFor({ timeout: 3000 });
+  const txt = await loader.innerText();
+  expect(/Verifying Zoho connections/.test(txt) && /Reading Zoho Analytics balance/.test(txt) && /Cross-checking Zoho Books/.test(txt) && /Final decision/.test(txt), 'loader steps missing: ' + txt);
+  expect(!/AED|\d,\d{3}/.test(txt), 'loader shows a figure: ' + txt);
+  if (loaderShot) await shot(page, loaderShot);
+  await loader.waitFor({ state: 'detached', timeout: 60000 });
 }
 
 let ok = false;
 try {
   const ops = await session('maram', 'team-pass-123');
 
-  await step('Operations: client passing all three checks is sent as Pending Sven Approval with the checks on it', async () => {
-    await newRequest(ops.page, { client: 'Alpha Trading LLC', purpose: 'Licence renewal', amount: 12000, paid: 'Yes' });
+  await soft('Brand: OneLink logo in the header, tab title "OneLink Funds", favicon links in the head', async () => {
+    const logo = ops.page.locator('header img[alt="OneLink"]');
+    await logo.waitFor({ timeout: 5000 });
+    expect(await logo.getAttribute('src') === '/brand/logo.png', 'logo src');
+    const box = await logo.boundingBox();
+    expect(box && Math.round(box.width) === 30 && Math.round(box.height) === 30, 'logo box ' + JSON.stringify(box));
+    expect(await ops.page.title() === 'OneLink Funds', 'title is ' + await ops.page.title());
+    const icons = await ops.page.evaluate(() => [...document.querySelectorAll('head link[rel~="icon"]')].map(l => l.getAttribute('href')));
+    expect(icons.includes('/brand/icon-32.png') && icons.includes('/favicon.ico'), 'icon links: ' + icons.join(', '));
+    const nat = await logo.evaluate(i => i.naturalWidth);
+    expect(nat > 0, 'logo image did not load (is /brand/logo.png served?)');
+    await shot(ops.page, 'header-logo-desktop');
+  });
+
+  await step('Operations: no Management Requests nav item or page', async () => {
+    expect(await ops.page.getByRole('button', { name: /Management Requests/ }).count() === 0, 'Operations see the Management Requests nav');
+  });
+
+  await step('Operations: client passing all three checks is sent as Pending Sven Approval with the checks on it (Zoho loader shown)', async () => {
+    await newRequest(ops.page, { client: 'Alpha Trading LLC', purpose: 'Licence renewal', amount: 12000, paid: 'Yes', loaderShot: 'ops-loader-desktop' });
     await ops.page.getByText('Financial validation', { exact: true }).first().waitFor({ timeout: 15000 });
-    await ops.page.getByText('All three checks passed', { exact: false }).first().waitFor({ timeout: 10000 });
+    await ops.page.getByText(/All (three|five) checks passed/).first().waitFor({ timeout: 10000 });
     expect(await ops.page.getByText('Pending Sven Approval').count() > 0, 'status label missing');
     const body = await ops.page.locator('body').innerText();
     expect(!/AED 50,000|50,000\.00|Available AED/.test(body), 'Operations can see the CFD balance');
   });
 
-  await step('Operations: failing client is blocked with the failed checks and can escalate with a justification', async () => {
+  await step('Operations: failing client is blocked with the failed checks and can escalate to chosen managers', async () => {
     await newRequest(ops.page, { client: 'Beta Holdings FZE', purpose: 'Visa fines', amount: 4000, paid: 'Yes' });
-    await ops.page.getByText('Client does not have sufficient balance to request funds. Please contact Sven.').first().waitFor({ timeout: 15000 });
+    await ops.page.getByText(OPS_SHORT).first().waitFor({ timeout: 15000 });
     expect(await ops.page.getByText('Invoice payment verification').count() > 0, 'invoice check not listed');
     const body = await ops.page.locator('body').innerText();
     expect(!/AED 1,000|2,500/.test(body), 'Operations can see amounts on the failed checks');
     await ops.page.getByRole('button', { name: 'Escalate to Management' }).click();
-    await shot(ops.page, '1-ops-failed-checks');
+    // recipients picker: All management by default; pick Mr. Adnan and Mr. Eduard
+    const group = ops.page.getByRole('group', { name: 'Send to' });
+    await group.waitFor({ timeout: 5000 });
+    expect(await group.getByRole('button', { name: 'All management' }).getAttribute('aria-pressed') === 'true', 'All management is not the default');
+    expect(await group.getByRole('button').count() === 4, 'expected All management + three managers, got ' + await group.getByRole('button').count());
+    await group.getByRole('button', { name: 'Mr. Adnan (CFO)' }).click();
+    await group.getByRole('button', { name: 'Mr. Eduard (Chief Legal Officer)' }).click();
+    expect(await group.getByRole('button', { name: 'All management' }).getAttribute('aria-pressed') === 'false', 'All management still on');
+    await ops.page.getByText('Only Mr. Adnan (CFO), Mr. Eduard (Chief Legal Officer) are notified and can decide.').waitFor({ timeout: 3000 });
     await ops.page.locator('textarea').last().fill('Client paid in cash at the office today; receipt follows.');
+    await shot(ops.page, '1-ops-failed-checks');
+    await shot(ops.page, 'escalation-picker-desktop');
     await ops.page.getByRole('button', { name: 'Send to management' }).click();
     await ops.page.getByText('Awaiting Management Decision').first().waitFor({ timeout: 15000 });
+    await ops.page.getByText('Waiting for management', { exact: true }).first().waitFor({ timeout: 5000 });
     await ops.page.getByText('Mr. Adnan (CFO)', { exact: false }).first().waitFor({ timeout: 5000 });
     await shot(ops.page, '2-ops-escalated');
+    await shot(ops.page, 'ops-waiting-card-desktop');
   });
 
   const tSven = await login('sven');
   const snap = (await api(tSven, '/api/sync/snapshot')).json;
+  const histCount = snap.requests.filter(r => !r.createdAt).length;
   const esc = snap.requests.find(r => r.status === 'ESCALATED');
   const alpha = snap.requests.find(r => r.zohoClientId === ALPHA);
   await step('Server holds the escalation with failed checks, and the passing request with its finance record', async () => {
@@ -143,13 +193,36 @@ try {
     expect(alpha && alpha.finance && alpha.finance.ok === true && alpha.status === 'NEW', 'passing request missing finance/NEW');
     expect(snap.notifications.some(n => n.to === 'sven' && /Escalated to management/.test(n.text)), 'Sven not notified');
   });
+  await soft('Server: the escalation went only to the chosen managers (escalation.to / routing)', async () => {
+    const keys = (esc.escalation.to || []).map(t => t.key).sort().join(',');
+    expect(keys === 'adnan,eduard', 'escalation.to = ' + keys);
+    expect(esc.escalation.routing === 'SELECTED', 'routing = ' + esc.escalation.routing);
+  });
 
   const mgmt = await session('adnan', 'team-pass-123');
+  await step('Management: Mr. Adnan lands on Management Requests with the escalation awaiting his decision', async () => {
+    await mgmt.page.getByRole('heading', { name: 'Management Requests' }).waitFor({ timeout: 5000 });
+    expect(await mgmt.page.getByRole('button', { name: /Management Requests/ }).count() === 1, 'nav item missing');
+    await mgmt.page.getByText('Awaiting decision', { exact: true }).first().waitFor({ timeout: 5000 });
+    const row = mgmt.page.getByRole('button').filter({ hasText: 'Beta Holdings FZE' }).first();
+    await row.waitFor({ timeout: 5000 });
+    expect(/Your decision/.test(await row.innerText()), 'row not marked as his decision');
+    await shot(mgmt.page, 'mgmt-requests-desktop');
+    await mgmt.page.setViewportSize(PHONE); await mgmt.page.waitForTimeout(400);
+    await shot(mgmt.page, 'mgmt-requests-phone');
+    await shot(mgmt.page, 'header-logo-phone');
+    await mgmt.page.setViewportSize(DESK); await mgmt.page.waitForTimeout(300);
+  }).catch(async e => { await shot(mgmt.page, 'mgmt-landing'); throw e; });
   await step('Management: Mr. Adnan opens the escalation and approves & proceeds', async () => {
-    await palette(mgmt.page, 'View pending approvals');
-    await mgmt.page.getByText('Beta Holdings FZE').first().click();
-    await mgmt.page.getByText('Escalation', { exact: false }).first().waitFor({ timeout: 5000 });
+    await mgmt.page.getByRole('button').filter({ hasText: 'Beta Holdings FZE' }).first().click();
+    await mgmt.page.getByText('Escalation to management', { exact: false }).first().waitFor({ timeout: 5000 });
+    await mgmt.page.getByText('Mr. Adnan (CFO), Mr. Eduard (Chief Legal Officer)', { exact: false }).first().waitFor({ timeout: 5000 }).catch(() => {});
     await shot(mgmt.page, '3-mgmt-escalation');
+    await shot(mgmt.page, 'detail-escalation-desktop');
+    await mgmt.page.setViewportSize(PHONE); await mgmt.page.waitForTimeout(400);
+    await mgmt.page.getByText('Escalation to management', { exact: false }).first().scrollIntoViewIfNeeded();
+    await shot(mgmt.page, 'detail-escalation-phone');
+    await mgmt.page.setViewportSize(DESK); await mgmt.page.waitForTimeout(300);
     await mgmt.page.getByRole('button', { name: 'Approve & proceed' }).first().click();
     await mgmt.page.locator('textarea:visible, input.input:visible').last().fill('Cash receipt seen; proceed.');
     await mgmt.page.getByRole('button', { name: /^(Approve|Approve & proceed|Confirm)$/ }).last().click();
@@ -157,6 +230,12 @@ try {
   }).catch(async e => { await shot(mgmt.page, 'mgmt'); throw e; });
 
   const svenUI = await session('sven', 'master-pass-123456');
+  await step('Sven: Management Requests is in his nav and lists the escalation', async () => {
+    await svenUI.page.getByRole('button', { name: /Management Requests/ }).first().click();
+    await svenUI.page.getByRole('heading', { name: 'Management Requests' }).waitFor({ timeout: 5000 });
+    await svenUI.page.getByText('Approved – waiting for Sven', { exact: true }).first().waitFor({ timeout: 5000 });
+    await svenUI.page.getByRole('button').filter({ hasText: 'Beta Holdings FZE' }).first().waitFor({ timeout: 5000 });
+  }).catch(async e => { await shot(svenUI.page, 'sven-mgmt'); throw e; });
   await step('Sven: a notification opens its request inside the Updates panel — no tab change, no reload', async () => {
     await palette(svenUI.page, 'View pending approvals');
     const before = await svenUI.page.locator('h3').first().innerText().catch(() => '');
@@ -231,6 +310,49 @@ try {
     expect(put.status === 403, 'edit after void allowed: ' + put.status);
   }).catch(async e => { await shot(svenUI.page, 'void'); throw e; });
 
+  await step('Operations (phone width): another failing client is escalated to Mr. Ahmed only', async () => {
+    await ops.page.setViewportSize(PHONE); await ops.page.waitForTimeout(400);
+    await newRequest(ops.page, { client: 'Delta Logistics FZCO', purpose: 'Customs deposit', amount: 3000, paid: 'Yes', loaderShot: 'ops-loader-phone' });
+    await ops.page.getByText(OPS_SHORT).first().waitFor({ timeout: 15000 });
+    await ops.page.getByRole('button', { name: 'Escalate to Management' }).click();
+    const group = ops.page.getByRole('group', { name: 'Send to' });
+    await group.getByRole('button', { name: 'Mr. Ahmed (General Manager)' }).click();
+    await ops.page.locator('textarea').last().fill('Client wired the funds this morning; confirmation attached later.');
+    await group.scrollIntoViewIfNeeded();
+    await shot(ops.page, 'escalation-picker-phone');
+    await ops.page.getByRole('button', { name: 'Send to management' }).click();
+    await ops.page.getByText('Waiting for management', { exact: true }).first().waitFor({ timeout: 15000 });
+    await ops.page.getByText('Waiting for management', { exact: true }).first().scrollIntoViewIfNeeded();
+    await shot(ops.page, 'ops-waiting-card-phone');
+    await ops.page.setViewportSize(DESK); await ops.page.waitForTimeout(300);
+  }).catch(async e => { await shot(ops.page, 'delta-escalate'); throw e; });
+  const delta = (await api(tSven, '/api/sync/snapshot')).json.requests.find(r => r.zohoClientId === DELTA || r.company === 'Delta Logistics FZCO');
+  await soft('Management: Mr. Adnan cannot decide an escalation sent only to Mr. Ahmed', async () => {
+    expect(delta && delta.status === 'ESCALATED', 'Delta not escalated: ' + (delta && delta.status));
+    await palette(mgmt.page, 'Management Requests');
+    await mgmt.page.getByRole('button').filter({ hasText: 'Delta Logistics FZCO' }).first().click();
+    await mgmt.page.getByText('Escalation to management', { exact: false }).first().waitFor({ timeout: 5000 });
+    expect(await mgmt.page.getByRole('button', { name: 'Reject escalation' }).count() === 0, 'Mr. Adnan is offered the decision');
+  });
+  await soft('Management: Mr. Ahmed rejects → Rejected by Management, the client is unlocked', async () => {
+    const ahmed = await session('ahmed', 'team-pass-123');
+    await ahmed.page.getByRole('heading', { name: 'Management Requests' }).waitFor({ timeout: 5000 });
+    await ahmed.page.getByRole('button').filter({ hasText: 'Delta Logistics FZCO' }).first().click();
+    await ahmed.page.getByRole('button', { name: 'Reject escalation' }).first().click();
+    await ahmed.page.locator('textarea:visible, input.input:visible').last().fill('The client has to pay in full first.');
+    await ahmed.page.getByRole('button', { name: /^Reject escalation$/ }).last().click();
+    await ahmed.page.getByText('Rejected by Management').first().waitFor({ timeout: 10000 });
+    await shot(ahmed.page, 'mgmt-rejected-desktop');
+    const r = (await api(tSven, '/api/sync/snapshot')).json.requests.find(x => x.id === delta.id);
+    expect(r.status === 'MGMT_REJECTED', 'expected MGMT_REJECTED, got ' + r.status);
+    // Operations see the status, never the management note
+    await palette(ops.page, 'View pending approvals');
+    await ops.page.getByText('Delta Logistics FZCO').first().click();
+    await ops.page.getByText('Rejected by Management').first().waitFor({ timeout: 10000 });
+    expect(!/pay in full first/.test(await ops.page.locator('body').innerText()), 'Operations can read the management note');
+    await ahmed.ctx.close();
+  });
+
   await step('Master Control → Platform reset lists live requests and resets with a backup', async () => {
     await palette(svenUI.page, 'Manage permissions');
     await svenUI.page.getByText('Platform reset', { exact: true }).first().click();
@@ -241,7 +363,7 @@ try {
     await svenUI.page.getByText(/BK-\d{8}T\d{6}-[0-9A-F]{4}/).first().waitFor({ timeout: 15000 });
     const s2 = (await api(tSven, '/api/sync/snapshot')).json;
     expect(!s2.requests.some(r => r.createdAt), 'live requests still present after reset');
-    expect(s2.requests.length === 236, 'history should be kept, have ' + s2.requests.length);
+    expect(s2.requests.length === histCount, 'history should be kept (' + histCount + '), have ' + s2.requests.length);
     expect(s2.audit.some(a => a.action === 'PLATFORM_RESET'), 'reset not audited');
   }).catch(async e => { await shot(svenUI.page, 'reset'); throw e; });
   ok = failed === 0;
