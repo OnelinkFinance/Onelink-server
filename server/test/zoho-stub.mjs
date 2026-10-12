@@ -134,6 +134,8 @@ globalThis.fetch = async function stubFetch(input, init = {}) {
   if (host.startsWith('accounts.zoho.') && url.pathname === '/oauth/v2/token' && method === 'POST') {
     log(entry);
     if (fx.fail && fx.fail.oauth) return json({ error: 'invalid_code' }, 200);
+    if (url.searchParams.get('grant_type') === 'authorization_code') // a grant code: exchanged for a refresh token
+      return json({ access_token: 'stub-access-' + Date.now(), refresh_token: 'stub-rt-' + url.searchParams.get('code'), scope: 'ZohoBooks.fullaccess.READ', expires_in: 3600 });
     return json({ access_token: 'stub-access-' + Date.now(), expires_in: 3600, token_type: 'Bearer' });
   }
 

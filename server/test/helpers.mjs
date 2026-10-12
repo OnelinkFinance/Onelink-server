@@ -38,7 +38,7 @@ export async function startServer({ dir, fixture, env = {} }) {
     PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: 'test',
     PORT: String(port), MASTER_ADMIN_PASSWORD: MASTER_PW, SEED_TEAM_PASSWORD: TEAM_PW, VALIDATION_SECRET: SECRET,
     USERS_FILE: path.join(dir, 'users.json'), DATA_FILE: path.join(dir, 'platform.json'),
-    ZOHO_CLIENT_ID: 'x', ZOHO_CLIENT_SECRET: 'y', ZOHO_REFRESH_TOKEN: 'z',
+    ZOHO_CLIENT_ID: 'x', ZOHO_CLIENT_SECRET: 'y', ZOHO_REFRESH_TOKEN: 'z', ZOHO_CACHE_SECONDS: '60',
     ZOHO_STUB_FIXTURE: fx, ZOHO_STUB_LOG: path.join(dir, 'zoho.log'), ...env
   };
   const proc = spawn(process.execPath, ['--import', STUB, path.join(SANDBOX, 'server.js')], { cwd: dir, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });

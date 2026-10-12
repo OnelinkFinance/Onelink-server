@@ -502,6 +502,42 @@ describe('review round 2 regressions', () => {
       assert.equal(p.json.finance.checks.find(c => c.key === 'NOTES').code, 'BOOKS_UNAVAILABLE');
     } finally { await srv.stop(); }
   });
+  test('a Books endpoint refusing permission (401) says so and tells Sven once how to fix it', async () => {
+    const fx = fixture(); fx.fail = { creditnotes: 401, journals: 401 };
+    const srv = await startServer({ dir: mkTmp('r2-scope-books'), fixture: fx });
+    try {
+      const p = await pre(srv, 'sven', C.bk1);
+      assert.equal(p.status, 422);
+      assert.match(p.json.finance.checks.find(c => c.key === 'NOTES').detail, /no permission for creditnotes/);
+      assert.match(p.json.finance.checks.find(c => c.key === 'JOURNALS').detail, /no permission for journals/);
+      await pre(srv, 'sven', C.bk1);
+      const sv = await login(srv.base, 'sven', MASTER_PW);
+      const n = (await call(srv.base, sv, 'GET', '/api/sync/snapshot')).json.notifications.filter(x => /^Zoho Books cross-check cannot run/.test(x.text));
+      assert.equal(n.length, 1, 'one alert, not one per check');
+    } finally { await srv.stop(); }
+  });
+  test('Zoho Analytics rate limiting pauses Analytics calls for a minute instead of hammering', async () => {
+    const fx = fixture(); fx.fail = { balances: 429 };
+    const dir = mkTmp('r2-rate'), srv = await startServer({ dir, fixture: fx });
+    try {
+      await pre(srv, 'sven', C.alpha);
+      await pre(srv, 'sven', C.alpha);
+      const tries = zlog(dir).filter(e => e.kind === 'balances').length;
+      assert.ok(tries <= 1, tries + ' balance exports while Zoho was limiting');
+      assert.match(srv.out(), /limiting requests for this plan/);
+    } finally { await srv.stop(); }
+  });
+  test('a new ZOHO_GRANT_CODE re-authorises: its refresh token replaces the configured one', async () => {
+    const dir = mkTmp('r2-grant'), srv = await startServer({ dir, fixture: fixture(), env: { ZOHO_GRANT_CODE: 'g-new-1' } });
+    try {
+      assert.match(srv.out(), /new grant code exchanged — this refresh token is used from now on/);
+      await call(srv.base, null, 'GET', '/api/zoho/test');
+      await sleep(2500); // the boot warm-up reads Zoho
+      const refresh = zlog(dir).filter(e => e.query && e.query.grant_type === 'refresh_token');
+      assert.ok(refresh.length >= 1);
+      assert.ok(refresh.every(e => e.query.refresh_token === 'stub-rt-g-new-1'), 'the new token is used, not ZOHO_REFRESH_TOKEN');
+    } finally { await srv.stop(); }
+  });
   test('a cross-check needing more than 25 Books calls fails closed and stops calling', async () => {
     const fx = fixture(), today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dubai' });
     for (let i = 0; i < 1000; i++) fx.books.transactions[COGS].push({ transaction_id: 'G' + i, transaction_type: 'expense', transaction_date: today, customer_id: '9998', credit_amount: 0, debit_amount: 1 });

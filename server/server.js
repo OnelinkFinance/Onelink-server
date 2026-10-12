@@ -64,18 +64,30 @@ let token = null, tokenExp = 0, rt = E.ZOHO_REFRESH_TOKEN || null;
 
 // One-time bootstrap: exchange a 10-minute Self Client code (ZOHO_GRANT_CODE) for a permanent
 // refresh token, kept in Upstash so it survives restarts. Never logged.
+// Re-authorising (e.g. to add Books scopes): put a NEW grant code in ZOHO_GRANT_CODE. A code not used before is exchanged
+// once and its refresh token wins over ZOHO_REFRESH_TOKEN and any stored token from then on (marked 'grant' in Upstash).
 const zohoReady = (async () => {
+  const codeHash = E.ZOHO_GRANT_CODE ? crypto.createHash('sha256').update(E.ZOHO_GRANT_CODE).digest('hex').slice(0, 16) : null;
+  let used = null, stored = null, src = null;
+  try { [used, stored, src] = await Promise.all([kvGet('onelink:zoho_grant_used'), kvGet('onelink:zoho_rt'), kvGet('onelink:zoho_rt_src')]); } catch {}
+  if (codeHash && used !== codeHash && E.ZOHO_CLIENT_ID && E.ZOHO_CLIENT_SECRET) {
+    const q = new URLSearchParams({ code: E.ZOHO_GRANT_CODE, client_id: E.ZOHO_CLIENT_ID, client_secret: E.ZOHO_CLIENT_SECRET, grant_type: 'authorization_code' });
+    try {
+      const j = await (await fetch(`https://accounts.zoho.${dc()}/oauth/v2/token?${q}`, { method: 'POST', signal: AbortSignal.timeout(15_000) })).json();
+      if (j.refresh_token) {
+        rt = j.refresh_token;
+        await Promise.all([kvSet('onelink:zoho_rt', rt), kvSet('onelink:zoho_rt_src', 'grant'), kvSet('onelink:zoho_grant_used', codeHash)]).catch(() => {});
+        console.log('Zoho: new grant code exchanged — this refresh token is used from now on' + (j.scope ? ' (scopes: ' + j.scope + ')' : '') + '.');
+        return 'exchanged';
+      }
+      console.error('Zoho: grant code exchange failed —', j.error || 'no refresh_token (code expired or already used?)', '— keeping the current token.');
+      await kvSet('onelink:zoho_grant_used', codeHash).catch(() => {}); // a spent or expired code is not retried on every start
+    } catch (e) { console.error('Zoho: grant code exchange error —', e.message, '— keeping the current token.'); }
+  }
+  if (stored && src === 'grant') { rt = stored; return 'stored'; } // a re-authorisation wins over the env token
   if (rt) return 'env';
-  try { rt = await kvGet('onelink:zoho_rt'); } catch {}
-  if (rt) return 'stored';
-  if (!E.ZOHO_GRANT_CODE || !E.ZOHO_CLIENT_ID || !E.ZOHO_CLIENT_SECRET) return 'none';
-  const q = new URLSearchParams({ code: E.ZOHO_GRANT_CODE, client_id: E.ZOHO_CLIENT_ID, client_secret: E.ZOHO_CLIENT_SECRET, grant_type: 'authorization_code' });
-  try {
-    const j = await (await fetch(`https://accounts.zoho.${dc()}/oauth/v2/token?${q}`, { method: 'POST' })).json();
-    if (j.refresh_token) { rt = j.refresh_token; await kvSet('onelink:zoho_rt', rt).catch(() => {}); console.log('Zoho: grant code exchanged, refresh token stored.'); return 'exchanged'; }
-    console.error('Zoho: grant code exchange failed —', j.error || 'no refresh_token (code expired or already used?)');
-  } catch (e) { console.error('Zoho: grant code exchange error —', e.message); }
-  return 'failed';
+  if (stored) { rt = stored; return 'stored'; }
+  return E.ZOHO_GRANT_CODE ? 'failed' : 'none';
 })();
 
 async function accessToken() {
@@ -117,6 +129,7 @@ async function books(p, params) {
   const res = await fetch(`https://www.zohoapis.${dc()}/books/v3/${p}?${q}`, { headers: { Authorization: 'Zoho-oauthtoken ' + t }, signal: AbortSignal.timeout(15_000) });
   if (res.status === 404) return null;
   if (res.status === 429) throw Object.assign(new Error('Zoho Books rate limit'), { code: 'RATE' });
+  if (res.status === 401 || res.status === 403) throw Object.assign(new Error(`Zoho Books ${res.status} — the Zoho connection has no permission for ${p.split('/')[0]}`), { code: 'BOOKS_SCOPE' });
   if (!res.ok) throw Object.assign(new Error('Zoho Books ' + res.status), { code: 'BOOKS' });
   return res.json();
 }
@@ -198,7 +211,12 @@ function parseCsv(text) {
 // it), so it is read with a SQL export job — about 3 s. It holds one row per client (~300), so the whole table
 // is read in one job and kept for BALANCE_TTL: a lookup is then instant, and no check uses a balance older
 // than that. Typing in the client field pre-loads it, so it is normally ready by the time a client is picked.
-const BALANCE_TTL = 60_000, JOB_DEADLINE = 25_000;
+// Zoho Analytics limits API calls per minute for the plan: each export is one job plus status polls, so the figures are
+// kept ZOHO_CACHE_SECONDS (default 180 s) and the platform pauses for a minute when Zoho says the limit is reached.
+const CACHE_MS = Math.max(30, Number(E.ZOHO_CACHE_SECONDS) || 180) * 1000;
+const BALANCE_TTL = CACHE_MS, JOB_DEADLINE = 25_000;
+let zaPausedUntil = 0;
+const zaPaused = () => Date.now() < zaPausedUntil;
 const zaErr = (msg, code = 'ANALYTICS') => Object.assign(new Error(msg), { code });
 
 // One Analytics HTTP call. A timeout / abort, a network error or a 5xx is retried once, always inside the job's deadline
@@ -226,14 +244,19 @@ async function analyticsSql(sql, what = 'balance') {
   const base = `https://analyticsapi.zoho.${dc()}/restapi/v2/bulk/workspaces/${zaWs()}`;
   const check = async (res, what) => {
     if (res.ok) return res;
-    if (res.status === 429) throw zaErr('Zoho Analytics rate limit', 'RATE');
-    throw zaErr(`Zoho Analytics ${what} ${res.status} ${(await res.text()).slice(0, 200)}`);
+    const body = await res.text().catch(() => '');
+    if (res.status === 429 || /EXCEEDING_\w*API|6045/.test(body)) {
+      zaPausedUntil = Date.now() + 65_000;
+      throw zaErr('Zoho Analytics is limiting requests for this plan — pausing for a minute', 'RATE');
+    }
+    throw zaErr(`Zoho Analytics ${what} ${res.status} ${body.slice(0, 200)}`);
   };
+  if (zaPaused()) throw zaErr('Zoho Analytics is limiting requests for this plan — pausing for a minute', 'RATE');
   const t0 = Date.now(), deadline = t0 + JOB_DEADLINE;
   const r1 = await check(await zaFetch(`${base}/data?CONFIG=${encodeURIComponent(JSON.stringify({ sqlQuery: sql, responseFormat: 'csv' }))}`, h, deadline, what + ' export'), 'export');
   const jobId = (await r1.json())?.data?.jobId;
   if (!jobId) throw zaErr('Zoho Analytics returned no export job');
-  for (let wait = 300; Date.now() - t0 < JOB_DEADLINE; wait = Math.min(wait * 1.4, 1000)) {
+  for (let wait = 700; Date.now() - t0 < JOB_DEADLINE; wait = Math.min(wait * 1.5, 2000)) {
     await new Promise(r => setTimeout(r, wait));
     const r2 = await check(await zaFetch(`${base}/exportjobs/${jobId}`, h, deadline, what + ' job'), 'job');
     const code = String((await r2.json())?.data?.jobCode || '');
@@ -271,7 +294,10 @@ const invalidateBalances = () => { balancesAt = 0; };
 // Balance row for one Books contact, never older than BALANCE_TTL. null = no balance record in Analytics.
 async function analyticsBalance(contactId) {
   if (!/^\d{1,30}$/.test(String(contactId || ''))) return null;
-  if (!balancesFresh()) await refreshBalances();
+  if (!balancesFresh()) {
+    // While Zoho Analytics is rate-limiting or slow, the last good table (at most 15 minutes old) still answers.
+    try { await refreshBalances(); } catch (e) { if (!(balances && Date.now() - balancesAt <= 15 * 60_000)) throw e; }
+  }
   return balances.get(String(contactId)) || null;
 }
 
@@ -314,7 +340,7 @@ function verifyConnections() {
 // The last verification without error text (public health endpoint).
 const lastConnections = () => lastConn && { ok: lastConn.ok, at: lastConn.at, atText: lastConn.atText, analytics: { ok: lastConn.analytics.ok, ms: lastConn.analytics.ms }, books: { ok: lastConn.books.ok, ms: lastConn.books.ms } };
 
-return { zohoReady, accessToken, exact, norm, num, books, verifyConnections, lastConnections, analyticsSql, booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, prefetchBalances, balancesFresh, invalidateBalances, col, toRecord, config: () => ({ booksOrg: booksOrg() + ' (ELITE ONELINK CORPORATE SERVICES L.L.C S.O.C)', analyticsOrg: zaOrg(), workspace: zaWs(), table: zaTable() }) };
+return { cacheMs: CACHE_MS, zohoReady, accessToken, exact, norm, num, books, verifyConnections, lastConnections, analyticsSql, booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, prefetchBalances, balancesFresh, invalidateBalances, col, toRecord, config: () => ({ booksOrg: booksOrg() + ' (ELITE ONELINK CORPORATE SERVICES L.L.C S.O.C)', analyticsOrg: zaOrg(), workspace: zaWs(), table: zaTable() }) };
 })();
 
 // ---- finance.js ----
@@ -328,7 +354,7 @@ const { analyticsSql, analyticsBalance, booksGetContact, num, invalidateBalances
 // receivable) is read on every check, so a payment recorded or deleted in Books shows straight away.
 const CFD_ACCOUNT = process.env.ZOHO_CFD_ACCOUNT_ID || '7050654000000685179';
 const COGS_ACCOUNT = process.env.ZOHO_COGS_ACCOUNT_ID || '7050654000000034003';
-const FIN_TTL = 60_000;
+const FIN_TTL = M_zoho.cacheMs;
 const CUST = c => `CASE WHEN A."Canonical Customer ID" IS NOT NULL THEN TO_STRING(A."Canonical Customer ID") ELSE TO_STRING(${c}) END`;
 const ALIAS = c => `LEFT JOIN "CFD Automatic Customer Aliases" A ON ${c} = A."Source Customer ID"`;
 const SQL = {
@@ -2073,6 +2099,19 @@ async function connectionsOk(q, s) {
   return null;
 }
 
+// The Books cross-check needs read access to Books account transactions, journals, credit notes, invoices and customer
+// payments. When the Zoho connection lacks it (401/403), Sven is told how to fix it — once every 6 hours.
+let scopeAlertAt = 0;
+function booksScopeAlert(fin) {
+  const hit = fin && Array.isArray(fin.checks) && fin.checks.some(c => /has no permission for/.test(String(c.detail || '')));
+  if (!hit || Date.now() - scopeAlertAt < 6 * 3600_000) return;
+  scopeAlertAt = Date.now();
+  const text = 'Zoho Books cross-check cannot run: the Zoho connection has no permission to read Books journals, credit notes, invoices, payments or account transactions. Re-authorise Zoho with the Books read scopes (new grant code in ZOHO_GRANT_CODE on Render). Until then, a request the Zoho Analytics balance does not cover needs a management decision.';
+  store.postSystem('notifications', { id: 'zs' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex'), to: 'sven', at: stamp().both, read: false, req: null, text, _at: Date.now() });
+  console.error(text);
+  notifySven(text).catch(() => {});
+}
+
 app.get('/api/health', async (_q, s) => s.json({ ok: true, zoho: await zohoReady, live: zohoConfig(), connections: M_zoho.lastConnections(), balancesFresh: balancesFresh(), financeFresh: M_finance.fresh(), sheet: !!(E.GOOGLE_SHEET_ID && E.GOOGLE_SERVICE_ACCOUNT_B64), lastReset: store.status().lastReset, time: new Date().toISOString() }));
 
 app.get('/api/zoho/test', async (_q, s) => {
@@ -2167,6 +2206,7 @@ app.post('/api/zoho/precheck', async (q, s) => {
   }
   let fin;
   try { fin = await M_finance.run({ contactId: v.clientId, amount, paid, books: contact, connections, committed: store.committedFor(v.clientId, null, await M_finance.ledgerDebits(v.clientId)) }); } catch (e) { return zohoErr(s, e); }
+  booksScopeAlert(fin);
   store.finPut(fin, q.user.key);
   const view = opsUser ? M_finance.forOps(M_finance.record(fin)) : M_finance.record(fin);
   const cfd = fin.checks.find(c => c.key === 'CFD');
@@ -2300,6 +2340,7 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
     [rec, fin] = await Promise.all([analyticsBalance(M_finance.canonical(books.contactId)), M_finance.run({ contactId: books.contactId, amount: req.requestedAmount, paid: stored ? stored.paid : String(b.paid || ''), books, committed, connections })]);
     held = committed.amount;
   } catch (e) { return zohoErr(s, e); }
+  booksScopeAlert(fin);
 
   // Decided on what can still be approved: the ledger balance less amounts approved or credited and not yet booked.
   // The record, the sheet and Sven's messages keep the ledger figure itself as the Zoho Analytics balance.

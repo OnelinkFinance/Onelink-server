@@ -50,7 +50,7 @@ fs.writeFileSync(path.join(tmp, 'fixture.json'), JSON.stringify(fixture));
 
 const env = { ...process.env, PORT: String(PORT), MASTER_ADMIN_PASSWORD: 'master-pass-123456', SEED_TEAM_PASSWORD: 'team-pass-123',
   VALIDATION_SECRET: '0123456789abcdef0123456789abcdef0123', USERS_FILE: path.join(tmp, 'users.json'), DATA_FILE: path.join(tmp, 'platform.json'),
-  ZOHO_CLIENT_ID: 'x', ZOHO_CLIENT_SECRET: 'y', ZOHO_REFRESH_TOKEN: 'z', ZOHO_STUB_FIXTURE: path.join(tmp, 'fixture.json'),
+  ZOHO_CLIENT_ID: 'x', ZOHO_CLIENT_SECRET: 'y', ZOHO_REFRESH_TOKEN: 'z', ZOHO_CACHE_SECONDS: '60', ZOHO_STUB_FIXTURE: path.join(tmp, 'fixture.json'),
   UPSTASH_REDIS_REST_URL: '', UPSTASH_REDIS_REST_TOKEN: '', SVEN_WEBHOOK_URL: '', GOOGLE_SHEET_ID: '' };
 const srv = spawn(process.execPath, ['--import', process.env.ZOHO_STUB || path.join(root, 'test/zoho-stub.mjs'), path.join(root, 'server.js')], { cwd: tmp, env });
 let srvLog = '';
