@@ -92,7 +92,8 @@ test('a(i) ops: client search, validate, precheck pass, put → finance attached
   const mine = await reqOf('maram', FR1);
   assert.ok(mine.finance, 'finance attached');
   assert.equal(mine.finance.ok, true);
-  assert.deepEqual(mine.finance.checks.map(c => c.key), ['CFD', 'COGS', 'INVOICES']);
+  assert.deepEqual(mine.finance.checks.map(c => c.key), ['CFD'], 'Analytics covers it: the CFD balance alone decides');
+  assert.equal(mine.finance.route, 'ANALYTICS');
   assert.deepEqual(findKeys(mine.finance, 'detail'), [], 'ops copy has no detail');
   assert.ok(!('zohoBalance' in mine));
   assert.ok(!('zohoSubmitToken' in mine), 'submit token not stored');
@@ -117,12 +118,14 @@ test('a(ii) ops: failing client → 422 FINANCIAL_CHECKS_FAILED, escalate token,
   const s = await precheck('sven', C.kilo);
   assert.equal(s.status, 422);
   assert.match(s.json.error, /AED 1,200\.00/, 'compact "AED 1.2K" parsed to 1200');
-  // non-CFD failure: headline names the check
+  assert.equal(p.json.finance.route, 'BOOKS_ON_REQUEST', 'Zoho Books is not run until Sven or management ask for it');
+  assert.equal(p.json.booksVerification, 'ON_REQUEST');
+  assert.deepEqual(p.json.failed.map(f => f.key), ['CFD']);
+  assert.match(s.json.error, /Zoho Books verification has not run — Sven or management decide whether it is required\./);
+  // the client has the balance: what it paid and what was paid on its behalf are not tested — it goes through
   const q = await precheck('maram', C.quebec);
-  assert.equal(q.status, 422);
-  assert.deepEqual(q.json.failed.map(f => f.key), ['INVOICES']);
-  assert.match(q.json.error, /Invoice payment verification check failed/);
-  assert.doesNotMatch(JSON.stringify(q.json), /AED/);
+  assert.equal(q.status, 200, JSON.stringify(q.json));
+  assert.deepEqual(q.json.finance.checks.map(c => c.key), ['CFD']);
   // no balance record
   const n = await precheck('maram', C.papa);
   assert.equal(n.status, 422);
@@ -400,18 +403,28 @@ test('k. client-funding-check: passing request ok + finance; failing client → 
   assert.equal(f.status, 409);
   assert.equal(f.json.reason, 'REQUEST_NOT_FOUND');
   assert.doesNotMatch(JSON.stringify(f.json), /AED/);
+  // Oscar's COGS exceed what it paid, but its Zoho Analytics balance covers the request: it goes through on that alone.
   const fs_ = await api('sven', 'POST', '/api/zoho/client-funding-check', { validationToken: (await pick('sven', C.oscar)).token, clientName: C.oscar.name, company: 'Oscar', purpose: 'Visa', requestedAmount: 5000, paid: PAID });
-  assert.equal(fs_.json.reason, 'FINANCIAL_CHECKS_FAILED');
-  assert.match(fs_.json.notes, /AED/, 'staff notes carry the figures');
+  assert.equal(fs_.json.reason, 'VALIDATION_PASSED', JSON.stringify(fs_.json).slice(0, 300));
+  assert.equal(fs_.json.route, 'ANALYTICS');
+  assert.deepEqual(fs_.json.finance.checks.map(c => c.key), ['CFD']);
+  // A short balance: flagged, Zoho Books not run until Sven or management ask for it; staff see the figures
+  const lo = await api('sven', 'POST', '/api/zoho/client-funding-check', { validationToken: (await pick('sven', C.yoke)).token, clientName: C.yoke.name, company: 'Yoke', purpose: 'Visa', requestedAmount: 5000, paid: PAID });
+  assert.equal(lo.json.ok, false);
+  assert.equal(lo.json.reason, 'INSUFFICIENT_BALANCE');
+  assert.equal(lo.json.route, 'BOOKS_ON_REQUEST');
+  assert.equal(lo.json.booksVerification, 'ON_REQUEST');
+  assert.match(lo.json.notes, /Zoho Books verification has not run/);
+  assert.equal(typeof lo.json.availableBalance, 'number', 'staff see the balance');
 });
 
 test('k2. Sven\'s funding check on an escalated request does not leak figures to the Operations requester (chat)', async () => {
-  const e = await escalate('maram', C.romeo);
+  const e = await escalate('maram', C.tango);
   assert.equal(e.status, 200, JSON.stringify(e.json));
   const id = e.json.id;
-  const r = await api('sven', 'POST', '/api/zoho/client-funding-check', { requestId: id, clientName: C.romeo.name, company: 'Romeo', purpose: 'Visa renewal', requestedAmount: 5000 });
+  const r = await api('sven', 'POST', '/api/zoho/client-funding-check', { requestId: id, clientName: C.tango.name, company: 'Tango', purpose: 'Visa renewal', requestedAmount: 5000 });
   assert.equal(r.status, 200);
-  assert.equal(r.json.reason, 'FINANCIAL_CHECKS_FAILED');
+  assert.equal(r.json.reason, 'INSUFFICIENT_BALANCE');
   const s = await snap('maram');
   const chat = s.chat.filter(c => c.req === id);
   assert.ok(chat.length >= 1, 'requester sees the Zoho chat record of her own request');

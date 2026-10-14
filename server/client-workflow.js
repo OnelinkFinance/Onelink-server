@@ -346,6 +346,11 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
   isSven(u) { return !!u && ((u.perms || []).indexOf('*') >= 0 || u.key === 'sven'); }
   nameOf(key) { const u = this.users()[key]; return u ? u.name : (key || '—'); }
   acctTitle(key) { const a = this.accounts().filter(x => x.key === key)[0]; return (a && a.title) || ''; }
+  /* Who decided: management by title; Sven (who may run the Zoho Books verification) by name. */
+  deciderName(d) {
+    const n = d.byName || this.nameOf(d.by);
+    return d.action === 'BOOKS_VERIFIED' && !this.isMgmt(this.users()[d.by]) ? n : this.mgmtName(n, d.title || this.acctTitle(d.by));
+  }
   mgmtName(name, title) { return 'Mr. ' + (name || 'Management') + (title ? ' (' + title + ')' : ''); }
   mgmtPeople() {
     return this.accounts().filter(a => a.dept === 'MANAGEMENT' && a.active !== false).map(a => this.mgmtName(a.name, a.title));
@@ -383,6 +388,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     if (!fin) return '';
     if (fin.route === 'BOOKS_CROSSCHECK') return 'Zoho Analytics → Zoho Books cross-verification';
     if (fin.route === 'ANALYTICS') return 'Checked in Zoho Analytics';
+    if (fin.route === 'BOOKS_ON_REQUEST') return 'Checked in Zoho Analytics · Zoho Books verification only if Sven or management ask for it';
     return 'Checked in ' + (fin.source || 'Zoho Books + Zoho Analytics');
   }
   connVals(c) {
@@ -428,16 +434,16 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     if (!z) return { show: false, steps: [] };
     const el = Date.now() - z.at, esc = z.kind === 'escalate';
     const labels = esc
-      ? ['Verifying Zoho connections', 'Re-reading Zoho Analytics', 'Cross-checking Zoho Books', 'Sending to management']
-      : ['Verifying Zoho connections', 'Reading Zoho Analytics balance', 'Cross-checking Zoho Books: journals, credit & debit notes, payments', 'Final decision'];
+      ? ['Verifying Zoho connections', 'Re-reading Zoho Analytics', 'Zoho Books verification — on request', 'Sending to management']
+      : ['Verifying Zoho connections', 'Reading Zoho Analytics balance', 'Zoho Books verification — only if Sven or management ask for it', 'Final decision'];
     const icons = ['ph ph-plugs-connected', 'ph ph-chart-line-up', 'ph ph-books', esc ? 'ph ph-paper-plane-tilt' : 'ph ph-gavel'];
-    const timed = el < 700 ? 0 : el < 1700 ? 1 : 2, active = z.done ? 4 : Math.max(timed, z.stage || 0);
-    const skipBooks = z.route === 'ANALYTICS' && (z.done || active >= 3);
+    const timed = el < 700 ? 0 : 1, active = z.done ? 4 : Math.max(timed, z.stage || 0);
+    const skipBooks = esc || (z.route !== 'BOOKS_CROSSCHECK' && (z.done || active >= 3));
     const steps = labels.map((l, i) => {
       const skip = i === 2 && skipBooks, done = !skip && i < active, cur = i === active;
       return {
         label: l,
-        note: skip ? 'Not needed — Zoho Analytics covered it' : cur ? 'In progress…' : '',
+        note: skip ? (z.route === 'ANALYTICS' ? 'Not needed — Zoho Analytics covered it' : 'Not run — Sven or management decide whether it is required') : cur ? 'In progress…' : '',
         hasNote: skip || cur,
         icon: done ? 'ph ph-check' : skip ? 'ph ph-minus' : cur ? 'ph ph-circle-notch' : 'ph ph-circle',
         spin: cur ? 'spin .9s linear infinite' : 'none',
@@ -452,7 +458,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     return {
       show: true, done: !!z.done, running: !z.done,
       title: esc ? 'Sending to management…' : 'Checking with Zoho…',
-      sub: esc ? 'The financial checks are re-read live, then the escalation goes to the managers you picked.' : 'Your request is checked live in Zoho Analytics and Zoho Books. This usually takes a few seconds.',
+      sub: esc ? 'The financial checks are re-read live, then the escalation goes to the managers you picked.' : 'Your request is checked live in Zoho Analytics. This usually takes a few seconds.',
       icon: z.done ? (z.ok ? 'ph ph-seal-check' : z.error ? 'ph ph-plugs' : 'ph ph-flag') : icons[Math.min(active, 3)],
       iconAnim: z.done ? 'popIn .3s ease' : 'zlBob 1.6s ease-in-out infinite',
       iconFg: z.done ? (z.ok ? 'var(--fgGreen)' : 'var(--fgRedDeep)') : 'var(--fgBlue)',
@@ -515,6 +521,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
   finSummary(fin) {
     if (!fin || !Array.isArray(fin.checks) || !fin.checks.length) return 'Not run';
     const n = fin.checks.length, bad = fin.checks.filter(c => !c.ok).length;
+    if (n === 1) return 'Zoho Analytics balance ' + (bad ? 'not sufficient' : 'sufficient');
     return bad ? bad + ' of ' + n + ' failed' : 'All ' + n + ' passed';
   }
   escSummary(r) {
@@ -522,8 +529,8 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     if (!esc) return '';
     if (this.voidedBeforeDecision(r)) return 'Closed — voided before a management decision' + (esc.id ? ' · ' + esc.id : '');
     if (r.status === 'ESCALATED' || !d) return 'Waiting for management' + (this.infoReq(r) ? ' — more information requested' : '') + (esc.id ? ' · ' + esc.id : '');
-    const who = this.mgmtName(d.byName || this.nameOf(d.by), d.title || this.acctTitle(d.by));
-    return ({ APPROVE: 'Approved by ', REJECT: 'Rejected by ', INFO: 'More information asked by ' }[d.action] || 'Decided by ') + who;
+    const who = this.deciderName(d);
+    return ({ APPROVE: 'Approved by ', REJECT: 'Rejected by ', INFO: 'More information asked by ', BOOKS_VERIFIED: 'Balance confirmed in Zoho Books by ' }[d.action] || 'Decided by ') + who;
   }
 
   /* ── A. escalation from the new-request form ─────────── */
@@ -631,7 +638,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       route: this.finRoute(fin), routeIcon: fin.route === 'BOOKS_CROSSCHECK' ? 'ph ph-arrows-left-right' : 'ph ph-chart-line-up',
       hasPrimary: !!pr && fin.route === 'BOOKS_CROSSCHECK', primary: pr ? 'Zoho Analytics: ' + pr : '',
       hasConn: cv.show, conn: cv.items, connAt: cv.at,
-      chip: !n ? 'No checks recorded' : bad ? bad + ' of ' + n + ' checks failed' : 'All ' + ({ 3: 'three', 4: 'four', 5: 'five' }[n] || n) + ' checks passed',
+      chip: !n ? 'No checks recorded' : n === 1 ? 'Zoho Analytics balance check ' + (bad ? 'failed' : 'passed') : bad ? bad + ' of ' + n + ' checks failed' : 'All ' + ({ 3: 'three', 4: 'four', 5: 'five' }[n] || n) + ' checks passed',
       chipIcon: bad || !n ? 'ph ph-warning-octagon' : 'ph ph-seal-check',
       chipFg: bad || !n ? 'var(--fgRedDeep)' : 'var(--fgGreen)', chipBg: bad || !n ? 'var(--chipRedBg)' : 'var(--chipGreenBg)', chipBd: bad || !n ? 'var(--chipRedBd)' : 'var(--chipGreenBd)',
       checks: checks,
@@ -643,8 +650,9 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     const esc = r.escalation;
     if (!esc) return { failed: [], log: [] };
     const d = esc.decision, st = r.status, closed = this.voidedBeforeDecision(r), waiting = !closed && (st === 'ESCALATED' || !d), act = waiting || closed ? '' : d.action;
-    const ACT = { APPROVE: 'Approved & proceed', REJECT: 'Rejected by management', INFO: 'More information requested' };
-    const LOG = { CREATED: 'escalated to management', APPROVE: 'approved & proceed', REJECT: 'rejected the escalation', INFO: 'asked for more information', REPLY: 'replied to management' };
+    const ACT = { APPROVE: 'Approved & proceed', REJECT: 'Rejected by management', INFO: 'More information requested', BOOKS_VERIFIED: 'Balance confirmed in Zoho Books — with Sven' };
+    const LOG = { CREATED: 'escalated to management', APPROVE: 'approved & proceed', REJECT: 'rejected the escalation', INFO: 'asked for more information', REPLY: 'replied to management', BOOKS_VERIFY: 'ran the Zoho Books verification' };
+    const bv = esc.booksVerification, canBooks = (st === 'ESCALATED' || st === 'MGMT_INFO') && !!r.zohoClientId && !this.isOpsUser(me) && (this.isSven(me) || this.escRecipient(r, me));
     const ir = this.infoReq(r);
     const failed = (esc.failed || []).map(x => ({ label: x.label || x.key || 'Check', message: x.message || '' }));
     const log = (esc.log || []).slice().reverse().map(l => ({ at: l.atText || '', text: (l.whoName || this.nameOf(l.who)) + ' ' + (LOG[l.action] || String(l.action || '').toLowerCase()) + (l.note ? ' — ' + l.note : '') }));
@@ -655,12 +663,16 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       failed: failed, hasFailed: failed.length > 0,
       to: this.escToText(r, ', '),
       hasInfo: !!ir, infoLine: ir ? this.infoLine(ir) : '', infoAt: ir && ir.atText ? ir.atText : '',
-      decisionLine: closed ? 'Closed — voided before a management decision' : waiting ? 'Waiting for a management decision' : (ACT[act] || 'Decided') + ' — ' + this.mgmtName(d.byName || this.nameOf(d.by), d.title || this.acctTitle(d.by)) + (d.atText ? ' · ' + d.atText : ''),
+      decisionLine: closed ? 'Closed — voided before a management decision' : waiting ? 'Waiting for a management decision' : (ACT[act] || 'Decided') + ' — ' + this.deciderName(d) + (d.atText ? ' · ' + d.atText : ''),
       decisionNote: !waiting && !closed && d.note ? d.note : '', hasNote: !waiting && !closed && !!d.note,
-      toneIcon: closed ? 'ph ph-lock-simple' : waiting ? 'ph ph-hourglass' : act === 'APPROVE' ? 'ph ph-seal-check' : act === 'REJECT' ? 'ph ph-prohibit' : 'ph ph-question',
-      toneFg: closed ? 'var(--mut)' : act === 'APPROVE' ? 'var(--fgGreen)' : act === 'REJECT' ? 'var(--fgRedDeep)' : 'var(--fgAmberDeep)',
-      toneBg: closed ? 'var(--tint)' : act === 'APPROVE' ? 'var(--chipGreenBg)' : act === 'REJECT' ? 'var(--chipRedBg)' : 'var(--chipAmberBg)',
-      toneBd: closed ? 'var(--line)' : act === 'APPROVE' ? 'var(--chipGreenBd)' : act === 'REJECT' ? 'var(--chipRedBd)' : 'var(--chipAmberBd)',
+      toneIcon: closed ? 'ph ph-lock-simple' : waiting ? 'ph ph-hourglass' : act === 'APPROVE' || act === 'BOOKS_VERIFIED' ? 'ph ph-seal-check' : act === 'REJECT' ? 'ph ph-prohibit' : 'ph ph-question',
+      toneFg: closed ? 'var(--mut)' : act === 'APPROVE' || act === 'BOOKS_VERIFIED' ? 'var(--fgGreen)' : act === 'REJECT' ? 'var(--fgRedDeep)' : 'var(--fgAmberDeep)',
+      toneBg: closed ? 'var(--tint)' : act === 'APPROVE' || act === 'BOOKS_VERIFIED' ? 'var(--chipGreenBg)' : act === 'REJECT' ? 'var(--chipRedBg)' : 'var(--chipAmberBg)',
+      toneBd: closed ? 'var(--line)' : act === 'APPROVE' || act === 'BOOKS_VERIFIED' ? 'var(--chipGreenBd)' : act === 'REJECT' ? 'var(--chipRedBd)' : 'var(--chipAmberBd)',
+      /* Zoho Analytics did not cover it: Sven, or the management it went to, decide whether to run the Zoho Books verification */
+      canBooks: canBooks, booksBusy: !!this.state.booksBusy, booksLabel: this.state.booksBusy ? 'Reading Zoho Books…' : bv && !bv.ok ? 'Run the Zoho Books verification again' : 'Run Zoho Books verification',
+      booksGo: () => this.booksVerify(r.id),
+      hasBooksLine: !!bv, booksLine: bv ? 'Zoho Books verification ' + (bv.ok ? 'confirmed the balance' : 'did not confirm the balance') + ' — ' + (bv.byName || this.nameOf(bv.by)) + (bv.atText ? ' · ' + bv.atText : '') : '',
       log: log, hasLog: log.length > 0,
       canDecide: (st === 'ESCALATED' || st === 'MGMT_INFO') && this.escRecipient(r, me),
       approve: () => this.openModal('mgmtApprove', r.id), reject: () => this.openModal('mgmtReject', r.id), info: () => this.openModal('mgmtInfo', r.id),
@@ -688,6 +700,18 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     return out;
   }
   isOpsUser(u) { return !!u && (u.role === 'ops' || u.dept === 'OPERATIONS'); }
+  /* Sven / management asked for it: the server runs the Zoho Books verification on this escalated request. */
+  booksVerify(id) {
+    if (this.state.booksBusy) return;
+    this.setState({ booksBusy: true });
+    return this.api('/api/requests/' + id + '/books-verification', { method: 'POST', body: {} }).then(o => {
+      this.setState({ booksBusy: false });
+      if (o.status === 401) return this.endSession('Your live session ended. Sign in again.');
+      if (!o.ok || o.json.ok === false) return this.flash(o.json.error || 'The Zoho Books verification could not run (HTTP ' + o.status + '). Nothing was changed.', null, 'ph ph-plugs');
+      this.mergeReq(o.json.item);
+      this.flash(o.json.verified ? 'Zoho Books confirmed the balance — Pending Sven Approval' : 'Zoho Books did not confirm the balance — management decides', null, o.json.verified ? 'ph ph-seal-check' : 'ph ph-flag');
+    }).catch(() => { this.setState({ booksBusy: false }); this.flash('The live server could not be reached. Nothing was changed.', null, 'ph ph-plugs'); });
+  }
   /* The requester's calm "waiting for management" card: who it went to and since when — no notes, except the
      question when management asked for more information. */
   waitVals(r, me, isOps) {
@@ -720,7 +744,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       .slice().sort((a, b) => (Date.parse(b.escalation.at || '') || 0) - (Date.parse(a.escalation.at || '') || 0));
     const G = [
       ['await', 'Awaiting decision', r => r.status === 'ESCALATED' || r.status === 'MGMT_INFO', 'var(--fgAmberDeep)', 'ph ph-hourglass-medium', 'var(--chipAmberBg)'],
-      ['approved', 'Approved – waiting for Sven', r => r.status === 'MGMT_APPROVED', 'var(--fgGreen)', 'ph ph-seal-check', 'var(--chipGreenBg)'],
+      ['approved', 'Approved – waiting for Sven', r => r.status === 'MGMT_APPROVED' || (r.status === 'NEW' && !!r.escalation.decision && r.escalation.decision.action === 'BOOKS_VERIFIED'), 'var(--fgGreen)', 'ph ph-seal-check', 'var(--chipGreenBg)'],
       ['rejected', 'Rejected by management', r => r.status === 'MGMT_REJECTED', 'var(--fgRed)', 'ph ph-prohibit', 'var(--chipRedBg)'],
       ['closed', 'Closed', () => true, 'var(--mut)', 'ph ph-archive', 'var(--tint)']
     ];
@@ -1357,6 +1381,14 @@ const DETAIL_CARDS = `
                     </div>
                   </sc-for>
                 </div>
+              </div>
+            </sc-if>
+            <sc-if value="{{ detail.esc.hasBooksLine }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex; align-items:center; gap:7px; margin-top:12px; font-size:12.5px; color:var(--ink3)"><i class="ph ph-books" style="font-size:14px; color:var(--fgBlue)"></i>{{ detail.esc.booksLine }}</div>
+            </sc-if>
+            <sc-if value="{{ detail.esc.canBooks }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex; gap:9px; flex-wrap:wrap; margin-top:16px">
+                <button type="button" sc-camel-on-click="{{ detail.esc.booksGo }}" class="btn" style="border-radius:12px; background:var(--sf2); border:1px solid var(--line3); color:var(--fgBlue)" style-hover="background:var(--sf3)"><i class="ph ph-books" style="font-size:15px"></i>{{ detail.esc.booksLabel }}</button>
               </div>
             </sc-if>
             <sc-if value="{{ detail.esc.canDecide }}" hint-placeholder-val="{{ false }}">

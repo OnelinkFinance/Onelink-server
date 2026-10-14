@@ -211,12 +211,11 @@ test('a new request under the number of the same user\'s escalation gets a new n
   assert.equal((await snap('sven')).requests.filter(r => r.zohoClientId === C.hotel.id).length, 1);
 });
 
-test('invoices marked paid without a matching payment fail the COGS check (Operations see no amounts)', async () => {
-  const p = await precheck('maram', C.victor);
-  assert.equal(p.status, 422);
-  const cogs = p.json.finance.checks.find(c => c.key === 'COGS');
-  assert.equal(cogs.ok, false);
-  assert.equal(cogs.code, 'INVOICE_PAYMENT_MISMATCH');
+test('a client whose Zoho Analytics balance covers the request goes through on it alone — invoice / payment records are not tested', async () => {
+  const p = await precheck('maram', C.victor); // invoices marked paid without a matching payment
+  assert.equal(p.status, 200, JSON.stringify(p.json).slice(0, 300));
+  assert.equal(p.json.finance.route, 'ANALYTICS');
+  assert.deepEqual(p.json.finance.checks.map(c => c.key), ['CFD']);
   assert.doesNotMatch(JSON.stringify(p.json), /AED/);
 });
 
@@ -331,14 +330,19 @@ test('restore keeps a backup of what it replaces and never reissues request numb
   assert.notEqual(again, created, 'request number ' + created + ' was handed out twice');
 });
 
-test('a failed invoice-settlement read decides nothing (Zoho unavailable), it is not a failed check', async () => {
+test('a failed invoice-settlement read never stops a client the Analytics balance covers; a Books verification asked for on it decides nothing (Zoho unavailable)', async () => {
   const fx = fixture(); fx.fail = { settlement: 503 };
   const other = await startServer({ dir: mkTmp('inv-fail'), fixture: fx });
   try {
     const t = await login(other.base, 'maram', TEAM_PW);
     const v = (await call(other.base, t, 'POST', '/api/zoho/validate-client', { contactId: C.alpha.id })).json;
     const p = await call(other.base, t, 'POST', '/api/zoho/precheck', { validationToken: v.token, clientName: v.clientName, amount: 5000, paid: PAID });
-    assert.ok(p.status >= 500, 'expected a 5xx, got ' + p.status + ' ' + JSON.stringify(p.json).slice(0, 200));
-    assert.equal(p.json.reason, 'ZOHO_UNAVAILABLE');
+    assert.equal(p.status, 200, JSON.stringify(p.json).slice(0, 200));
+    assert.equal(p.json.finance.route, 'ANALYTICS');
+    const sv = await login(other.base, 'sven', MASTER_PW);
+    const k = (await call(other.base, sv, 'POST', '/api/zoho/validate-client', { contactId: C.kilo.id })).json;
+    const b = await call(other.base, sv, 'POST', '/api/zoho/precheck', { validationToken: k.token, clientName: k.clientName, amount: 5000, paid: PAID, booksVerification: true });
+    assert.ok(b.status >= 500, 'expected a 5xx, got ' + b.status + ' ' + JSON.stringify(b.json).slice(0, 200));
+    assert.equal(b.json.reason, 'ZOHO_UNAVAILABLE');
   } finally { await other.stop(); }
 });

@@ -18,7 +18,7 @@ const PASS = {
   '2009': 'India Pass Nine', '2010': 'Juliet Pass Ten', '2011': 'Uniform Pass Eleven', '2012': 'Xray Pass Twelve', '2013': 'Yankee Pass Thirteen'
 };
 // CFD fails (balance below the amount used in the tests, 5000). Compact currency on purpose: 'AED 1.2K' = 1200.
-const LOW = { '3001': 'Kilo Low Balance', '3002': 'Lima Low Balance', '3003': 'Mike Low Balance', '3004': 'November Low Balance', '3008': 'Sierra Low Balance' };
+const LOW = { '3001': 'Kilo Low Balance', '3002': 'Lima Low Balance', '3003': 'Mike Low Balance', '3004': 'November Low Balance', '3008': 'Sierra Low Balance', '3012': 'Tango Low Balance', '3013': 'Yoke Low Balance' };
 export const C = {
   ...Object.fromEntries(Object.entries({ ...PASS, ...LOW }).map(([id, n]) => [n.split(' ')[0].toLowerCase(), { id, name: n }])),
   oscar: { id: '3005', name: 'Oscar Cogs Fail' },        // CFD ok ('AED 35.06K'), COGS exceeds payments

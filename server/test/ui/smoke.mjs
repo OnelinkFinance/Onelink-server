@@ -967,6 +967,32 @@ const fin5 = () => ({
   assert.equal(s.undoable(r), false);
 }
 
+// ── scenario 18b: Zoho Books verification on request — Sven and the recipients see the button, Operations never ──
+{
+  const r = escReq('ESCALATED', { zohoClientId: '3001' });
+  for (const [who, want] of [['sven', true], ['adnan', true], ['maram', false], ['amina', false]]) {
+    const c = make(who);
+    c.setState({ requests: [r].concat(c.state.requests), reqId: 'FR-900', route: 'detail' });
+    const vm = c.renderVals();
+    resolveAll(markupOf(tpl), vm, seen);
+    assert.equal(vm.detail.esc.canBooks, want, who);
+  }
+  const c = make('sven');
+  let call = null;
+  c.api = (path, o) => { call = [path, o]; return Promise.resolve({ status: 200, ok: true, json: { ok: true, verified: true, item: Object.assign({}, r, { status: 'NEW', escalation: Object.assign({}, r.escalation, { decision: { action: 'BOOKS_VERIFIED', by: 'sven', byName: 'Sven', atText: '07 Oct · 15:00' }, booksVerification: { ok: true, by: 'sven', byName: 'Sven', atText: '07 Oct · 15:00' } }) }) } }); };
+  c.setState({ requests: [r].concat(c.state.requests), reqId: 'FR-900', route: 'detail' });
+  await c.renderVals().detail.esc.booksGo();
+  assert.equal(call[0], '/api/requests/FR-900/books-verification');
+  const vm = c.renderVals();
+  assert.equal(vm.detail.esc.canBooks, false, 'with Sven now');
+  assert.match(vm.detail.esc.decisionLine, /^Balance confirmed in Zoho Books — with Sven/);
+  assert.match(vm.detail.esc.booksLine, /^Zoho Books verification confirmed the balance — Sven/);
+  assert.equal(c.escSummary(c.reqById('FR-900')), 'Balance confirmed in Zoho Books by Sven');
+  const m = make('sven');
+  m.setState({ requests: [c.reqById('FR-900')].concat(m.state.requests), route: 'mgmt' });
+  assert.ok(m.mgmtVals().groups.find(g => g.key === 'approved').rows.some(x => x.id === 'FR-900'), 'Management Requests: approved – waiting for Sven');
+}
+
 // ── scenario 19: Send → loader; connection failure (no escalation); recipients picker; escalation sends `to` ──
 {
   const c = make('maram');
@@ -982,7 +1008,7 @@ const fin5 = () => ({
   assert.equal(vm.zl.running, true);
   assert.equal(vm.zl.steps.length, 4);
   assert.equal(vm.zl.steps[0].label, 'Verifying Zoho connections');
-  assert.equal(vm.zl.steps[2].label, 'Cross-checking Zoho Books: journals, credit & debit notes, payments');
+  assert.equal(vm.zl.steps[2].label, 'Zoho Books verification — only if Sven or management ask for it');
   assert.ok(['Crunching numbers…', 'Checking journals…', 'Talking to Zoho…', 'Matching invoices to payments…', 'Counting credit notes…', 'Almost there…'].includes(vm.zl.msg));
   assert.equal(vm.zl.barW, '92%');
   assert.match(vm.zl.barAnim, /^zlFill /);
