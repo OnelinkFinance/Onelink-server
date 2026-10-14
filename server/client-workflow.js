@@ -201,12 +201,11 @@ const GATE_JS = `  verifyClient() {
     const facts = [
       { label: 'Purpose', value: r.purpose || '—' },
       { label: 'Client already paid us?', value: r.paid || '—' },
-      { label: 'Zoho Analytics', value: r.zohoStatus ? r.zohoStatus + (!isOps && typeof r.zohoBalance === 'number' ? ' · balance ' + this.fmt(r.zohoBalance) : '') : 'Not checked yet' },
+      { label: 'Zoho Analytics', value: r.zohoStatus ? r.zohoStatus + (this.seesFinance(me) && typeof r.zohoBalance === 'number' ? ' · balance ' + this.fmt(r.zohoBalance) : '') : 'Not checked yet' },
       { label: 'Freezone', value: r.zone || '—' },
       { label: 'Documents', value: (r.docs || []).length ? (r.docs || []).length + ' attached' : 'None attached' },
       { label: 'Requested on', value: r.date || '—' },
-      { label: r.financeLatest ? 'Financial checks · latest re-check' : 'Financial checks', value: this.finSummary(r.financeLatest || r.finance) }
-    ].concat(r.escalation ? [{ label: 'Escalation', value: this.escSummary(r) }] : [])
+    ].concat(this.seesFinance(me) ? [{ label: r.financeLatest ? 'Financial checks · latest re-check' : 'Financial checks', value: this.finSummary(r.financeLatest || r.finance) }] : []).concat(r.escalation ? [{ label: 'Escalation', value: this.escSummary(r) }] : [])
       .concat(this.infoReq(r) ? [{ label: 'Management asks', value: this.infoLine(this.infoReq(r)) }] : [])
       .concat(r.voided ? [{ label: 'Voided', value: (r.voided.byName || this.nameOf(r.voided.by)) + (r.voided.reason ? ' — ' + r.voided.reason : '') }] : [])
       .concat(r.notes ? [{ label: 'Notes', value: r.notes }] : []);
@@ -343,6 +342,8 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     this._titleObs = new MutationObserver(() => { if (document.title !== T) document.title = T; });
     this._titleObs.observe(document.head, { subtree: true, childList: true, characterData: true });
   }
+  /* Only Sven and management see the financial checks and balances (the server sends no one else either). */
+  seesFinance(u) { return this.isSven(u) || this.isMgmt(u); }
   isSven(u) { return !!u && ((u.perms || []).indexOf('*') >= 0 || u.key === 'sven'); }
   nameOf(key) { const u = this.users()[key]; return u ? u.name : (key || '—'); }
   acctTitle(key) { const a = this.accounts().filter(x => x.key === key)[0]; return (a && a.title) || ''; }
@@ -443,7 +444,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       const skip = i === 2 && skipBooks, done = !skip && i < active, cur = i === active;
       return {
         label: l,
-        note: skip ? (z.route === 'ANALYTICS' ? 'Not needed — Zoho Analytics covered it' : 'Not run — Sven or management decide whether it is required') : cur ? 'In progress…' : '',
+        note: skip ? (z.route === 'ANALYTICS' || (z.done && z.ok) ? 'Not needed — Zoho Analytics covered it' : 'Not run — Sven or management decide whether it is required') : cur ? 'In progress…' : '',
         hasNote: skip || cur,
         icon: done ? 'ph ph-check' : skip ? 'ph ph-minus' : cur ? 'ph ph-circle-notch' : 'ph ph-circle',
         spin: cur ? 'spin .9s linear infinite' : 'none',
@@ -454,7 +455,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     });
     const MSG = ['Crunching numbers…', 'Checking journals…', 'Talking to Zoho…', 'Matching invoices to payments…', 'Counting credit notes…', 'Almost there…'];
     const mi = Math.floor(el / 1400) % MSG.length;
-    const end = z.done ? (z.conn ? 'Zoho connections could not be verified — nothing was sent' : z.error ? 'Could not finish — nothing was sent' : z.ok ? (esc ? 'Sent to management' : 'All checks passed') : (esc ? 'Not sent' : 'The checks did not pass')) : '';
+    const end = z.done ? (z.conn ? 'Zoho connections could not be verified — nothing was sent' : z.error ? 'Could not finish — nothing was sent' : z.ok ? (esc ? 'Sent to management' : 'All checks passed') : (esc ? 'Not sent' : 'Rejected')) : '';
     return {
       show: true, done: !!z.done, running: !z.done,
       title: esc ? 'Sending to management…' : 'Checking with Zoho…',
@@ -557,14 +558,19 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     const n = (ff.justification || '').trim().length, sel = this.escTargets(), all = sel === 'ALL';
     const accts = this.mgmtAccounts(), picked = all ? accts : accts.filter(a => sel.indexOf(a.key) >= 0);
     const chip = (on, label, go, icon) => ({ label: label, on: on, go: go, icon: on ? 'ph ph-check-circle' : icon, bg: on ? 'var(--chipBlueBg)' : 'var(--sf)', bd: on ? 'var(--fgBlue)' : 'var(--line3)', fg: on ? 'var(--fgBlue)' : 'var(--ink2)' });
-    const cv = this.connVals(ff.connections);
-    const rows = conn
+    const cv = this.connVals(ff.connections), priv = this.seesFinance(this.me());
+    const rows = !priv ? [] : conn
       ? (cv.show ? cv.items.map(i => ({ label: i.label, message: i.ok ? 'Connection verified' : 'Could not be verified', icon: i.icon, fg: i.fg })) : [])
       : failed.map(x => ({ label: x.label || x.key || 'Check', message: x.message || 'Did not pass.', icon: 'ph ph-x-circle', fg: 'var(--fgRed)' }));
+    // everyone but Sven and management: one word, stamped in
+    const rej = !priv && !conn;
     return {
-      show: true, error: ff.error || 'The financial checks failed. Nothing was sent.',
-      headIcon: conn ? 'ph ph-plugs' : 'ph ph-shield-warning',
-      sub: conn ? 'Zoho connection verification' + (cv.at ? ' · ' + cv.at.replace('Connections verified ', '') : '') : [this.finRoute(fin) || 'Checked in Zoho Books + Zoho Analytics', fin.atText, fin.id].filter(Boolean).join(' · '),
+      show: true, error: rej ? 'Rejected' : ff.error || 'The financial checks failed. Nothing was sent.',
+      headIcon: rej ? 'ph ph-x-circle' : conn ? 'ph ph-plugs' : 'ph ph-shield-warning',
+      iconSize: rej ? '30px' : '19px', iconAnim: rej ? 'rejStamp .45s cubic-bezier(.2,.9,.3,1.3) both, rejPulse 1.2s ease-in-out .5s 2' : 'none',
+      errSize: rej ? '24px' : '13.5px', errWeight: rej ? '700' : 'inherit', errTrack: rej ? '.04em' : 'normal',
+      errAnim: rej ? 'rejStamp .45s cubic-bezier(.2,.9,.3,1.3) both, rejShake .45s ease .5s' : 'none',
+      hasCount: priv, sub: !priv ? '' : conn ? 'Zoho connection verification' + (cv.at ? ' · ' + cv.at.replace('Connections verified ', '') : '') : [this.finRoute(fin) || 'Checked in Zoho Books + Zoho Analytics', fin.atText, fin.id].filter(Boolean).join(' · '),
       count: conn ? 'Blocked' : failed.length ? (total ? failed.length + ' of ' + total + ' checks failed' : failed.length + (failed.length === 1 ? ' check failed' : ' checks failed')) : 'Checks failed',
       rows: rows,
       canStart: !!ff.allowed && !!ff.token && !ff.open, open: !!ff.open,
@@ -660,7 +666,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       id: esc.id || '—',
       raised: 'Raised by ' + (esc.byName || this.nameOf(esc.by)) + (esc.atText ? ' · ' + esc.atText : ''),
       justification: esc.justification || '', hasJust: !!esc.justification, // removed for Operations when a manager raised it
-      failed: failed, hasFailed: failed.length > 0,
+      failed: failed, hasFailed: failed.length > 0 && this.seesFinance(me),
       to: this.escToText(r, ', '),
       hasInfo: !!ir, infoLine: ir ? this.infoLine(ir) : '', infoAt: ir && ir.atText ? ir.atText : '',
       decisionLine: closed ? 'Closed — voided before a management decision' : waiting ? 'Waiting for a management decision' : (ACT[act] || 'Decided') + ' — ' + this.deciderName(d) + (d.atText ? ' · ' + d.atText : ''),
@@ -690,8 +696,8 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       canChase: !locked, chase: () => this.openModal('chase', r.id),
       canVoid: !locked && (this.isSven(me) || this.isMgmt(me)), voidGo: () => this.openModal('void', r.id),
       // finance's latest re-check is the main result; the submission-time checks stay below it, compact
-      hasFin: !!(r.financeLatest || r.finance), fin: this.finVals(r.financeLatest || r.finance, restricted, !!r.financeLatest),
-      hasFinAt: !!(r.financeLatest && r.finance), finAt: this.finVals(r.financeLatest ? r.finance : null, restricted),
+      hasFin: this.seesFinance(this.me()) && !!(r.financeLatest || r.finance), fin: this.finVals(r.financeLatest || r.finance, restricted, !!r.financeLatest),
+      hasFinAt: this.seesFinance(this.me()) && !!(r.financeLatest && r.finance), finAt: this.finVals(r.financeLatest ? r.finance : null, restricted),
       hasEsc: !!r.escalation, esc: this.escVals(r, me),
       wait: this.waitVals(r, me, isOps)
     };
@@ -1169,12 +1175,14 @@ const BTN_SOFT = 'class="btn" style="font-size:12.5px; border-radius:11px; backg
 const FINFAIL_MARKUP = `          <sc-if value="{{ finFail.show }}" hint-placeholder-val="{{ false }}">
             <div role="alert" style="grid-column:{{ L.span }}; display:flex; flex-direction:column; gap:10px; padding:15px 17px; border-radius:16px; background:var(--chipRedBg); border:1px solid var(--chipRedBd); animation:riseIn .26s ease">
               <div style="display:flex; align-items:flex-start; gap:8px 10px; flex-wrap:wrap">
-                <i class="{{ finFail.headIcon }}" style="font-size:19px; color:var(--fgRed); flex:none; margin-top:1px"></i>
+                <i class="{{ finFail.headIcon }}" style="font-size:{{ finFail.iconSize }}; color:var(--fgRed); flex:none; margin-top:1px; animation:{{ finFail.iconAnim }}"></i>
                 <div style="flex:1 1 220px; display:flex; flex-direction:column; gap:2px; min-width:0">
-                  <span style="font-family:var(--font-heading); font-size:13.5px; line-height:1.45; color:var(--fgRedDeep)">{{ finFail.error }}</span>
+                  <span style="font-family:var(--font-heading); font-size:{{ finFail.errSize }}; font-weight:{{ finFail.errWeight }}; letter-spacing:{{ finFail.errTrack }}; line-height:1.45; color:var(--fgRedDeep); transform-origin:left center; animation:{{ finFail.errAnim }}">{{ finFail.error }}</span>
                   <span style="font-size:11px; color:var(--fgRedDeep)">{{ finFail.sub }}</span>
                 </div>
-                <span style="flex:none; font-size:11px; padding:3px 9px; border-radius:8px; background:var(--sf); border:1px solid var(--chipRedBd); color:var(--fgRedDeep); white-space:nowrap">{{ finFail.count }}</span>
+                <sc-if value="{{ finFail.hasCount }}" hint-placeholder-val="{{ true }}">
+                  <span style="flex:none; font-size:11px; padding:3px 9px; border-radius:8px; background:var(--sf); border:1px solid var(--chipRedBd); color:var(--fgRedDeep); white-space:nowrap">{{ finFail.count }}</span>
+                </sc-if>
               </div>
               <div style="display:flex; flex-direction:column; gap:6px">
                 <sc-for list="{{ finFail.rows }}" as="fr" hint-placeholder-count="2">
@@ -1580,6 +1588,9 @@ const KEYFRAMES = `  @keyframes zlFill { 0% { width: 3%; } 15% { width: 30%; } 4
   @keyframes zlMsgA { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
   @keyframes zlMsgB { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
   @keyframes zlWait { 0% { transform: scale(.82); opacity: .75; } 100% { transform: scale(1.65); opacity: 0; } }
+  @keyframes rejStamp { 0% { transform: scale(1.9) rotate(-8deg); opacity: 0; } 60% { transform: scale(.94) rotate(-2deg); opacity: 1; } 100% { transform: none; opacity: 1; } }
+  @keyframes rejShake { 0%,100% { transform: translateX(0); } 20%,60% { transform: translateX(-5px); } 40%,80% { transform: translateX(5px); } }
+  @keyframes rejPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.14); } }
 `;
 
 // brand marks → the OneLink logo, same box, rounded like the old badge
@@ -2042,6 +2053,10 @@ ${PEEK_MORE}              <div style="display:flex; flex-direction:column; gap:8
    "this.setState({ authed: true, booting: false, userKey: o.json.user.key, route: o.json.user.dept === 'MANAGEMENT' ? 'mgmt' : this.landingRoute(o.json.user.key),"],
   ["this.setState({ userKey: k, seatFrom: k === from ? null : from, userMenu: false, confirmOut: false, route: 'home',",
    "this.setState({ userKey: k, seatFrom: k === from ? null : from, userMenu: false, confirmOut: false, route: this.landingRoute(k),"],
+  // the Zoho check window waits 60 s (a live Analytics export can take longer than 8 s), and says so if it times out
+  ['ctrl.abort(); }, 8000);', 'ctrl.abort(); }, 60000);'],
+  ["TIMEOUT: ['Timed out after 8 seconds', 'The route was reached but did not answer. Zoho Analytics queries should be cached or run asynchronously — approval stays paused, never auto-approved.'],",
+   "TIMEOUT: ['Zoho did not answer within 60 seconds', 'Nothing was approved. Try the check again in a minute — if it keeps happening, Zoho is down and Sven has been told.'],"],
   // the Zoho loader overlay
   ['  <sc-if value="{{ booting }}" hint-placeholder-val="{{ false }}">', LOADER + '  <sc-if value="{{ booting }}" hint-placeholder-val="{{ false }}">']
 ];

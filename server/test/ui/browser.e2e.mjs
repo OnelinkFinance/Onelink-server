@@ -160,20 +160,20 @@ try {
     expect(await ops.page.getByRole('button', { name: /Management Requests/ }).count() === 0, 'Operations see the Management Requests nav');
   });
 
-  await step('Operations: client whose Zoho Analytics balance covers it is sent as Pending Sven Approval with the check on it (Zoho loader shown)', async () => {
+  await step('Operations: client whose Zoho Analytics balance covers it is sent as Pending Sven Approval — no check panel for Operations (Zoho loader shown)', async () => {
     await newRequest(ops.page, { client: 'Alpha Trading LLC', purpose: 'Licence renewal', amount: 12000, paid: 'Yes', loaderShot: 'ops-loader-desktop' });
-    await ops.page.getByText('Financial validation', { exact: true }).first().waitFor({ timeout: 15000 });
-    await ops.page.getByText(/Zoho Analytics balance check passed|All (three|five) checks passed/).first().waitFor({ timeout: 10000 });
-    expect(await ops.page.getByText('Pending Sven Approval').count() > 0, 'status label missing');
+    await ops.page.getByText('Pending Sven Approval').first().waitFor({ timeout: 15000 });
+    expect(await ops.page.getByText('Financial validation', { exact: true }).count() === 0, 'Operations see the financial checks');
+    expect(await ops.page.getByText(/Zoho Analytics balance check|checks passed/).count() === 0, 'Operations see the check result');
     const body = await ops.page.locator('body').innerText();
     expect(!/AED 50,000|50,000\.00|Available AED/.test(body), 'Operations can see the CFD balance');
   });
 
   await step('Operations: failing client is blocked with the failed checks and can escalate to chosen managers', async () => {
     await newRequest(ops.page, { client: 'Beta Holdings FZE', purpose: 'Visa fines', amount: 4000, paid: 'Yes' });
-    await ops.page.getByText(OPS_SHORT).first().waitFor({ timeout: 15000 });
-    expect(await ops.page.getByText('Customer Fund Disbursement account').count() > 0, 'balance check not listed');
-    expect(await ops.page.getByText('Invoice payment verification').count() === 0, 'Zoho Books tests ran without anyone asking for them');
+    await ops.page.getByText('Rejected', { exact: true }).first().waitFor({ timeout: 15000 });
+    expect(await ops.page.getByText('Customer Fund Disbursement account').count() === 0, 'Operations see which check failed');
+    expect(await ops.page.getByText(/checks? failed|sufficient balance/).count() === 0, 'Operations see a reason');
     const body = await ops.page.locator('body').innerText();
     expect(!/AED 1,000|2,500/.test(body), 'Operations can see amounts on the failed checks');
     await ops.page.getByRole('button', { name: 'Escalate to Management' }).click();
@@ -332,7 +332,7 @@ try {
   await step('Operations (phone width): another failing client is escalated to Mr. Ahmed only', async () => {
     await resize(ops.page, PHONE);
     await newRequest(ops.page, { client: 'Delta Logistics FZCO', purpose: 'Customs deposit', amount: 3000, paid: 'Yes', loaderShot: 'ops-loader-phone' });
-    await ops.page.getByText(OPS_SHORT).first().waitFor({ timeout: 15000 });
+    await ops.page.getByText('Rejected', { exact: true }).first().waitFor({ timeout: 15000 });
     await ops.page.getByRole('button', { name: 'Escalate to Management' }).click();
     const group = ops.page.getByRole('group', { name: 'Send to' });
     await group.getByRole('button', { name: 'Mr. Ahmed (General Manager)' }).click();

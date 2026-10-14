@@ -89,16 +89,17 @@ test('Sven can check a stored request without a (30-minute) pick token', async (
   assert.equal(r.json.clientId, C.india.id);
 });
 
-test('a re-check (financeLatest) reaches restricted Operations without figures', async () => {
+test('a re-check (financeLatest) never reaches Operations; Sven and management see it', async () => {
   const id = await submit('maram', C.juliet, 'FR-9411');
   const v = await api('sven', 'POST', '/api/zoho/client-funding-check', { requestId: id, clientName: C.juliet.name, company: 'x', purpose: 'y', requestedAmount: 5000 });
   assert.equal(v.status, 200);
   const mine = await reqOf('maram', id);
-  assert.ok(mine.financeLatest, 'maram sees that a re-check ran');
+  assert.ok(!('financeLatest' in mine) && !('finance' in mine), 'Operations receive no check record');
   const text = JSON.stringify(mine);
   assert.doesNotMatch(text, /"detail"/);
   assert.doesNotMatch(text, /AED [\d,]+\.\d\d/);
   assert.match(JSON.stringify((await reqOf('sven', id)).financeLatest), /"detail"/);
+  assert.match(JSON.stringify((await reqOf('ahmed', id)).financeLatest), /"detail"/);
 });
 
 test('Operations cannot rewrite or delete stored history lines, change "already paid", or clear the flag', async () => {
@@ -183,7 +184,9 @@ test('amounts already approved for a client are held against its CFD balance', a
   assert.equal((await put('sven', { ...r, status: 'APPROVED', approved: 46000 })).status, 200);
   const p = await precheck('anastasiya', C.echo, 5000);         // 50,000 − 46,000 = 4,000 < 5,000
   assert.equal(p.status, 422);
-  assert.ok(p.json.failed.some(f => f.key === 'CFD'), JSON.stringify(p.json.failed));
+  assert.equal(p.json.error, 'Rejected');
+  const sv = await precheck('sven', C.echo, 5000);
+  assert.ok(sv.json.failed.some(f => f.key === 'CFD'), JSON.stringify(sv.json.failed));
 });
 
 test('a refused, renumbered request does not re-point its notification at someone else\'s request', async () => {
@@ -212,11 +215,11 @@ test('a new request under the number of the same user\'s escalation gets a new n
 });
 
 test('a client whose Zoho Analytics balance covers the request goes through on it alone — invoice / payment records are not tested', async () => {
-  const p = await precheck('maram', C.victor); // invoices marked paid without a matching payment
+  assert.equal((await precheck('maram', C.victor)).status, 200); // invoices marked paid without a matching payment
+  const p = await precheck('sven', C.victor);
   assert.equal(p.status, 200, JSON.stringify(p.json).slice(0, 300));
   assert.equal(p.json.finance.route, 'ANALYTICS');
   assert.deepEqual(p.json.finance.checks.map(c => c.key), ['CFD']);
-  assert.doesNotMatch(JSON.stringify(p.json), /AED/);
 });
 
 test('an open request from the history locks its client by exact Books name', async () => {
@@ -338,7 +341,6 @@ test('a failed invoice-settlement read never stops a client the Analytics balanc
     const v = (await call(other.base, t, 'POST', '/api/zoho/validate-client', { contactId: C.alpha.id })).json;
     const p = await call(other.base, t, 'POST', '/api/zoho/precheck', { validationToken: v.token, clientName: v.clientName, amount: 5000, paid: PAID });
     assert.equal(p.status, 200, JSON.stringify(p.json).slice(0, 200));
-    assert.equal(p.json.finance.route, 'ANALYTICS');
     const sv = await login(other.base, 'sven', MASTER_PW);
     const k = (await call(other.base, sv, 'POST', '/api/zoho/validate-client', { contactId: C.kilo.id })).json;
     const b = await call(other.base, sv, 'POST', '/api/zoho/precheck', { validationToken: k.token, clientName: k.clientName, amount: 5000, paid: PAID, booksVerification: true });
