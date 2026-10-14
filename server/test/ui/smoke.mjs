@@ -255,7 +255,20 @@ const seen = new Map();
   resolveAll(markupOf(tpl), vm, seen);
   assert.equal(vm.finFail.show, true);
   assert.equal(vm.finFail.canStart, true);
-  assert.equal(vm.finFail.rows[0].label, 'Customer Fund Disbursement account');
+  // Operations: one word, stamped in — no check list, no count, no route line
+  assert.equal(vm.finFail.error, 'Rejected');
+  assert.deepEqual(vm.finFail.rows, []);
+  assert.equal(vm.finFail.hasCount, false);
+  assert.equal(vm.finFail.sub, '');
+  assert.match(vm.finFail.errAnim, /^rejStamp /);
+  {
+    const sv = make('sven');
+    sv.setState({ route: 'new', gate: c.state.gate, form: c.state.form, finFail: c.state.finFail });
+    const sf = sv.renderVals().finFail;
+    assert.equal(sf.rows[0].label, 'Customer Fund Disbursement account', 'Sven sees the checks');
+    assert.equal(sf.hasCount, true);
+    assert.notEqual(sf.error, 'Rejected');
+  }
   vm.finFail.start();
   vm = c.renderVals();
   resolveAll(markupOf(tpl), vm, seen);
@@ -448,7 +461,7 @@ const seen = new Map();
   c.confirmModal(); // double click ignored
   await tick(); await tick(); await tick();
   assert.equal(zc, 1);
-  assert.match(c.state.modal.error, /^The live Zoho check could not complete \(Timed out/);
+  assert.match(c.state.modal.error, /^The live Zoho check could not complete \(Zoho did not answer within 60 seconds\)/);
   assert.equal(c.state.modal.busy, false);
   assert.equal(c.reqById('FR-920').status, 'NEW');
   zReply = { live: true, status: 200, json: { ok: false, reason: 'INSUFFICIENT_BALANCE', availableBalance: 3000, notes: 'Client does not have sufficient balance for the full amount.', validationId: 'ZV-1', finance: finance(false) } };
@@ -967,6 +980,32 @@ const fin5 = () => ({
   assert.equal(s.undoable(r), false);
 }
 
+// ── scenario 18b: Zoho Books verification on request — Sven and the recipients see the button, Operations never ──
+{
+  const r = escReq('ESCALATED', { zohoClientId: '3001' });
+  for (const [who, want] of [['sven', true], ['adnan', true], ['maram', false], ['amina', false]]) {
+    const c = make(who);
+    c.setState({ requests: [r].concat(c.state.requests), reqId: 'FR-900', route: 'detail' });
+    const vm = c.renderVals();
+    resolveAll(markupOf(tpl), vm, seen);
+    assert.equal(vm.detail.esc.canBooks, want, who);
+  }
+  const c = make('sven');
+  let call = null;
+  c.api = (path, o) => { call = [path, o]; return Promise.resolve({ status: 200, ok: true, json: { ok: true, verified: true, item: Object.assign({}, r, { status: 'NEW', escalation: Object.assign({}, r.escalation, { decision: { action: 'BOOKS_VERIFIED', by: 'sven', byName: 'Sven', atText: '07 Oct · 15:00' }, booksVerification: { ok: true, by: 'sven', byName: 'Sven', atText: '07 Oct · 15:00' } }) }) } }); };
+  c.setState({ requests: [r].concat(c.state.requests), reqId: 'FR-900', route: 'detail' });
+  await c.renderVals().detail.esc.booksGo();
+  assert.equal(call[0], '/api/requests/FR-900/books-verification');
+  const vm = c.renderVals();
+  assert.equal(vm.detail.esc.canBooks, false, 'with Sven now');
+  assert.match(vm.detail.esc.decisionLine, /^Balance confirmed in Zoho Books — with Sven/);
+  assert.match(vm.detail.esc.booksLine, /^Zoho Books verification confirmed the balance — Sven/);
+  assert.equal(c.escSummary(c.reqById('FR-900')), 'Balance confirmed in Zoho Books by Sven');
+  const m = make('sven');
+  m.setState({ requests: [c.reqById('FR-900')].concat(m.state.requests), route: 'mgmt' });
+  assert.ok(m.mgmtVals().groups.find(g => g.key === 'approved').rows.some(x => x.id === 'FR-900'), 'Management Requests: approved – waiting for Sven');
+}
+
 // ── scenario 19: Send → loader; connection failure (no escalation); recipients picker; escalation sends `to` ──
 {
   const c = make('maram');
@@ -982,7 +1021,7 @@ const fin5 = () => ({
   assert.equal(vm.zl.running, true);
   assert.equal(vm.zl.steps.length, 4);
   assert.equal(vm.zl.steps[0].label, 'Verifying Zoho connections');
-  assert.equal(vm.zl.steps[2].label, 'Cross-checking Zoho Books: journals, credit & debit notes, payments');
+  assert.equal(vm.zl.steps[2].label, 'Zoho Books verification — only if Sven or management ask for it');
   assert.ok(['Crunching numbers…', 'Checking journals…', 'Talking to Zoho…', 'Matching invoices to payments…', 'Counting credit notes…', 'Almost there…'].includes(vm.zl.msg));
   assert.equal(vm.zl.barW, '92%');
   assert.match(vm.zl.barAnim, /^zlFill /);
@@ -997,8 +1036,8 @@ const fin5 = () => ({
   assert.equal(vm.finFail.error, 'Zoho Analytics and Zoho Books could not both be verified — the request is blocked and Sven has been notified.');
   assert.equal(vm.finFail.canStart, false, 'no escalation on a connection failure');
   assert.equal(vm.finFail.noEscalate, true);
-  assert.deepEqual(vm.finFail.rows.map(x => x.label + ':' + x.message), ['Zoho Analytics:Connection verified', 'Zoho Books:Could not be verified']);
-  assert.equal(vm.finFail.count, 'Blocked');
+  assert.deepEqual(vm.finFail.rows, [], 'Operations: no connection detail');
+  assert.equal(vm.finFail.hasCount, false);
   c.setState({ zl: null });
   // failed checks (five, Books cross-check) → escalate with a chosen recipient
   globalThis.fetch = () => Promise.resolve({ status: 422, json: () => Promise.resolve({ ok: false, reason: 'FINANCIAL_CHECKS_FAILED', error: 'Client does not have sufficient balance. You may escalate to Management.', failed: fin5().checks.filter(x => !x.ok).map(x => ({ key: x.key, label: x.label, message: x.message })), finance: fin5(), escalate: { allowed: true, token: 'esc-tok' } }) });
@@ -1007,8 +1046,11 @@ const fin5 = () => ({
   await tick(); await tick(); await tick();
   globalThis.fetch = realFetch;
   vm = c.renderVals();
-  assert.equal(vm.finFail.count, '2 of 5 checks failed');
-  assert.equal(vm.finFail.sub, 'Zoho Analytics → Zoho Books cross-verification · 09 Oct · 10:00 · FV-5B5B5B5B');
+  // Operations: just "Rejected" — the five checks are for Sven and management
+  assert.equal(vm.finFail.error, 'Rejected');
+  assert.equal(vm.finFail.hasCount, false);
+  assert.equal(vm.finFail.sub, '');
+  assert.deepEqual(vm.finFail.rows, []);
   vm.finFail.start();
   vm = c.renderVals();
   resolveAll(markupOf(tpl), vm, seen);

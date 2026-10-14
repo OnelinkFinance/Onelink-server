@@ -201,12 +201,11 @@ const GATE_JS = `  verifyClient() {
     const facts = [
       { label: 'Purpose', value: r.purpose || '—' },
       { label: 'Client already paid us?', value: r.paid || '—' },
-      { label: 'Zoho Analytics', value: r.zohoStatus ? r.zohoStatus + (!isOps && typeof r.zohoBalance === 'number' ? ' · balance ' + this.fmt(r.zohoBalance) : '') : 'Not checked yet' },
+      { label: 'Zoho Analytics', value: r.zohoStatus ? r.zohoStatus + (this.seesFinance(me) && typeof r.zohoBalance === 'number' ? ' · balance ' + this.fmt(r.zohoBalance) : '') : 'Not checked yet' },
       { label: 'Freezone', value: r.zone || '—' },
       { label: 'Documents', value: (r.docs || []).length ? (r.docs || []).length + ' attached' : 'None attached' },
       { label: 'Requested on', value: r.date || '—' },
-      { label: r.financeLatest ? 'Financial checks · latest re-check' : 'Financial checks', value: this.finSummary(r.financeLatest || r.finance) }
-    ].concat(r.escalation ? [{ label: 'Escalation', value: this.escSummary(r) }] : [])
+    ].concat(this.seesFinance(me) ? [{ label: r.financeLatest ? 'Financial checks · latest re-check' : 'Financial checks', value: this.finSummary(r.financeLatest || r.finance) }] : []).concat(r.escalation ? [{ label: 'Escalation', value: this.escSummary(r) }] : [])
       .concat(this.infoReq(r) ? [{ label: 'Management asks', value: this.infoLine(this.infoReq(r)) }] : [])
       .concat(r.voided ? [{ label: 'Voided', value: (r.voided.byName || this.nameOf(r.voided.by)) + (r.voided.reason ? ' — ' + r.voided.reason : '') }] : [])
       .concat(r.notes ? [{ label: 'Notes', value: r.notes }] : []);
@@ -343,9 +342,16 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     this._titleObs = new MutationObserver(() => { if (document.title !== T) document.title = T; });
     this._titleObs.observe(document.head, { subtree: true, childList: true, characterData: true });
   }
+  /* Only Sven and management see the financial checks and balances (the server sends no one else either). */
+  seesFinance(u) { return this.isSven(u) || this.isMgmt(u); }
   isSven(u) { return !!u && ((u.perms || []).indexOf('*') >= 0 || u.key === 'sven'); }
   nameOf(key) { const u = this.users()[key]; return u ? u.name : (key || '—'); }
   acctTitle(key) { const a = this.accounts().filter(x => x.key === key)[0]; return (a && a.title) || ''; }
+  /* Who decided: management by title; Sven (who may run the Zoho Books verification) by name. */
+  deciderName(d) {
+    const n = d.byName || this.nameOf(d.by);
+    return d.action === 'BOOKS_VERIFIED' && !this.isMgmt(this.users()[d.by]) ? n : this.mgmtName(n, d.title || this.acctTitle(d.by));
+  }
   mgmtName(name, title) { return 'Mr. ' + (name || 'Management') + (title ? ' (' + title + ')' : ''); }
   mgmtPeople() {
     return this.accounts().filter(a => a.dept === 'MANAGEMENT' && a.active !== false).map(a => this.mgmtName(a.name, a.title));
@@ -383,6 +389,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     if (!fin) return '';
     if (fin.route === 'BOOKS_CROSSCHECK') return 'Zoho Analytics → Zoho Books cross-verification';
     if (fin.route === 'ANALYTICS') return 'Checked in Zoho Analytics';
+    if (fin.route === 'BOOKS_ON_REQUEST') return 'Checked in Zoho Analytics · Zoho Books verification only if Sven or management ask for it';
     return 'Checked in ' + (fin.source || 'Zoho Books + Zoho Analytics');
   }
   connVals(c) {
@@ -428,16 +435,16 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     if (!z) return { show: false, steps: [] };
     const el = Date.now() - z.at, esc = z.kind === 'escalate';
     const labels = esc
-      ? ['Verifying Zoho connections', 'Re-reading Zoho Analytics', 'Cross-checking Zoho Books', 'Sending to management']
-      : ['Verifying Zoho connections', 'Reading Zoho Analytics balance', 'Cross-checking Zoho Books: journals, credit & debit notes, payments', 'Final decision'];
+      ? ['Verifying Zoho connections', 'Re-reading Zoho Analytics', 'Zoho Books verification — on request', 'Sending to management']
+      : ['Verifying Zoho connections', 'Reading Zoho Analytics balance', 'Zoho Books verification — only if Sven or management ask for it', 'Final decision'];
     const icons = ['ph ph-plugs-connected', 'ph ph-chart-line-up', 'ph ph-books', esc ? 'ph ph-paper-plane-tilt' : 'ph ph-gavel'];
-    const timed = el < 700 ? 0 : el < 1700 ? 1 : 2, active = z.done ? 4 : Math.max(timed, z.stage || 0);
-    const skipBooks = z.route === 'ANALYTICS' && (z.done || active >= 3);
+    const timed = el < 700 ? 0 : 1, active = z.done ? 4 : Math.max(timed, z.stage || 0);
+    const skipBooks = esc || (z.route !== 'BOOKS_CROSSCHECK' && (z.done || active >= 3));
     const steps = labels.map((l, i) => {
       const skip = i === 2 && skipBooks, done = !skip && i < active, cur = i === active;
       return {
         label: l,
-        note: skip ? 'Not needed — Zoho Analytics covered it' : cur ? 'In progress…' : '',
+        note: skip ? (z.route === 'ANALYTICS' || (z.done && z.ok) ? 'Not needed — Zoho Analytics covered it' : 'Not run — Sven or management decide whether it is required') : cur ? 'In progress…' : '',
         hasNote: skip || cur,
         icon: done ? 'ph ph-check' : skip ? 'ph ph-minus' : cur ? 'ph ph-circle-notch' : 'ph ph-circle',
         spin: cur ? 'spin .9s linear infinite' : 'none',
@@ -448,11 +455,11 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     });
     const MSG = ['Crunching numbers…', 'Checking journals…', 'Talking to Zoho…', 'Matching invoices to payments…', 'Counting credit notes…', 'Almost there…'];
     const mi = Math.floor(el / 1400) % MSG.length;
-    const end = z.done ? (z.conn ? 'Zoho connections could not be verified — nothing was sent' : z.error ? 'Could not finish — nothing was sent' : z.ok ? (esc ? 'Sent to management' : 'All checks passed') : (esc ? 'Not sent' : 'The checks did not pass')) : '';
+    const end = z.done ? (z.conn ? 'Zoho connections could not be verified — nothing was sent' : z.error ? 'Could not finish — nothing was sent' : z.ok ? (esc ? 'Sent to management' : 'All checks passed') : (esc ? 'Not sent' : 'Rejected')) : '';
     return {
       show: true, done: !!z.done, running: !z.done,
       title: esc ? 'Sending to management…' : 'Checking with Zoho…',
-      sub: esc ? 'The financial checks are re-read live, then the escalation goes to the managers you picked.' : 'Your request is checked live in Zoho Analytics and Zoho Books. This usually takes a few seconds.',
+      sub: esc ? 'The financial checks are re-read live, then the escalation goes to the managers you picked.' : 'Your request is checked live in Zoho Analytics. This usually takes a few seconds.',
       icon: z.done ? (z.ok ? 'ph ph-seal-check' : z.error ? 'ph ph-plugs' : 'ph ph-flag') : icons[Math.min(active, 3)],
       iconAnim: z.done ? 'popIn .3s ease' : 'zlBob 1.6s ease-in-out infinite',
       iconFg: z.done ? (z.ok ? 'var(--fgGreen)' : 'var(--fgRedDeep)') : 'var(--fgBlue)',
@@ -515,6 +522,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
   finSummary(fin) {
     if (!fin || !Array.isArray(fin.checks) || !fin.checks.length) return 'Not run';
     const n = fin.checks.length, bad = fin.checks.filter(c => !c.ok).length;
+    if (n === 1) return 'Zoho Analytics balance ' + (bad ? 'not sufficient' : 'sufficient');
     return bad ? bad + ' of ' + n + ' failed' : 'All ' + n + ' passed';
   }
   escSummary(r) {
@@ -522,8 +530,8 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     if (!esc) return '';
     if (this.voidedBeforeDecision(r)) return 'Closed — voided before a management decision' + (esc.id ? ' · ' + esc.id : '');
     if (r.status === 'ESCALATED' || !d) return 'Waiting for management' + (this.infoReq(r) ? ' — more information requested' : '') + (esc.id ? ' · ' + esc.id : '');
-    const who = this.mgmtName(d.byName || this.nameOf(d.by), d.title || this.acctTitle(d.by));
-    return ({ APPROVE: 'Approved by ', REJECT: 'Rejected by ', INFO: 'More information asked by ' }[d.action] || 'Decided by ') + who;
+    const who = this.deciderName(d);
+    return ({ APPROVE: 'Approved by ', REJECT: 'Rejected by ', INFO: 'More information asked by ', BOOKS_VERIFIED: 'Balance confirmed in Zoho Books by ' }[d.action] || 'Decided by ') + who;
   }
 
   /* ── A. escalation from the new-request form ─────────── */
@@ -550,14 +558,19 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     const n = (ff.justification || '').trim().length, sel = this.escTargets(), all = sel === 'ALL';
     const accts = this.mgmtAccounts(), picked = all ? accts : accts.filter(a => sel.indexOf(a.key) >= 0);
     const chip = (on, label, go, icon) => ({ label: label, on: on, go: go, icon: on ? 'ph ph-check-circle' : icon, bg: on ? 'var(--chipBlueBg)' : 'var(--sf)', bd: on ? 'var(--fgBlue)' : 'var(--line3)', fg: on ? 'var(--fgBlue)' : 'var(--ink2)' });
-    const cv = this.connVals(ff.connections);
-    const rows = conn
+    const cv = this.connVals(ff.connections), priv = this.seesFinance(this.me());
+    const rows = !priv ? [] : conn
       ? (cv.show ? cv.items.map(i => ({ label: i.label, message: i.ok ? 'Connection verified' : 'Could not be verified', icon: i.icon, fg: i.fg })) : [])
       : failed.map(x => ({ label: x.label || x.key || 'Check', message: x.message || 'Did not pass.', icon: 'ph ph-x-circle', fg: 'var(--fgRed)' }));
+    // everyone but Sven and management: one word, stamped in
+    const rej = !priv && !conn;
     return {
-      show: true, error: ff.error || 'The financial checks failed. Nothing was sent.',
-      headIcon: conn ? 'ph ph-plugs' : 'ph ph-shield-warning',
-      sub: conn ? 'Zoho connection verification' + (cv.at ? ' · ' + cv.at.replace('Connections verified ', '') : '') : [this.finRoute(fin) || 'Checked in Zoho Books + Zoho Analytics', fin.atText, fin.id].filter(Boolean).join(' · '),
+      show: true, error: rej ? 'Rejected' : ff.error || 'The financial checks failed. Nothing was sent.',
+      headIcon: rej ? 'ph ph-x-circle' : conn ? 'ph ph-plugs' : 'ph ph-shield-warning',
+      iconSize: rej ? '30px' : '19px', iconAnim: rej ? 'rejStamp .45s cubic-bezier(.2,.9,.3,1.3) both, rejPulse 1.2s ease-in-out .5s 2' : 'none',
+      errSize: rej ? '24px' : '13.5px', errWeight: rej ? '700' : 'inherit', errTrack: rej ? '.04em' : 'normal',
+      errAnim: rej ? 'rejStamp .45s cubic-bezier(.2,.9,.3,1.3) both, rejShake .45s ease .5s' : 'none',
+      hasCount: priv, sub: !priv ? '' : conn ? 'Zoho connection verification' + (cv.at ? ' · ' + cv.at.replace('Connections verified ', '') : '') : [this.finRoute(fin) || 'Checked in Zoho Books + Zoho Analytics', fin.atText, fin.id].filter(Boolean).join(' · '),
       count: conn ? 'Blocked' : failed.length ? (total ? failed.length + ' of ' + total + ' checks failed' : failed.length + (failed.length === 1 ? ' check failed' : ' checks failed')) : 'Checks failed',
       rows: rows,
       canStart: !!ff.allowed && !!ff.token && !ff.open, open: !!ff.open,
@@ -631,7 +644,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       route: this.finRoute(fin), routeIcon: fin.route === 'BOOKS_CROSSCHECK' ? 'ph ph-arrows-left-right' : 'ph ph-chart-line-up',
       hasPrimary: !!pr && fin.route === 'BOOKS_CROSSCHECK', primary: pr ? 'Zoho Analytics: ' + pr : '',
       hasConn: cv.show, conn: cv.items, connAt: cv.at,
-      chip: !n ? 'No checks recorded' : bad ? bad + ' of ' + n + ' checks failed' : 'All ' + ({ 3: 'three', 4: 'four', 5: 'five' }[n] || n) + ' checks passed',
+      chip: !n ? 'No checks recorded' : n === 1 ? 'Zoho Analytics balance check ' + (bad ? 'failed' : 'passed') : bad ? bad + ' of ' + n + ' checks failed' : 'All ' + ({ 3: 'three', 4: 'four', 5: 'five' }[n] || n) + ' checks passed',
       chipIcon: bad || !n ? 'ph ph-warning-octagon' : 'ph ph-seal-check',
       chipFg: bad || !n ? 'var(--fgRedDeep)' : 'var(--fgGreen)', chipBg: bad || !n ? 'var(--chipRedBg)' : 'var(--chipGreenBg)', chipBd: bad || !n ? 'var(--chipRedBd)' : 'var(--chipGreenBd)',
       checks: checks,
@@ -643,8 +656,9 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     const esc = r.escalation;
     if (!esc) return { failed: [], log: [] };
     const d = esc.decision, st = r.status, closed = this.voidedBeforeDecision(r), waiting = !closed && (st === 'ESCALATED' || !d), act = waiting || closed ? '' : d.action;
-    const ACT = { APPROVE: 'Approved & proceed', REJECT: 'Rejected by management', INFO: 'More information requested' };
-    const LOG = { CREATED: 'escalated to management', APPROVE: 'approved & proceed', REJECT: 'rejected the escalation', INFO: 'asked for more information', REPLY: 'replied to management' };
+    const ACT = { APPROVE: 'Approved & proceed', REJECT: 'Rejected by management', INFO: 'More information requested', BOOKS_VERIFIED: 'Balance confirmed in Zoho Books — with Sven' };
+    const LOG = { CREATED: 'escalated to management', APPROVE: 'approved & proceed', REJECT: 'rejected the escalation', INFO: 'asked for more information', REPLY: 'replied to management', BOOKS_VERIFY: 'ran the Zoho Books verification' };
+    const bv = esc.booksVerification, canBooks = (st === 'ESCALATED' || st === 'MGMT_INFO') && !!r.zohoClientId && !this.isOpsUser(me) && (this.isSven(me) || this.escRecipient(r, me));
     const ir = this.infoReq(r);
     const failed = (esc.failed || []).map(x => ({ label: x.label || x.key || 'Check', message: x.message || '' }));
     const log = (esc.log || []).slice().reverse().map(l => ({ at: l.atText || '', text: (l.whoName || this.nameOf(l.who)) + ' ' + (LOG[l.action] || String(l.action || '').toLowerCase()) + (l.note ? ' — ' + l.note : '') }));
@@ -652,15 +666,19 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       id: esc.id || '—',
       raised: 'Raised by ' + (esc.byName || this.nameOf(esc.by)) + (esc.atText ? ' · ' + esc.atText : ''),
       justification: esc.justification || '', hasJust: !!esc.justification, // removed for Operations when a manager raised it
-      failed: failed, hasFailed: failed.length > 0,
+      failed: failed, hasFailed: failed.length > 0 && this.seesFinance(me),
       to: this.escToText(r, ', '),
       hasInfo: !!ir, infoLine: ir ? this.infoLine(ir) : '', infoAt: ir && ir.atText ? ir.atText : '',
-      decisionLine: closed ? 'Closed — voided before a management decision' : waiting ? 'Waiting for a management decision' : (ACT[act] || 'Decided') + ' — ' + this.mgmtName(d.byName || this.nameOf(d.by), d.title || this.acctTitle(d.by)) + (d.atText ? ' · ' + d.atText : ''),
+      decisionLine: closed ? 'Closed — voided before a management decision' : waiting ? 'Waiting for a management decision' : (ACT[act] || 'Decided') + ' — ' + this.deciderName(d) + (d.atText ? ' · ' + d.atText : ''),
       decisionNote: !waiting && !closed && d.note ? d.note : '', hasNote: !waiting && !closed && !!d.note,
-      toneIcon: closed ? 'ph ph-lock-simple' : waiting ? 'ph ph-hourglass' : act === 'APPROVE' ? 'ph ph-seal-check' : act === 'REJECT' ? 'ph ph-prohibit' : 'ph ph-question',
-      toneFg: closed ? 'var(--mut)' : act === 'APPROVE' ? 'var(--fgGreen)' : act === 'REJECT' ? 'var(--fgRedDeep)' : 'var(--fgAmberDeep)',
-      toneBg: closed ? 'var(--tint)' : act === 'APPROVE' ? 'var(--chipGreenBg)' : act === 'REJECT' ? 'var(--chipRedBg)' : 'var(--chipAmberBg)',
-      toneBd: closed ? 'var(--line)' : act === 'APPROVE' ? 'var(--chipGreenBd)' : act === 'REJECT' ? 'var(--chipRedBd)' : 'var(--chipAmberBd)',
+      toneIcon: closed ? 'ph ph-lock-simple' : waiting ? 'ph ph-hourglass' : act === 'APPROVE' || act === 'BOOKS_VERIFIED' ? 'ph ph-seal-check' : act === 'REJECT' ? 'ph ph-prohibit' : 'ph ph-question',
+      toneFg: closed ? 'var(--mut)' : act === 'APPROVE' || act === 'BOOKS_VERIFIED' ? 'var(--fgGreen)' : act === 'REJECT' ? 'var(--fgRedDeep)' : 'var(--fgAmberDeep)',
+      toneBg: closed ? 'var(--tint)' : act === 'APPROVE' || act === 'BOOKS_VERIFIED' ? 'var(--chipGreenBg)' : act === 'REJECT' ? 'var(--chipRedBg)' : 'var(--chipAmberBg)',
+      toneBd: closed ? 'var(--line)' : act === 'APPROVE' || act === 'BOOKS_VERIFIED' ? 'var(--chipGreenBd)' : act === 'REJECT' ? 'var(--chipRedBd)' : 'var(--chipAmberBd)',
+      /* Zoho Analytics did not cover it: Sven, or the management it went to, decide whether to run the Zoho Books verification */
+      canBooks: canBooks, booksBusy: !!this.state.booksBusy, booksLabel: this.state.booksBusy ? 'Reading Zoho Books…' : bv && !bv.ok ? 'Run the Zoho Books verification again' : 'Run Zoho Books verification',
+      booksGo: () => this.booksVerify(r.id),
+      hasBooksLine: !!bv, booksLine: bv ? 'Zoho Books verification ' + (bv.ok ? 'confirmed the balance' : 'did not confirm the balance') + ' — ' + (bv.byName || this.nameOf(bv.by)) + (bv.atText ? ' · ' + bv.atText : '') : '',
       log: log, hasLog: log.length > 0,
       canDecide: (st === 'ESCALATED' || st === 'MGMT_INFO') && this.escRecipient(r, me),
       approve: () => this.openModal('mgmtApprove', r.id), reject: () => this.openModal('mgmtReject', r.id), info: () => this.openModal('mgmtInfo', r.id),
@@ -678,8 +696,8 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       canChase: !locked, chase: () => this.openModal('chase', r.id),
       canVoid: !locked && (this.isSven(me) || this.isMgmt(me)), voidGo: () => this.openModal('void', r.id),
       // finance's latest re-check is the main result; the submission-time checks stay below it, compact
-      hasFin: !!(r.financeLatest || r.finance), fin: this.finVals(r.financeLatest || r.finance, restricted, !!r.financeLatest),
-      hasFinAt: !!(r.financeLatest && r.finance), finAt: this.finVals(r.financeLatest ? r.finance : null, restricted),
+      hasFin: this.seesFinance(this.me()) && !!(r.financeLatest || r.finance), fin: this.finVals(r.financeLatest || r.finance, restricted, !!r.financeLatest),
+      hasFinAt: this.seesFinance(this.me()) && !!(r.financeLatest && r.finance), finAt: this.finVals(r.financeLatest ? r.finance : null, restricted),
       hasEsc: !!r.escalation, esc: this.escVals(r, me),
       wait: this.waitVals(r, me, isOps)
     };
@@ -688,6 +706,18 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
     return out;
   }
   isOpsUser(u) { return !!u && (u.role === 'ops' || u.dept === 'OPERATIONS'); }
+  /* Sven / management asked for it: the server runs the Zoho Books verification on this escalated request. */
+  booksVerify(id) {
+    if (this.state.booksBusy) return;
+    this.setState({ booksBusy: true });
+    return this.api('/api/requests/' + id + '/books-verification', { method: 'POST', body: {} }).then(o => {
+      this.setState({ booksBusy: false });
+      if (o.status === 401) return this.endSession('Your live session ended. Sign in again.');
+      if (!o.ok || o.json.ok === false) return this.flash(o.json.error || 'The Zoho Books verification could not run (HTTP ' + o.status + '). Nothing was changed.', null, 'ph ph-plugs');
+      this.mergeReq(o.json.item);
+      this.flash(o.json.verified ? 'Zoho Books confirmed the balance — Pending Sven Approval' : 'Zoho Books did not confirm the balance — management decides', null, o.json.verified ? 'ph ph-seal-check' : 'ph ph-flag');
+    }).catch(() => { this.setState({ booksBusy: false }); this.flash('The live server could not be reached. Nothing was changed.', null, 'ph ph-plugs'); });
+  }
   /* The requester's calm "waiting for management" card: who it went to and since when — no notes, except the
      question when management asked for more information. */
   waitVals(r, me, isOps) {
@@ -720,7 +750,7 @@ const FLOW_JS = `  /* ═══ ESCALATION · VOID · CHASE · RESET ═══�
       .slice().sort((a, b) => (Date.parse(b.escalation.at || '') || 0) - (Date.parse(a.escalation.at || '') || 0));
     const G = [
       ['await', 'Awaiting decision', r => r.status === 'ESCALATED' || r.status === 'MGMT_INFO', 'var(--fgAmberDeep)', 'ph ph-hourglass-medium', 'var(--chipAmberBg)'],
-      ['approved', 'Approved – waiting for Sven', r => r.status === 'MGMT_APPROVED', 'var(--fgGreen)', 'ph ph-seal-check', 'var(--chipGreenBg)'],
+      ['approved', 'Approved – waiting for Sven', r => r.status === 'MGMT_APPROVED' || (r.status === 'NEW' && !!r.escalation.decision && r.escalation.decision.action === 'BOOKS_VERIFIED'), 'var(--fgGreen)', 'ph ph-seal-check', 'var(--chipGreenBg)'],
       ['rejected', 'Rejected by management', r => r.status === 'MGMT_REJECTED', 'var(--fgRed)', 'ph ph-prohibit', 'var(--chipRedBg)'],
       ['closed', 'Closed', () => true, 'var(--mut)', 'ph ph-archive', 'var(--tint)']
     ];
@@ -1145,12 +1175,14 @@ const BTN_SOFT = 'class="btn" style="font-size:12.5px; border-radius:11px; backg
 const FINFAIL_MARKUP = `          <sc-if value="{{ finFail.show }}" hint-placeholder-val="{{ false }}">
             <div role="alert" style="grid-column:{{ L.span }}; display:flex; flex-direction:column; gap:10px; padding:15px 17px; border-radius:16px; background:var(--chipRedBg); border:1px solid var(--chipRedBd); animation:riseIn .26s ease">
               <div style="display:flex; align-items:flex-start; gap:8px 10px; flex-wrap:wrap">
-                <i class="{{ finFail.headIcon }}" style="font-size:19px; color:var(--fgRed); flex:none; margin-top:1px"></i>
+                <i class="{{ finFail.headIcon }}" style="font-size:{{ finFail.iconSize }}; color:var(--fgRed); flex:none; margin-top:1px; animation:{{ finFail.iconAnim }}"></i>
                 <div style="flex:1 1 220px; display:flex; flex-direction:column; gap:2px; min-width:0">
-                  <span style="font-family:var(--font-heading); font-size:13.5px; line-height:1.45; color:var(--fgRedDeep)">{{ finFail.error }}</span>
+                  <span style="font-family:var(--font-heading); font-size:{{ finFail.errSize }}; font-weight:{{ finFail.errWeight }}; letter-spacing:{{ finFail.errTrack }}; line-height:1.45; color:var(--fgRedDeep); transform-origin:left center; animation:{{ finFail.errAnim }}">{{ finFail.error }}</span>
                   <span style="font-size:11px; color:var(--fgRedDeep)">{{ finFail.sub }}</span>
                 </div>
-                <span style="flex:none; font-size:11px; padding:3px 9px; border-radius:8px; background:var(--sf); border:1px solid var(--chipRedBd); color:var(--fgRedDeep); white-space:nowrap">{{ finFail.count }}</span>
+                <sc-if value="{{ finFail.hasCount }}" hint-placeholder-val="{{ true }}">
+                  <span style="flex:none; font-size:11px; padding:3px 9px; border-radius:8px; background:var(--sf); border:1px solid var(--chipRedBd); color:var(--fgRedDeep); white-space:nowrap">{{ finFail.count }}</span>
+                </sc-if>
               </div>
               <div style="display:flex; flex-direction:column; gap:6px">
                 <sc-for list="{{ finFail.rows }}" as="fr" hint-placeholder-count="2">
@@ -1359,6 +1391,14 @@ const DETAIL_CARDS = `
                 </div>
               </div>
             </sc-if>
+            <sc-if value="{{ detail.esc.hasBooksLine }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex; align-items:center; gap:7px; margin-top:12px; font-size:12.5px; color:var(--ink3)"><i class="ph ph-books" style="font-size:14px; color:var(--fgBlue)"></i>{{ detail.esc.booksLine }}</div>
+            </sc-if>
+            <sc-if value="{{ detail.esc.canBooks }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex; gap:9px; flex-wrap:wrap; margin-top:16px">
+                <button type="button" sc-camel-on-click="{{ detail.esc.booksGo }}" class="btn" style="border-radius:12px; background:var(--sf2); border:1px solid var(--line3); color:var(--fgBlue)" style-hover="background:var(--sf3)"><i class="ph ph-books" style="font-size:15px"></i>{{ detail.esc.booksLabel }}</button>
+              </div>
+            </sc-if>
             <sc-if value="{{ detail.esc.canDecide }}" hint-placeholder-val="{{ false }}">
               <div style="display:flex; gap:9px; flex-wrap:wrap; margin-top:16px">
                 <button type="button" sc-camel-on-click="{{ detail.esc.approve }}" class="btn" style="border-radius:12px; color:#fff; background:linear-gradient(140deg,#22c55e,#15803d); box-shadow:0 6px 16px rgba(21,128,61,.24)"><i class="ph ph-seal-check" style="font-size:15px"></i>Approve & proceed</button>
@@ -1548,6 +1588,9 @@ const KEYFRAMES = `  @keyframes zlFill { 0% { width: 3%; } 15% { width: 30%; } 4
   @keyframes zlMsgA { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
   @keyframes zlMsgB { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
   @keyframes zlWait { 0% { transform: scale(.82); opacity: .75; } 100% { transform: scale(1.65); opacity: 0; } }
+  @keyframes rejStamp { 0% { transform: scale(1.9) rotate(-8deg); opacity: 0; } 60% { transform: scale(.94) rotate(-2deg); opacity: 1; } 100% { transform: none; opacity: 1; } }
+  @keyframes rejShake { 0%,100% { transform: translateX(0); } 20%,60% { transform: translateX(-5px); } 40%,80% { transform: translateX(5px); } }
+  @keyframes rejPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.14); } }
 `;
 
 // brand marks → the OneLink logo, same box, rounded like the old badge
@@ -2010,6 +2053,10 @@ ${PEEK_MORE}              <div style="display:flex; flex-direction:column; gap:8
    "this.setState({ authed: true, booting: false, userKey: o.json.user.key, route: o.json.user.dept === 'MANAGEMENT' ? 'mgmt' : this.landingRoute(o.json.user.key),"],
   ["this.setState({ userKey: k, seatFrom: k === from ? null : from, userMenu: false, confirmOut: false, route: 'home',",
    "this.setState({ userKey: k, seatFrom: k === from ? null : from, userMenu: false, confirmOut: false, route: this.landingRoute(k),"],
+  // the Zoho check window waits 60 s (a live Analytics export can take longer than 8 s), and says so if it times out
+  ['ctrl.abort(); }, 8000);', 'ctrl.abort(); }, 60000);'],
+  ["TIMEOUT: ['Timed out after 8 seconds', 'The route was reached but did not answer. Zoho Analytics queries should be cached or run asynchronously — approval stays paused, never auto-approved.'],",
+   "TIMEOUT: ['Zoho did not answer within 60 seconds', 'Nothing was approved. Try the check again in a minute — if it keeps happening, Zoho is down and Sven has been told.'],"],
   // the Zoho loader overlay
   ['  <sc-if value="{{ booting }}" hint-placeholder-val="{{ false }}">', LOADER + '  <sc-if value="{{ booting }}" hint-placeholder-val="{{ false }}">']
 ];

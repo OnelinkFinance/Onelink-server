@@ -17,8 +17,10 @@ function client(srv, T) {
   const api = (who, method, p, body) => call(srv.base, T[who], method, p, body);
   const snap = async who => (await api(who, 'GET', '/api/sync/snapshot')).json;
   const pick = async (who, c) => (await api(who, 'POST', '/api/zoho/validate-client', { contactId: c.id })).json;
-  const precheck = async (who, c, amount = 5000) => { const v = await pick(who, c); return { v, ...(await api(who, 'POST', '/api/zoho/precheck', { validationToken: v.token, clientName: v.clientName, amount, paid: PAID })) }; };
-  return { api, snap, pick, precheck };
+  const precheck = async (who, c, amount = 5000, extra = {}) => { const v = await pick(who, c); return { v, ...(await api(who, 'POST', '/api/zoho/precheck', { validationToken: v.token, clientName: v.clientName, amount, paid: PAID, ...extra })) }; };
+  // Sven (or management) asking for the Zoho Books verification
+  const booksCheck = (who, c, amount = 5000) => precheck(who, c, amount, { booksVerification: true });
+  return { api, snap, pick, precheck, booksCheck };
 }
 async function signIn(srv, T, users = ['maram', 'anastasiya', 'amina', 'adnan', 'ahmed', 'eduard']) {
   for (const u of users) T[u] = await login(srv.base, u, TEAM_PW);
@@ -26,51 +28,81 @@ async function signIn(srv, T, users = ['maram', 'anastasiya', 'amina', 'adnan', 
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-describe('routing: Zoho Analytics first, Zoho Books cross-verification second', () => {
+describe('routing: Zoho Analytics first, Zoho Books cross-verification only when Sven or management ask for it', () => {
   let srv, dir, T = {}, A;
   before(async () => { dir = mkTmp('r2-route'); srv = await startServer({ dir, fixture: fixture() }); await signIn(srv, T); A = client(srv, T); });
   after(async () => { if (srv) await srv.stop(); });
 
-  test('Analytics covers the request → route ANALYTICS, three checks, connections, no Books cross-check calls', async () => {
-    const p = await A.precheck('maram', C.alpha);
+  test('Analytics covers the request → route ANALYTICS, the CFD balance alone, connections, no Books cross-check calls', async () => {
+    const o = await A.precheck('maram', C.alpha);
+    assert.equal(o.status, 200, JSON.stringify(o.json));
+    assert.ok(!('finance' in o.json), 'Operations receive no check record');
+    const p = await A.precheck('sven', C.bravo);
     assert.equal(p.status, 200, JSON.stringify(p.json));
     const f = p.json.finance;
     assert.equal(f.route, 'ANALYTICS');
-    assert.deepEqual(f.checks.map(c => c.key), ['CFD', 'COGS', 'INVOICES']);
+    assert.deepEqual(f.checks.map(c => c.key), ['CFD']);
     assert.equal(f.connections.analytics, true);
     assert.equal(f.connections.books, true);
     assert.match(f.connections.atText, /\d\d [A-Z][a-z]{2} · \d\d:\d\d/);
-    assert.deepEqual(Object.keys(f.primary).sort(), ['code', 'ok', 'text']);
+    assert.deepEqual(Object.keys(f.primary).sort(), ['code', 'detail', 'ok', 'text'], 'Sven sees the figures');
     assert.equal(f.primary.ok, true);
     const kinds = zlog(dir).map(e => e.kind);
     assert.ok(kinds.includes('workspace') && kinds.includes('booksProbe'), 'both connections probed');
     for (const k of ['transactions', 'creditnotes', 'booksInvoices', 'customerpayments', 'journals']) assert.ok(!kinds.includes(k), k + ' must not be called on the Analytics route');
   });
 
-  test('an unsynced Books credit covers the request → BOOKS_CROSSCHECK, five checks pass; Operations see no figures', async () => {
+  test('Analytics short → no Books call, Operations escalate; Sven runs the Books verification → it confirms → Pending Sven Approval; Operations see no figures', async () => {
+    const booksKinds = ['transactions', 'creditnotes', 'booksInvoices', 'customerpayments', 'journals', 'journal'];
+    const before = zlog(dir).filter(e => booksKinds.includes(e.kind)).length;
     const p = await A.precheck('maram', C.bk1);
-    assert.equal(p.status, 200, JSON.stringify(p.json));
-    const f = p.json.finance;
-    assert.equal(f.route, 'BOOKS_CROSSCHECK');
-    assert.deepEqual(f.checks.map(c => c.key), ['CFD', 'COGS', 'NOTES', 'JOURNALS', 'INVOICES']);
-    assert.ok(f.checks.every(c => c.ok), JSON.stringify(f.checks.filter(c => !c.ok)));
-    assert.deepEqual(f.primary, { ok: false, code: 'CFD_INSUFFICIENT', text: 'Client does not have sufficient balance to request funds.' });
-    assert.deepEqual(findKeys(p.json, 'detail'), []);
-    assert.doesNotMatch(JSON.stringify(p.json), /AED|INV-00801|DEP-4001/);
-    // the request carries the cross-check; Sven sees the figures
-    const put = await A.api('maram', 'POST', '/api/sync/put', { col: 'requests', item: { id: 'FR-9701', by: 'maram', company: C.bk1.name + ' FZCO', person: C.bk1.name, zohoClient: C.bk1.name, zohoClientId: C.bk1.id,
-      purpose: 'Visa', zone: 'IFZA', requested: 5000, approved: null, credited: 0, status: 'NEW', date: '9 Oct', paid: PAID, notes: '', docs: [], timeline: [], zohoSubmitToken: p.json.submitToken } });
-    assert.equal(put.status, 200, JSON.stringify(put.json));
-    const sv = (await A.snap('sven')).requests.find(r => r.id === put.json.id);
-    assert.equal(sv.finance.route, 'BOOKS_CROSSCHECK');
-    assert.equal(sv.finance.checks.length, 5);
-    assert.match(sv.finance.primary.detail, /AED 3,000/);
-    assert.match(sv.finance.checks[0].items[0].detail, /unsynced Books movement AED 2,500\.00/);
-    const mine = (await A.snap('maram')).requests.find(r => r.id === put.json.id);
-    assert.deepEqual(findKeys(mine.finance, 'detail'), []);
-    assert.doesNotMatch(JSON.stringify(mine.finance), /AED/);
-    const amina = (await A.snap('amina')).requests.find(r => r.id === put.json.id);
-    assert.doesNotMatch(JSON.stringify(amina.finance), /AED|"detail"/);
+    assert.equal(p.status, 422, JSON.stringify(p.json));
+    assert.equal(p.json.error, 'Rejected');
+    assert.ok(!('finance' in p.json) && !('failed' in p.json));
+    const sp = await A.precheck('sven', C.bk1);
+    assert.equal(sp.json.finance.route, 'BOOKS_ON_REQUEST');
+    assert.equal(sp.json.booksVerification, 'ON_REQUEST');
+    assert.deepEqual(sp.json.finance.checks.map(c => c.key), ['CFD']);
+    // Operations cannot ask for it
+    const o = await A.precheck('maram', C.bk1, 5000, { booksVerification: true });
+    assert.equal(o.status, 422);
+    assert.equal(zlog(dir).filter(e => booksKinds.includes(e.kind)).length, before, 'Zoho Books is not read until someone asks for it');
+    // escalated; the request waits for management
+    const e = await A.api('maram', 'POST', '/api/requests/escalate', { escalateToken: p.json.escalate.token, clientName: p.v.clientName, justification: 'Client paid by bank transfer this morning.',
+      request: { company: C.bk1.name + ' FZCO', person: C.bk1.name, purpose: 'Visa', zone: 'IFZA', requested: 5000, date: '9 Oct', docs: [] } });
+    assert.equal(e.status, 200, JSON.stringify(e.json));
+    const id = e.json.id;
+    // who may run it: Sven or a recipient — never Operations
+    assert.equal((await A.api('maram', 'POST', `/api/requests/${id}/books-verification`)).status, 403);
+    assert.equal((await A.api('amina', 'POST', `/api/requests/${id}/books-verification`)).status, 403);
+    const v = await A.api('sven', 'POST', `/api/requests/${id}/books-verification`);
+    assert.equal(v.status, 200, JSON.stringify(v.json).slice(0, 400));
+    assert.equal(v.json.verified, true);
+    assert.equal(v.json.item.status, 'NEW', 'Pending Sven Approval');
+    assert.equal(v.json.item.escalation.decision.action, 'BOOKS_VERIFIED');
+    assert.equal(v.json.item.booksVerification.ok, true);
+    const sv = (await A.snap('sven')).requests.find(r => r.id === id);
+    assert.equal(sv.financeLatest.route, 'BOOKS_CROSSCHECK');
+    assert.deepEqual(sv.financeLatest.checks.map(c => c.key), ['CFD', 'COGS', 'NOTES', 'JOURNALS', 'INVOICES']);
+    assert.ok(sv.financeLatest.checks.every(c => c.ok), JSON.stringify(sv.financeLatest.checks.filter(c => !c.ok)));
+    assert.match(sv.financeLatest.checks[0].items[0].detail, /unsynced Books movement AED 2,500\.00/);
+    assert.ok(sv.timeline.some(t => /ran the Zoho Books verification — balance confirmed\. Pending Sven Approval\./.test(t.text)));
+    assert.ok((await A.snap('maram')).notifications.some(n => n.req === id && /balance was confirmed in Zoho Books\. Sven gives the approval\./.test(n.text)), 'the requester hears it');
+    assert.ok((await A.snap('adnan')).notifications.some(n => n.req === id && /No management decision is needed/.test(n.text)), 'management hear it');
+    for (const who of ['maram', 'amina']) {
+      const mine = (await A.snap(who)).requests.find(r => r.id === id);
+      assert.equal(mine.status, 'NEW');
+      assert.ok(!('financeLatest' in mine), who);
+      assert.doesNotMatch(JSON.stringify(mine), /AED [\d,]+\.\d\d/, who);
+    }
+    // no longer waiting on management: running it again, or a management decision, is refused
+    assert.equal((await A.api('sven', 'POST', `/api/requests/${id}/books-verification`)).status, 409);
+    assert.equal((await A.api('adnan', 'POST', `/api/requests/${id}/escalation`, { action: 'APPROVE', note: 'ok' })).status, 409);
+    // Sven's check before approving re-runs the Books verification (it was asked for on this request) and passes
+    const fc = await A.api('sven', 'POST', '/api/zoho/client-funding-check', { requestId: id, clientName: C.bk1.name, company: C.bk1.name + ' FZCO', purpose: 'Visa', requestedAmount: 5000 });
+    assert.equal(fc.status, 200, JSON.stringify(fc.json).slice(0, 300));
+    assert.equal(fc.json.route, 'BOOKS_CROSSCHECK');
+    assert.equal(fc.json.ok, true);
   });
 
   test('each failing cross-check scenario fails the right check with the right Operations headline', async () => {
@@ -78,20 +110,21 @@ describe('routing: Zoho Analytics first, Zoho Books cross-verification second', 
       [C.bk2, ['JOURNALS'], false], [C.bk3, ['NOTES'], false], [C.bk4, ['CFD', 'COGS', 'JOURNALS'], true],
       [C.bk6, ['CFD'], true], [C.bk7, ['CFD', 'INVOICES'], false], [C.bk8, ['INVOICES'], false]
     ];
-    for (const [c, keys, insufficient] of cases) {
-      const p = await A.precheck('sven', c);
+    for (const [c, keys] of cases) {
+      const p = await A.booksCheck('sven', c);
       assert.equal(p.status, 422, c.name + ' ' + JSON.stringify(p.json).slice(0, 300));
       assert.equal(p.json.finance.route, 'BOOKS_CROSSCHECK', c.name);
       assert.deepEqual(p.json.failed.map(f => f.key), keys, c.name);
       assert.equal(p.json.escalate.allowed, true);
+      // Operations: the Analytics balance is short, Books is not run — they may escalate
       const o = await A.precheck('anastasiya', c);
       assert.equal(o.status, 422);
-      if (insufficient) assert.equal(o.json.error, OPS_INSUFFICIENT, c.name);
-      else { assert.notEqual(o.json.error, OPS_INSUFFICIENT, c.name); assert.match(o.json.error, /check(s)? failed\. You can escalate it to management\./); }
+      assert.equal(o.json.error, 'Rejected', c.name);
+      assert.ok(!('finance' in o.json), c.name);
       assert.doesNotMatch(JSON.stringify(o.json), /AED/, c.name);
     }
-    assert.equal((await A.precheck('sven', C.bk8)).json.finance.checks.find(x => x.key === 'INVOICES').code, 'PAYMENT_REVERSED');
-    assert.equal((await A.precheck('sven', C.bk5)).status, 200, 'an open credit note covers it');
+    assert.equal((await A.booksCheck('sven', C.bk8)).json.finance.checks.find(x => x.key === 'INVOICES').code, 'PAYMENT_REVERSED');
+    assert.equal((await A.booksCheck('sven', C.bk5)).status, 200, 'an open credit note covers it');
   });
 
   test('Books calls stay within budget: shared sources are cached for 60 s', async () => {
@@ -103,16 +136,38 @@ describe('routing: Zoho Analytics first, Zoho Books cross-verification second', 
     assert.equal(log.filter(e => e.kind === 'creditnotes' && e.query.customer_id === C.bk2.id).length, 1, 'bk2 was checked twice, its lists read once');
   });
 
+  test('Books does not confirm the balance → the request stays with management, who decide', async () => {
+    const p = await A.precheck('maram', C.bk6);
+    const e = await A.api('maram', 'POST', '/api/requests/escalate', { escalateToken: p.json.escalate.token, clientName: p.v.clientName, justification: 'Client paid by bank transfer this morning.', to: ['adnan'],
+      request: { company: C.bk6.name + ' FZCO', person: C.bk6.name, purpose: 'Visa', zone: 'IFZA', requested: 5000, date: '9 Oct', docs: [] } });
+    assert.equal(e.status, 200, JSON.stringify(e.json));
+    const id = e.json.id;
+    assert.equal((await A.api('ahmed', 'POST', `/api/requests/${id}/books-verification`)).status, 403, 'not a recipient');
+    const v = await A.api('adnan', 'POST', `/api/requests/${id}/books-verification`);
+    assert.equal(v.status, 200, JSON.stringify(v.json).slice(0, 300));
+    assert.equal(v.json.verified, false);
+    assert.equal(v.json.item.status, 'ESCALATED');
+    assert.equal(v.json.item.escalation.decision, null);
+    assert.equal(v.json.item.escalation.booksVerification.ok, false);
+    assert.ok((await A.snap('sven')).notifications.some(n => n.req === id && /Management decides/.test(n.text)));
+    const m = (await A.snap('maram')).requests.find(r => r.id === id);
+    assert.doesNotMatch(JSON.stringify(m), /AED [\d,]+\.\d\d/);
+    // management decides as before
+    const ap = await A.api('adnan', 'POST', `/api/requests/${id}/escalation`, { action: 'APPROVE', note: 'Approved — client known to us' });
+    assert.equal(ap.status, 200);
+    assert.equal(ap.json.item.status, 'MGMT_APPROVED');
+  });
+
   test('client-funding-check: Sven\'s check of a client Books covers passes on the Books route', async () => {
     const v = await A.pick('sven', C.bk5);
-    const r = await A.api('sven', 'POST', '/api/zoho/client-funding-check', { validationToken: v.token, clientName: v.clientName, company: C.bk5.name + ' FZCO', purpose: 'Visa', requestedAmount: 5000, paid: PAID });
+    const r = await A.api('sven', 'POST', '/api/zoho/client-funding-check', { validationToken: v.token, clientName: v.clientName, company: C.bk5.name + ' FZCO', purpose: 'Visa', requestedAmount: 5000, paid: PAID, booksVerification: true });
     assert.equal(r.status, 200, JSON.stringify(r.json).slice(0, 400));
     assert.equal(r.json.ok, true);
     assert.equal(r.json.reason, 'VALIDATION_PASSED');
     assert.equal(r.json.route, 'BOOKS_CROSSCHECK');
     assert.equal(r.json.booksAvailable, 5500);
     const v2 = await A.pick('sven', C.bk2);
-    const f = await A.api('sven', 'POST', '/api/zoho/client-funding-check', { validationToken: v2.token, clientName: v2.clientName, company: C.bk2.name + ' FZCO', purpose: 'Visa', requestedAmount: 5000, paid: PAID });
+    const f = await A.api('sven', 'POST', '/api/zoho/client-funding-check', { validationToken: v2.token, clientName: v2.clientName, company: C.bk2.name + ' FZCO', purpose: 'Visa', requestedAmount: 5000, paid: PAID, booksVerification: true });
     assert.equal(f.json.reason, 'FINANCIAL_CHECKS_FAILED');
     assert.match(f.json.notes, /Journals/);
   });
@@ -131,7 +186,7 @@ describe('fail closed: a Books failure during the cross-check never lets a reque
     const srv = await startServer({ dir: mkTmp('r2-booksfail'), fixture: fx });
     try {
       const T = {}; await signIn(srv, T, ['maram']); const A = client(srv, T);
-      const p = await A.precheck('maram', C.bk1);
+      const p = await A.booksCheck('sven', C.bk1);
       assert.equal(p.status, 422, JSON.stringify(p.json).slice(0, 300));
       assert.deepEqual(p.json.failed.map(f => f.key), ['CFD', 'COGS', 'JOURNALS']);
       for (const c of p.json.finance.checks.filter(x => !x.ok)) assert.equal(c.message, 'Zoho Books cross-verification could not be completed.');
@@ -144,41 +199,40 @@ describe('fail closed: a Books failure during the cross-check never lets a reque
 
 // ---------------------------------------------------------------------------------------------------------------
 describe('connection verification', () => {
-  test('either connection failing blocks precheck and funding check (503), notifies Sven once, recovers, caches success', async () => {
+  test('a failing connection is recorded and Sven is told once, but never blocks a request; recovery shows on the next check; success is cached', async () => {
     const dir = mkTmp('r2-conn'), fx = fixture(); fx.fail = { booksProbe: 503 };
     const srv = await startServer({ dir, fixture: fx });
     const write = f => fs.writeFileSync(path.join(dir, 'fixture.json'), JSON.stringify(f));
     try {
       const T = {}; await signIn(srv, T, ['maram']); const A = client(srv, T);
       const p = await A.precheck('maram', C.alpha);
-      assert.equal(p.status, 503);
-      assert.equal(p.json.reason, 'ZOHO_CONNECTION_FAILED');
-      assert.equal(p.json.error, 'Zoho Analytics and Zoho Books could not both be verified — the request is blocked and Sven has been notified.');
-      assert.equal(p.json.connections.analytics.ok, true);
-      assert.equal(p.json.connections.books.ok, false);
-      assert.deepEqual(findKeys(p.json, 'error').filter(k => k !== '$.error'), [], 'Operations get no error text');
-      assert.ok(!('escalate' in p.json));
-      const s = await A.precheck('sven', C.alpha);
-      assert.equal(s.status, 503);
-      assert.match(s.json.connections.books.error, /Zoho Books/, 'Sven sees why');
-      const fc = await A.api('sven', 'POST', '/api/zoho/client-funding-check', { validationToken: s.v.token, clientName: s.v.clientName, company: 'x', purpose: 'y', requestedAmount: 5000, paid: PAID });
-      assert.equal(fc.status, 503);
-      assert.equal(fc.json.reason, 'ZOHO_CONNECTION_FAILED');
-      // now Analytics fails too: still blocked, no second notification within 30 minutes
-      write({ ...fx, fail: { workspace: 500 } });
-      assert.equal((await A.precheck('maram', C.alpha)).status, 503);
+      assert.equal(p.status, 200, JSON.stringify(p.json).slice(0, 300));
+      assert.doesNotMatch(JSON.stringify(p.json), /Zoho Books contacts|HTTP|503/, 'Operations get no error text');
+      const s = await A.precheck('sven', C.bravo);
+      assert.equal(s.status, 200);
+      assert.equal(s.json.finance.route, 'ANALYTICS');
+      assert.equal(s.json.finance.connections.analytics, true);
+      assert.equal(s.json.finance.connections.books, false);
+      const fc = await A.api('sven', 'POST', '/api/zoho/client-funding-check', { validationToken: s.v.token, clientName: s.v.clientName, company: C.bravo.name + ' FZCO', purpose: 'Visa', requestedAmount: 5000, paid: PAID });
+      assert.equal(fc.status, 200, JSON.stringify(fc.json).slice(0, 300));
+      assert.equal(fc.json.ok, true);
+      // Analytics' workspace probe fails too: the balance table still answers, so a covered client still goes through
+      write({ ...fx, fail: { workspace: 500, booksProbe: 503 } });
+      const both = await A.precheck('sven', C.charlie);
+      assert.equal(both.status, 200, JSON.stringify(both.json).slice(0, 300));
+      assert.equal(both.json.finance.connections.analytics, false);
       const notes = (await A.snap('sven')).notifications.filter(n => /^Zoho connection check failed/.test(n.text));
       assert.equal(notes.length, 1, 'one notification per 30 minutes');
-      assert.equal(notes[0].text, 'Zoho connection check failed (Analytics: OK, Books: FAILED) — funding checks are blocked until it recovers.');
+      assert.equal(notes[0].text, 'Zoho connection check failed (Analytics: OK, Books: FAILED) — requests are not blocked: a balance Zoho Analytics cannot confirm comes to you and management for a decision.');
       assert.equal((await call(srv.base, null, 'GET', '/api/health')).json.connections.ok, false);
-      // a failure is never cached: the next check passes as soon as both answer
+      // a failure is never cached: the next check records the recovery
       write(fixture());
-      const ok = await A.precheck('maram', C.alpha);
+      const ok = await A.precheck('sven', C.delta);
       assert.equal(ok.status, 200, JSON.stringify(ok.json).slice(0, 300));
       assert.equal(ok.json.finance.connections.books, true);
       // a success is cached for 60 s
       write({ ...fixture(), fail: { workspace: 500, booksProbe: 500 } });
-      const cached = await A.precheck('sven', C.bravo);
+      const cached = await A.precheck('sven', C.echo);
       assert.equal(cached.status, 200);
       assert.equal(zlog(dir).filter(e => e.kind === 'workspace' && e.status === 500).length, 1, 'no new probe while the success is fresh');
     } finally { await srv.stop(); }
@@ -188,21 +242,29 @@ describe('connection verification', () => {
     const srv = await startServer({ dir, fixture: fx });
     try {
       const T = {}; await signIn(srv, T, ['maram']); const A = client(srv, T);
-      const ok = await A.precheck('maram', C.alpha);
+      const ok = await A.precheck('sven', C.alpha);
       assert.equal(ok.status, 200, JSON.stringify(ok.json).slice(0, 300));
       assert.equal(ok.json.finance.connections.analytics, true);
-      // the fallback read must itself succeed: a failing balance export still blocks
-      const srv2dir = mkTmp('r2-scope2'), srv2 = await startServer({ dir: srv2dir, fixture: { ...fixture(), fail: { workspace: 401, balances: 500 } } });
-      try {
-        const T2 = {}; await signIn(srv2, T2, ['maram']); const B = client(srv2, T2);
-        const bad = await B.precheck('maram', C.alpha);
-        assert.equal(bad.status, 503, JSON.stringify(bad.json).slice(0, 300));
-        assert.equal(bad.json.reason, 'ZOHO_CONNECTION_FAILED');
-        assert.equal(bad.json.connections.analytics.ok, false);
-      } finally { await srv2.stop(); }
     } finally { await srv.stop(); }
   });
-  test('an OAuth failure fails both connections (and nothing is decided)', async () => {
+  test('Zoho Analytics unreadable → the balance cannot be confirmed: nothing is approved, Operations may escalate, Zoho Books is not run', async () => {
+    const dir = mkTmp('r2-za-down'), srv = await startServer({ dir, fixture: { ...fixture(), fail: { workspace: 401, balances: 500 } } });
+    try {
+      const T = {}; await signIn(srv, T, ['maram']); const A = client(srv, T);
+      const ops = await A.precheck('maram', C.alpha);
+      assert.equal(ops.status, 422, JSON.stringify(ops.json).slice(0, 300));
+      assert.equal(ops.json.error, 'Rejected');
+      assert.equal(ops.json.escalate.allowed, true);
+      const bad = await A.precheck('sven', C.bravo);
+      assert.equal(bad.status, 422, JSON.stringify(bad.json).slice(0, 300));
+      assert.equal(bad.json.finance.route, 'BOOKS_ON_REQUEST');
+      assert.equal(bad.json.finance.connections.analytics, false);
+      assert.equal(bad.json.finance.checks[0].code, 'CFD_UNAVAILABLE');
+      assert.match(bad.json.error, /could not be read from Zoho Analytics/);
+      for (const k of ['transactions', 'creditnotes', 'journals']) assert.ok(!zlog(dir).some(e => e.kind === k), k);
+    } finally { await srv.stop(); }
+  });
+  test('an OAuth failure fails both connections and nothing is decided (the client cannot be read)', async () => {
     const fx = fixture(); fx.fail = { oauth: 1 };
     const srv = await startServer({ dir: mkTmp('r2-oauth'), fixture: fx });
     try {
@@ -212,12 +274,11 @@ describe('connection verification', () => {
       const body = b64(JSON.stringify({ n: C.alpha.name, id: C.alpha.id, m: 'Zoho Books', exp: Date.now() + 60_000 }));
       const token = body + '.' + b64(crypto.createHmac('sha256', SECRET).update(body).digest());
       const r = await call(srv.base, sv, 'POST', '/api/zoho/precheck', { validationToken: token, clientName: C.alpha.name, amount: 5000, paid: PAID });
-      assert.equal(r.status, 503, JSON.stringify(r.json));
-      assert.equal(r.json.reason, 'ZOHO_CONNECTION_FAILED');
-      assert.equal(r.json.connections.analytics.ok, false);
-      assert.equal(r.json.connections.books.ok, false);
+      assert.equal(r.status, 401, JSON.stringify(r.json));
+      assert.equal(r.json.reason, 'ZOHO_UNAVAILABLE');
+      assert.ok(!r.json.submitToken);
       const n = (await call(srv.base, sv, 'GET', '/api/sync/snapshot')).json.notifications.filter(x => /^Zoho connection check failed/.test(x.text));
-      assert.deepEqual(n.map(x => x.text), ['Zoho connection check failed (Analytics: FAILED, Books: FAILED) — funding checks are blocked until it recovers.']);
+      assert.deepEqual(n.map(x => x.text), ['Zoho connection check failed (Analytics: FAILED, Books: FAILED) — requests are not blocked: a balance Zoho Analytics cannot confirm comes to you and management for a decision.']);
     } finally { await srv.stop(); }
   });
 });
@@ -477,7 +538,8 @@ describe('Zoho Analytics resilience', () => {
 
 // ---------------------------------------------------------------------------------------------------------------
 describe('review round 2 regressions', () => {
-  const pre = async (srv, who, c) => { const T = { [who]: await login(srv.base, who, who === 'sven' ? MASTER_PW : TEAM_PW) }; return client(srv, T).precheck(who, c); };
+  // Sven asks for the Zoho Books verification (it only runs when the Analytics balance does not cover the request)
+  const pre = async (srv, who, c) => { const T = { [who]: await login(srv.base, who, who === 'sven' ? MASTER_PW : TEAM_PW) }; return client(srv, T).booksCheck(who, c); };
   test('a Books entry booked late but dated weeks back is read (Books from the 45-day floor, not the watermark)', async () => {
     const fx = fixture();
     const d = new Date(Date.now() - 20 * 86400e3).toLocaleDateString('en-CA', { timeZone: 'Asia/Dubai' });

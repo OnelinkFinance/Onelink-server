@@ -133,8 +133,26 @@ export function evaluateFinance({ amount, paid, books, rec, split, open, pay, co
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// The decision on Zoho Analytics alone. When the client's CFD balance covers the request, that is the whole check: the
+// request goes on to Sven (Pending Sven Approval) and nothing about what the client paid or what was paid on its behalf
+// is tested. When it does not — no record, zero, insufficient, or Analytics could not be read — no Zoho Books test runs
+// either: Sven or management decide whether the Zoho Books verification is required (route BOOKS_ON_REQUEST).
+// f: the result of evaluateFinance. analyticsError: why the Analytics balance could not be read ('' when it was).
+export const BOOKS_ON_REQUEST = 'Zoho Books verification has not run — Sven or management decide whether it is required.';
+export const OPS_UNCONFIRMED = 'The client balance could not be confirmed in Zoho Analytics. You may escalate to Management.';
+export function analyticsDecision(f, analyticsError = '') {
+  let cfd = f.checks.find(c => c.key === 'CFD');
+  if (analyticsError) cfd = { ...cfd, ok: false, code: 'CFD_UNAVAILABLE', message: 'The client balance could not be read from Zoho Analytics.', detail: 'Zoho Analytics: ' + analyticsError,
+    items: [item('Client record in the CFD ledger', false, 'Zoho Analytics could not be read')] };
+  if (cfd.ok) return { ok: true, amount: f.amount, checks: [cfd], failed: [], opsError: '', staffError: '' };
+  return { ok: false, amount: f.amount, checks: [cfd], failed: [{ key: 'CFD', label: cfd.label, message: cfd.message }],
+    opsError: analyticsError ? OPS_UNCONFIRMED : OPS_INSUFFICIENT, staffError: `${cfd.label}: ${cfd.message} ${cfd.detail} ${BOOKS_ON_REQUEST}` };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // Zoho Books cross-verification. Runs only when the Zoho Analytics CFD check did not cover the request (no record,
-// zero, or insufficient): the live Zoho Books ledger may hold movements Analytics has not synced yet. Five checks,
+// zero, insufficient, or unreadable) AND Sven or management asked for it: the live Zoho Books ledger may hold movements
+// Analytics has not synced yet. Five checks,
 // all of which must pass. Missing or unreadable Books data never passes a check and never counts as money.
 export const CROSS_CHECKS = { CFD: CHECKS.CFD, COGS: CHECKS.COGS, NOTES: 'Credit notes / debit notes', JOURNALS: 'Journals', INVOICES: CHECKS.INVOICES };
 export const BOOKS_FAIL = 'Zoho Books cross-verification could not be completed';
