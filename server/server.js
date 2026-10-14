@@ -481,6 +481,9 @@ const STALE_OK = 15 * 60_000;
 // The data for a check: fresh, or up to STALE_OK old while a refresh runs behind it, or — on the first load — awaited.
 const current = () => fresh() ? Promise.resolve(data) : data && Date.now() - dataAt <= STALE_OK ? (refresh().catch(() => {}), Promise.resolve(data)) : refresh();
 function prefetch() { if (!fresh()) refresh().catch(() => {}); }
+// The ledger tables as they are now, never waiting: the last read (a refresh starts behind it when it is not fresh), or
+// null before the first read. A check on the Zoho Analytics balance alone never waits for these exports.
+const cached = () => { prefetch(); return data; };
 const invalidate = () => { dataAt = 0; invalidateBalances(); };
 
 const dubai = d => d.toLocaleString('en-GB', { timeZone: 'Asia/Dubai', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).replace(',', ' ·');
@@ -593,8 +596,8 @@ async function crossCheck({ raw, contact, d, rec, amount, paid, committed }) {
 async function run({ contactId, amount, paid, books: contactIn, committed, connections, withBooks = false }) {
   const raw = key(contactId);
   if (!/^\d{1,30}$/.test(raw)) throw Object.assign(new Error('Zoho Books contact id required'), { code: 'BOOKS' });
-  // The Analytics ledger tables are needed only by the Books cross-verification: a failed read never stops step 1.
-  const [contact, dR] = await Promise.all([contactIn ? Promise.resolve(contactIn) : booksGetContact(raw), current().then(v => ({ v }), e => ({ e }))]);
+  // The Analytics ledger tables (slow exports) are needed only by the Books cross-verification: only it waits for them.
+  const [contact, dR] = await Promise.all([contactIn ? Promise.resolve(contactIn) : booksGetContact(raw), withBooks ? current().then(v => ({ v }), e => ({ e })) : { v: cached() }]);
   const d = dR.v || null, k = canonical(raw);
   let rec = null, analyticsError = '';
   try { rec = await analyticsBalance(k); }
@@ -607,7 +610,7 @@ async function run({ contactId, amount, paid, books: contactIn, committed, conne
   let out;
   if (f.ok) out = { ...f, route: 'ANALYTICS', source: 'Zoho Analytics (CFD Customer Balances)' };
   else if (withBooks) {
-    if (!d) throw dR.e; // the cross-check sets Books against the Analytics ledger: without it nothing is decided
+    if (!d) throw dR.e || Object.assign(new Error('Zoho Analytics ledger not read yet'), { code: 'ANALYTICS' }); // the cross-check sets Books against the Analytics ledger: without it nothing is decided
     out = { ...(await crossCheck({ raw, contact, d, rec, amount, paid, committed })), route: 'BOOKS_CROSSCHECK',
       source: 'Zoho Analytics (CFD) → Zoho Books live cross-verification (CFD, COGS, credit / debit notes, journals, payments)' };
   } else out = { ...f, route: 'BOOKS_ON_REQUEST', source: 'Zoho Analytics (CFD Customer Balances) · Zoho Books verification on request' };
@@ -621,9 +624,9 @@ const record = f => f && ({ id: f.id, at: f.at, atText: f.atText, amount: f.amou
 // Everything debited to the client's CFD and COGS accounts so far (the card spend booked against its funds).
 const totalDebits = (d, contactId) => { const e = d.split.get(canonical(contactId)); return e ? Math.round((e.cfd.debits + e.cogs.debits) * 100) / 100 : 0; };
 async function ledgerDebits(contactId) { return totalDebits(await current(), contactId); }
-// For the hold on approved / credited money only: when the ledger cannot be read, 0 — every credited request is then
-// held in full (the safe side), and the check goes on instead of failing.
-const ledgerDebitsOr0 = contactId => ledgerDebits(contactId).catch(e => { console.error('Ledger debits not read for', contactId, '—', e.message, '(credited requests held in full)'); return 0; });
+// For the hold on approved / credited money only, never waiting on the slow ledger export: the last read, or 0 before
+// the first one — an older or missing figure only holds more of the credited money (the safe side).
+const ledgerDebitsOr0 = async contactId => { const d = cached(); return d ? totalDebits(d, contactId) : 0; };
 // The figure as of now if the cached data is fresh — the baseline when a card is topped up. null = not fresh.
 const ledgerDebitsNow = contactId => fresh() ? totalDebits(data, contactId) : null;
 
