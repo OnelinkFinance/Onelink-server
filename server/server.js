@@ -7,7 +7,8 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { patchPage } from './client-workflow.js';
-import { evaluateFinance, evaluateBooksCrossCheck, financeForOps, analyticsDecision, BOOKS_ON_REQUEST } from './finance-rules.js';
+import { evaluateFinance, evaluateBooksCrossCheck, financeForOps, analyticsDecision, BOOKS_ON_REQUEST, parseDay } from './finance-rules.js';
+import { auditClientAccounts, reviewChartOfAccounts, ZERO_PATTERN, entityLabel } from './ledger-audit.js';
 import { ledgerHash, LEDGER_KEYS } from './ledger-hash.js';
 
 // ---- cloud.js ----
@@ -325,6 +326,14 @@ async function analyticsBalance(contactId) {
   }
   return balances.get(String(contactId)) || null;
 }
+// The whole balance table (the ledger audit), on the same terms: fresh, or the last good one while a refresh runs.
+async function balanceTable() {
+  if (!balancesFresh()) {
+    if (balances && Date.now() - balancesAt <= 15 * 60_000) refreshBalances().catch(() => {});
+    else await refreshBalances();
+  }
+  return balances;
+}
 
 // Connection verification before every balance check: both APIs must answer with the current OAuth token.
 // Zoho Analytics and Zoho Books cannot authenticate each other — this proves each one is reachable and authorised now.
@@ -365,7 +374,7 @@ function verifyConnections() {
 // The last verification without error text (public health endpoint).
 const lastConnections = () => lastConn && { ok: lastConn.ok, at: lastConn.at, atText: lastConn.atText, analytics: { ok: lastConn.analytics.ok, ms: lastConn.analytics.ms }, books: { ok: lastConn.books.ok, ms: lastConn.books.ms } };
 
-return { cacheMs: CACHE_MS, zohoReady, accessToken, exact, norm, num, books, verifyConnections, lastConnections, analyticsSql, booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, prefetchBalances, balancesFresh, invalidateBalances, col, toRecord, config: () => ({ booksOrg: booksOrg() + ' (ELITE ONELINK CORPORATE SERVICES L.L.C S.O.C)', analyticsOrg: zaOrg(), workspace: zaWs(), table: zaTable() }) };
+return { cacheMs: CACHE_MS, zohoReady, accessToken, exact, norm, num, books, verifyConnections, lastConnections, analyticsSql, booksSearchClients, booksGetContact, booksFindContactExact, analyticsBalance, balanceTable, prefetchBalances, balancesFresh, invalidateBalances, col, toRecord, config: () => ({ booksOrg: booksOrg() + ' (ELITE ONELINK CORPORATE SERVICES L.L.C S.O.C)', analyticsOrg: zaOrg(), workspace: zaWs(), table: zaTable() }) };
 })();
 
 // ---- finance.js ----
@@ -630,7 +639,133 @@ const ledgerDebitsOr0 = async contactId => { const d = cached(); return d ? tota
 // The figure as of now if the cached data is fresh — the baseline when a card is topped up. null = not fresh.
 const ledgerDebitsNow = contactId => fresh() ? totalDebits(data, contactId) : null;
 
-return { run, record, prefetch, invalidate, forOps: financeForOps, fresh, canonical, ledgerDebits, ledgerDebitsOr0, ledgerDebitsNow };
+return { run, record, prefetch, invalidate, forOps: financeForOps, fresh, canonical, ledgerDebits, ledgerDebitsOr0, ledgerDebitsNow, sqlCustomer: CUST, sqlAlias: ALIAS, accountIds: { cfd: CFD_ACCOUNT, cogs: COGS_ACCOUNT } };
+})();
+
+// ---- ledger-audit data ----
+const M_audit = await (async () => {
+const { analyticsSql, balanceTable, num } = M_zoho;
+const { sqlCustomer: CUST, sqlAlias: ALIAS, accountIds: ACC } = M_finance;
+// Data for the two ledger audits (ledger-audit.js decides): the client account accuracy audit and the chart of accounts
+// review. Read-only — every source is one SELECT export from the Elite Onelink Analytics workspace, and nothing is
+// written to Zoho. The exports run only when Sven or management open or refresh an audit (never in the background),
+// at most two at a time, so the live funding checks keep their share of the Analytics plan's rate limit. A result is
+// kept AUDIT_TTL and shared by everyone who opens it; a refresh is honoured once it is MIN_REFRESH old.
+const AUDIT_TTL = Math.max(60, Number(process.env.LEDGER_AUDIT_SECONDS) || 900) * 1000, MIN_REFRESH = 120_000, MAX_LINES = 500;
+const key = v => { const k = String(v ?? '').trim().replace(/\.0+$/, ''); return /^(null|none|undefined)$/i.test(k) ? '' : k; };
+const digits = s => /^\d{1,30}$/.test(s);
+const ids = list => list.map(key).filter(digits).map(x => `'${x}'`).join(', ');
+const IP = `IP AS (SELECT "Invoice ID" AS Invoice_ID, SUM("Amount (BCY)") AS Paid FROM "Invoice Payments" GROUP BY "Invoice ID")`;
+const CN = `CN AS (SELECT "Invoice ID" AS Invoice_ID, SUM("Amount (BCY)") AS Credited FROM "Creditnotes Invoice" GROUP BY "Invoice ID")`;
+const ACCT = (t, c) => `LEFT JOIN "Accounts" ${t} ON ${c} = ${t}."Account ID"`;
+const LINE = t => `TO_STRING(${t}."Account ID") AS "Account", ${t}."Entity Type" AS "Entity Type", TO_STRING(${t}."Entity ID") AS "Entity ID", TO_STRING(${t}."Transaction ID") AS "Transaction ID", ${t}."Reference Number" AS "Reference", ${t}."Transaction Date" AS "Date", ROUND(COALESCE(${t}."Debit Amount", 0), 2) AS "Debit", ROUND(COALESCE(${t}."Credit Amount", 0), 2) AS "Credit"`;
+const SQL = {
+  customers: `SELECT ${CUST('C."Customer ID"')} AS "Customer", C."Customer Name" AS "Name" FROM "Customers" C ${ALIAS('C."Customer ID"')}`,
+  creditnotes: `SELECT ${CUST('CN."Customer ID"')} AS "Customer", TO_STRING(CN."CreditNotes ID") AS "ID", CN."Credit Note Number" AS "Number", CN."Credit Note Status" AS "Status", CN."Credit Note Date" AS "Date", ROUND(CN."Total (BCY)", 2) AS "Total", ROUND(CN."Balance (BCY)", 2) AS "Balance" FROM "Credit Notes" CN ${ALIAS('CN."Customer ID"')}`,
+  cnapply: `SELECT TO_STRING(CI."CreditNotes ID") AS "Credit Note ID", ${CUST('I."Customer ID"')} AS "Invoice Customer", I."Invoice Number" AS "Invoice", ROUND(CI."Amount (BCY)", 2) AS "Amount", CI."Date" AS "Date" FROM "Creditnotes Invoice" CI LEFT JOIN "Invoices" I ON CI."Invoice ID" = I."Invoice ID" ${ALIAS('I."Customer ID"')}`,
+  payments: `WITH PA AS (SELECT "Payment ID" AS Payment_ID, SUM("Amount (BCY)") AS Applied FROM "Invoice Payments" GROUP BY "Payment ID") SELECT ${CUST('P."Customer ID"')} AS "Customer", TO_STRING(P."Payment ID") AS "ID", P."Payment Number" AS "Number", P."Payment Date" AS "Date", ROUND(P."Amount (BCY)", 2) AS "Amount", ROUND(COALESCE(P."Unused Amount (BCY)", 0), 2) AS "Unused", ROUND(COALESCE(P."Refund Amount (BCY)", 0), 2) AS "Refunded", ROUND(COALESCE(PA.Applied, 0), 2) AS "Applied", TO_STRING(P."Account ID") AS "Deposit Account", AC."Account Name" AS "Account Name", AC."Account Type" AS "Account Type" FROM "Customer Payments" P ${ALIAS('P."Customer ID"')} LEFT JOIN PA ON P."Payment ID" = PA.Payment_ID ${ACCT('AC', 'P."Account ID"')}`,
+  refunds: `SELECT ${CUST('T."Customer ID"')} AS "Customer", ${LINE('T')}, AC."Account Name" AS "Account Name", AC."Account Type" AS "Account Type" FROM "Accrual Transactions" T ${ALIAS('T."Customer ID"')} ${ACCT('AC', 'T."Account ID"')} WHERE T."Entity Type" IN ('creditnote_refund', 'payment_refund')`,
+  invoices: `WITH ${IP}, ${CN} SELECT ${CUST('I."Customer ID"')} AS "Customer", TO_STRING(I."Invoice ID") AS "ID", I."Invoice Number" AS "Number", I."Invoice Status" AS "Status", I."Invoice Date" AS "Date", I."Due Date" AS "Due", ROUND(I."Total (BCY)", 2) AS "Total", ROUND(I."Balance (BCY)", 2) AS "Balance", ROUND(COALESCE(I."Write Off Amount (BCY)", 0), 2) AS "Write Off", ROUND(COALESCE(IP.Paid, 0), 2) AS "Paid", ROUND(COALESCE(CN.Credited, 0), 2) AS "Credited" FROM "Invoices" I ${ALIAS('I."Customer ID"')} LEFT JOIN IP ON I."Invoice ID" = IP.Invoice_ID LEFT JOIN CN ON I."Invoice ID" = CN.Invoice_ID WHERE I."Invoice Status" NOT IN ('Draft', 'Void')`,
+  // Every CFD and COGS line, with the client it resolves to ('' when none) and whether the client is tagged in Books.
+  ledger: `SELECT ${CUST('R."Resolved Customer ID"')} AS "Customer", R."Resolved Customer Name" AS "Customer Name", ${LINE('R')}, R."Reference No." AS "Reference No", R."Books Customer Tag Status" AS "Tag Status" FROM "CFD Customer Resolved" R ${ALIAS('R."Resolved Customer ID"')}`,
+  // The other side of every disbursement (a CFD or COGS debit): the bank, wallet or account the money left from.
+  counter: `SELECT TO_STRING(T."Transaction ID") AS "Transaction ID", TO_STRING(T."Account ID") AS "Account", AC."Account Name" AS "Account Name", AC."Account Type" AS "Account Type", ROUND(SUM(COALESCE(T."Debit Amount", 0)), 2) AS "Debit", ROUND(SUM(COALESCE(T."Credit Amount", 0)), 2) AS "Credit" FROM "Accrual Transactions" T INNER JOIN (SELECT DISTINCT "Transaction ID" AS DISB_TXN FROM "Accrual Transactions" WHERE TO_STRING("Account ID") IN ('${ACC.cfd}', '${ACC.cogs}') AND "Debit Amount" > 0) X ON T."Transaction ID" = X.DISB_TXN ${ACCT('AC', 'T."Account ID"')} WHERE TO_STRING(T."Account ID") NOT IN ('${ACC.cfd}', '${ACC.cogs}') GROUP BY TO_STRING(T."Transaction ID"), TO_STRING(T."Account ID"), AC."Account Name", AC."Account Type"`,
+  // Chart of accounts: every account, its lines per entity type (an account without lines has one row with 0 lines).
+  coa: `SELECT TO_STRING(AC."Account ID") AS "Account", AC."Account Name" AS "Name", AC."Account Code" AS "Code", AC."Account Type" AS "Type", AC."Account Base Type" AS "Base", AC."Active" AS "Active", T."Entity Type" AS "Entity Type", ROUND(SUM(COALESCE(T."Debit Amount", 0)), 2) AS "Debits", ROUND(SUM(COALESCE(T."Credit Amount", 0)), 2) AS "Credits", COUNT(T."Account ID") AS "Lines", SUM(CASE WHEN T."Account ID" IS NOT NULL AND T."Customer ID" IS NULL THEN 1 ELSE 0 END) AS "Untagged Lines" FROM "Accounts" AC LEFT JOIN "Accrual Transactions" T ON AC."Account ID" = T."Account ID" GROUP BY TO_STRING(AC."Account ID"), AC."Account Name", AC."Account Code", AC."Account Type", AC."Account Base Type", AC."Active", T."Entity Type"`,
+  // Every line of the named accounts (the zero-balance accounts that are not at zero, or one account opened in the review).
+  lines: list => `SELECT ${CUST('T."Customer ID"')} AS "Customer", ${LINE('T')}, T."Description" AS "Description" FROM "Accrual Transactions" T ${ALIAS('T."Customer ID"')} WHERE TO_STRING(T."Account ID") IN (${ids(list)})`
+};
+
+let active = 0;
+const queue = [];
+const run2 = fn => new Promise((res, rej) => {
+  const go = () => { active++; fn().then(res, rej).finally(() => { active--; const n = queue.shift(); if (n) n(); }); };
+  active < 2 ? go() : queue.push(go);
+});
+// One source: shared by concurrent callers, kept AUDIT_TTL; a failure is never kept.
+const cache = new Map(); // name -> { at, p }
+function source(name, sql, force) {
+  const e = cache.get(name);
+  if (e && (e.pending || (Date.now() - e.at < AUDIT_TTL && !(force && Date.now() - e.at >= MIN_REFRESH)))) return e.p;
+  const ent = { at: Date.now(), pending: true, p: null };
+  ent.p = run2(() => analyticsSql(sql, 'ledger audit ' + name));
+  ent.p.then(() => { ent.pending = false; ent.at = Date.now(); }, () => { if (cache.get(name) === ent) cache.delete(name); });
+  cache.set(name, ent);
+  return ent.p;
+}
+const lineOf = r => ({ customer: key(r.Customer), account: key(r.Account), type: r['Entity Type'] || '', entityId: key(r['Entity ID']), txnId: key(r['Transaction ID']),
+  reference: r.Reference || r['Reference No'] || '', date: r.Date || '', debit: num(r.Debit), credit: num(r.Credit), description: r.Description || '' });
+const balanceRows = async () => [...(await balanceTable()).entries()].map(([id, b]) => ({ clientId: id, clientName: b.clientName, available: b.available, allocated: b.allocated, used: b.used, status: b.status }));
+const ledgerRows = force => source('ledger', SQL.ledger, force).then(rows => rows.map(r => ({ ...lineOf(r), customerName: r['Customer Name'] || '', tagged: r['Tag Status'] === 'Customer Tagged' })));
+const customerRows = force => source('customers', SQL.customers, force).then(rows => rows.map(r => ({ id: key(r.Customer), name: r.Name || '' })).filter(c => c.id));
+
+const dubai = d => d.toLocaleString('en-GB', { timeZone: 'Asia/Dubai', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).replace(',', ' ·');
+const results = new Map(); // 'clients' | 'accounts' -> { at, p }
+function cachedResult(name, force, build) {
+  const e = results.get(name);
+  if (e && (e.pending || (Date.now() - e.at < AUDIT_TTL && !(force && Date.now() - e.at >= MIN_REFRESH)))) return e.p;
+  const ent = { at: Date.now(), pending: true, p: null };
+  ent.p = build().then(v => { const t = new Date(); return { at: t.toISOString(), atText: dubai(t), ...v }; });
+  ent.p.then(() => { ent.pending = false; ent.at = Date.now(); }, () => { if (results.get(name) === ent) results.delete(name); });
+  results.set(name, ent);
+  return ent.p;
+}
+
+// Module 1: every client.
+const clients = (force = false) => cachedResult('clients', force, async () => {
+  const [customers, creditNotes, cnApplications, payments, refunds, invoices, ledger, counter, balances] = await Promise.all([
+    customerRows(force),
+    source('creditnotes', SQL.creditnotes, force).then(rows => rows.map(r => ({ customer: key(r.Customer), id: key(r.ID), number: r.Number || '', status: r.Status || '', date: r.Date || '', total: num(r.Total), balance: num(r.Balance) }))),
+    source('cnapply', SQL.cnapply, force).then(rows => rows.map(r => ({ creditNoteId: key(r['Credit Note ID']), invoiceCustomer: key(r['Invoice Customer']), invoice: r.Invoice || '', amount: num(r.Amount), date: r.Date || '' }))),
+    source('payments', SQL.payments, force).then(rows => rows.map(r => ({ customer: key(r.Customer), id: key(r.ID), number: r.Number || '', date: r.Date || '', amount: num(r.Amount), unused: num(r.Unused), refunded: num(r.Refunded), applied: num(r.Applied),
+      account: key(r['Deposit Account']), accountName: r['Account Name'] || '', accountType: r['Account Type'] || '' }))),
+    source('refunds', SQL.refunds, force).then(rows => rows.map(r => ({ ...lineOf(r), accountName: r['Account Name'] || '', accountType: r['Account Type'] || '' }))),
+    source('invoices', SQL.invoices, force).then(rows => rows.map(r => ({ customer: key(r.Customer), id: key(r.ID), number: r.Number || '', status: r.Status || '', date: r.Date || '', due: r.Due || '',
+      total: num(r.Total), balance: num(r.Balance), writeOff: num(r['Write Off']), paid: num(r.Paid), credited: num(r.Credited) }))),
+    ledgerRows(force),
+    source('counter', SQL.counter, force).then(rows => rows.map(r => ({ txnId: key(r['Transaction ID']), account: key(r.Account), accountName: r['Account Name'] || '', accountType: r['Account Type'] || '', debit: num(r.Debit), credit: num(r.Credit) }))),
+    balanceRows()
+  ]);
+  return auditClientAccounts({ accounts: ACC, customers, balances, creditNotes, cnApplications, payments, refunds, invoices, ledger, counter });
+});
+
+// Module 2: every account. Zero-balance accounts: the configured ids (LEDGER_ZERO_ACCOUNT_IDS), the Payment Clearing
+// type and the names in LEDGER_ZERO_NAME_PATTERN (default ZERO_PATTERN); LEDGER_NOT_ZERO_ACCOUNT_IDS takes accounts out.
+const envIds = n => String(process.env[n] || '').split(',').map(key).filter(digits);
+const zeroPattern = () => { try { return process.env.LEDGER_ZERO_NAME_PATTERN ? new RegExp(process.env.LEDGER_ZERO_NAME_PATTERN, 'i') : ZERO_PATTERN; } catch { return ZERO_PATTERN; } };
+const accounts = (force = false) => cachedResult('accounts', force, async () => {
+  const config = { cfd: ACC.cfd, cogs: ACC.cogs, zeroIds: envIds('LEDGER_ZERO_ACCOUNT_IDS'), notZeroIds: envIds('LEDGER_NOT_ZERO_ACCOUNT_IDS'), zeroPattern: zeroPattern() };
+  const [coa, ledger, balances, customers] = await Promise.all([source('coa', SQL.coa, force), ledgerRows(force), balanceRows(), customerRows(force)]);
+  const A = new Map(), movements = [];
+  for (const r of coa) {
+    const id = key(r.Account);
+    if (!digits(id)) continue;
+    if (!A.has(id)) A.set(id, { id, name: r.Name || id, code: r.Code || '', type: r.Type || '', base: r.Base || '', active: r.Active || '' });
+    if (num(r.Lines) > 0) movements.push({ account: id, type: r['Entity Type'] || '', debit: num(r.Debits), credit: num(r.Credits), lines: num(r.Lines), untagged: num(r['Untagged Lines']) });
+  }
+  // A first pass finds the zero-balance accounts that are not at zero; only their lines are read.
+  const first = reviewChartOfAccounts({ accounts: [...A.values()], movements, config });
+  const open = first.accounts.filter(x => x.zeroRequired && Math.abs(x.balance) > 0.005).map(x => x.id);
+  const lines = {};
+  if (open.length) for (const l of (await source('zerolines:' + open.join(','), SQL.lines(open), force)).map(lineOf)) (lines[l.account] || (lines[l.account] = [])).push(l);
+  const names = {}, funded = {};
+  for (const c of customers) if (!names[c.id]) names[c.id] = c.name;
+  for (const b of balances) { names[b.clientId] = b.clientName || names[b.clientId]; if (num(b.allocated) > 0) funded[b.clientId] = num(b.allocated); }
+  return reviewChartOfAccounts({ accounts: [...A.values()], movements, lines, cogsLines: ledger.filter(l => l.account === ACC.cogs), funded, names, config });
+});
+
+// One account's lines, newest first, with the client's name and the entry type in words (the review's drill-down).
+async function accountLines(id) {
+  if (!digits(key(id))) throw Object.assign(new Error('Unknown account'), { code: 'INPUT' });
+  const [rows, customers, balances] = await Promise.all([source('lines:' + key(id), SQL.lines([id])).then(r => r.map(lineOf)), customerRows(false), balanceRows()]);
+  const names = new Map(balances.map(b => [b.clientId, b.clientName]));
+  for (const c of customers) if (!names.has(c.id)) names.set(c.id, c.name);
+  const day = l => parseDay(l.date) || '';
+  rows.sort((x, y) => day(y).localeCompare(day(x)));
+  return { total: rows.length, lines: rows.slice(0, MAX_LINES).map(l => ({ ...l, label: entityLabel(l.type), client: l.customer ? names.get(l.customer) || 'Client ' + l.customer : '' })) };
+}
+
+return { clients, accounts, accountLines };
 })();
 
 // ---- rules.js ----
@@ -2174,6 +2309,36 @@ const NOT_FOUND_MSG = MSG.NOT_FOUND;
 const REVIEWER = 'Sven';
 const zohoErr = (s, e) => s.status(e.code === 'ENV' ? 500 : e.code === 'AUTH' ? 401 : e.code === 'RATE' ? 429 : 502)
   .json({ ok: false, reason: 'ZOHO_UNAVAILABLE', code: e.code, error: e.message });
+
+// ---- Ledger audit (the Customer Fund ledger dashboard): Sven and management only, read-only ----
+// Module 1 — client account accuracy audit; Module 2 — chart of accounts balance review. ?refresh=1 re-reads Zoho
+// Analytics (honoured once the last read is two minutes old). Opening an audit is in the security log (once per
+// person and audit every 10 minutes); anyone else is refused and that is logged too.
+{
+  const auditorOnly = (q, s, next) => {
+    if (auth.isMaster(q.user) || auth.isManagement(q.user)) return next();
+    store.audit(q.user, 'ACCESS_DENIED', 'Tried to open the ledger audit');
+    s.status(403).json({ ok: false, error: 'Only Sven and management can open the ledger audit.' });
+  };
+  const seen = new Map();
+  const logOpen = (u, what) => {
+    const k = u.key + ':' + what;
+    if (Date.now() - (seen.get(k) || 0) < 10 * 60_000) return;
+    seen.set(k, Date.now());
+    store.audit(u, 'LEDGER_AUDIT_VIEWED', what === 'clients' ? 'Opened the client account audit' : 'Opened the chart of accounts review');
+  };
+  const answer = (what, load) => async (q, s) => {
+    try { const r = await load(q.query.refresh === '1'); logOpen(q.user, what); s.set('Cache-Control', 'no-store').json({ ok: true, ...r }); }
+    catch (e) { console.error('Ledger audit (' + what + ') not built:', e.message); zohoErr(s, e); }
+  };
+  app.use('/api/ledger-audit', auth.requireAuth, auditorOnly);
+  app.get('/api/ledger-audit/clients', answer('clients', M_audit.clients));
+  app.get('/api/ledger-audit/accounts', answer('accounts', M_audit.accounts));
+  app.get('/api/ledger-audit/accounts/:id/lines', async (q, s) => {
+    try { s.set('Cache-Control', 'no-store').json({ ok: true, account: q.params.id, ...(await M_audit.accountLines(q.params.id)) }); }
+    catch (e) { if (e.code === 'INPUT') return s.status(400).json({ ok: false, error: e.message }); zohoErr(s, e); }
+  });
+}
 
 async function notifySven(text, extra) {
   if (!E.SVEN_WEBHOOK_URL) return false;

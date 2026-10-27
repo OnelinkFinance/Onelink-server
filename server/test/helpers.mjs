@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO = path.resolve(HERE, '..');
-// The server under test: the repository itself, or a copy named in ONELINK_SANDBOX (server.js and finance-rules.js are
+// The server under test: the repository itself, or a copy named in ONELINK_SANDBOX (server.js and the modules it imports are
 // refreshed into the copy before the first run).
 export const SANDBOX = process.env.ONELINK_SANDBOX || REPO;
 export const STUB = path.join(HERE, 'zoho-stub.mjs');
@@ -20,7 +20,7 @@ export const OPS_INSUFFICIENT = 'Client does not have sufficient balance. You ma
 let synced = false;
 export function syncSandbox() {
   if (synced || path.resolve(SANDBOX) === REPO) return;
-  for (const f of ['server.js', 'finance-rules.js']) fs.copyFileSync(path.join(REPO, f), path.join(SANDBOX, f));
+  for (const f of ['server.js', 'finance-rules.js', 'ledger-audit.js', 'ledger-hash.js', 'client-workflow.js']) fs.copyFileSync(path.join(REPO, f), path.join(SANDBOX, f));
   synced = true;
 }
 

@@ -1724,6 +1724,431 @@ const MGMT_PAGE = `    <sc-if value="{{ r_mgmt }}" hint-placeholder-val="{{ fals
 
 `;
 
+// ─── Round 3: Ledger Audit (Sven and management) ───
+//   Module 1 — client account accuracy audit; Module 2 — chart of accounts balance review (ledger-audit.js decides on
+//   the server). Read-only: the page shows the server's findings and exports them as CSV; every correction is made in
+//   Zoho Books. The audit is read when the page is opened (and on Refresh), never in the background.
+const AUDIT_JS = `  /* ═══ LEDGER AUDIT · Sven and management · read-only ═══════════════ */
+  auditOf(s) {
+    const a = s.ledgerAuditUi; // its own key: state.audit is the security log
+    return a && a.owner === s.userKey ? a : { owner: s.userKey, tab: 'clients', q: '', status: 'all', area: 'all', open: {}, limit: 40, clients: {}, accounts: {}, lines: {} };
+  }
+  auditState() { return this.auditOf(this.state); }
+  setAudit(patch) {
+    this.setState(s => { const a = this.auditOf(s); return { ledgerAuditUi: Object.assign({}, a, typeof patch === 'function' ? patch(a) : patch) }; });
+  }
+  auditTab(t) {
+    this.setAudit({ tab: t, q: '', status: 'all', area: 'all', limit: 40 });
+    const c = this.auditState()[t] || {};
+    if (!c.data && !c.loading) this.loadAudit(t);
+  }
+  loadAudit(tab, refresh) {
+    const t = tab || this.auditState().tab, owner = this.state.userKey;
+    if ((this.auditState()[t] || {}).loading) return;
+    this.setAudit(a => ({ [t]: Object.assign({}, a[t], { loading: true, error: '' }) }));
+    return this.api('/api/ledger-audit/' + t + (refresh ? '?refresh=1' : '')).then(o => {
+      if (this.state.userKey !== owner) return;
+      if (!o.ok || !o.json || o.json.ok === false) throw new Error((o.json && o.json.error) || (o.status === 403 ? 'Only Sven and management can open the ledger audit.' : 'The server answered ' + o.status + '.'));
+      this.setAudit({ [t]: { data: o.json, loading: false, error: '' } });
+      // a refresh within two minutes of the last read is answered from that read — the time says which
+      if (refresh) this.flash((t === 'clients' ? 'Client account audit' : 'Chart of accounts review') + ' · read from Zoho Analytics ' + (o.json.atText || ''), null, 'ph ph-arrows-clockwise');
+    }).catch(e => { if (this.state.userKey === owner) this.setAudit(a => ({ [t]: Object.assign({}, a[t], { loading: false, error: String((e && e.message) || e) }) })); });
+  }
+  /* One account's transactions (newest first); a second click hides them. */
+  loadAuditLines(id) {
+    const l = (this.auditState().lines || {})[id];
+    if (l && l.loading) return;
+    if (l && l.data) return this.setAudit(a => ({ lines: Object.assign({}, a.lines, { [id]: null }) }));
+    this.setAudit(a => ({ lines: Object.assign({}, a.lines, { [id]: { loading: true, error: '' } }) }));
+    return this.api('/api/ledger-audit/accounts/' + encodeURIComponent(id) + '/lines').then(o => {
+      if (!o.ok || !o.json || o.json.ok === false) throw new Error((o.json && o.json.error) || 'The server answered ' + o.status + '.');
+      this.setAudit(a => ({ lines: Object.assign({}, a.lines, { [id]: { data: o.json, loading: false, error: '' } }) }));
+    }).catch(e => this.setAudit(a => ({ lines: Object.assign({}, a.lines, { [id]: { loading: false, error: String((e && e.message) || e) } }) })));
+  }
+  /* CSV of the audit (UTF-8 with BOM, so Excel reads it). A text cell that starts like a formula is written as text. */
+  auditCsv(kind) {
+    const a = this.auditState(), d = (a[kind === 'accounts' || kind === 'realloc' ? 'accounts' : 'clients'] || {}).data;
+    if (!d) return '';
+    const cell = v => { let x = v === null || v === undefined ? '' : String(v); if (typeof v === 'string' && /^[=+@-]/.test(x)) x = "'" + x; return /[",\\r\\n]/.test(x) ? '"' + x.replace(/"/g, '""') + '"' : x; };
+    const day = String(d.at || '').slice(0, 10);
+    let head, rows, name;
+    if (kind === 'clients') {
+      head = ['Client Name', 'Account / Transaction Type', 'Issue Description', 'Root Cause', 'Required Correction', 'Severity', 'Area', 'Reference', 'Amount (AED)'];
+      rows = (d.exceptions || []).map(e => [e.client, e.type, e.issue, e.rootCause, e.correction, e.severity === 'error' ? 'Requires correction' : 'Review', e.areaLabel, e.reference, e.amount]);
+      name = 'client-account-audit-' + day + '.csv';
+    } else if (kind === 'summary') {
+      head = ['Client Name', 'Result', 'Corrections', 'Review items', 'Client funds held (AED)', 'Liability', 'Settled by / last disbursement'];
+      rows = (d.clients || []).map(c => [c.name, c.statusText, c.errors, c.reviews, c.liability ? c.liability.held : '', c.liability ? c.liability.text : '', c.liability ? c.liability.settlementText : '']);
+      name = 'client-account-summary-' + day + '.csv';
+    } else if (kind === 'accounts') {
+      head = ['Account Name', 'Current Balance', 'Expected / Unexpected', 'Source of Balance', 'Corrections Needed', 'Account Type', 'Account Code', 'Must be zero'];
+      rows = (d.accounts || []).map(x => [x.name, x.balanceText, x.statusText, x.source, x.corrections, x.type, x.code, x.zeroRequired ? 'Yes' : 'No']);
+      name = 'chart-of-accounts-review-' + day + '.csv';
+    } else {
+      head = ['Client', 'Entry', 'Reference', 'Date', 'Amount (AED)', 'Reallocation journal'];
+      rows = ((d.reallocation || {}).entries || []).map(r => [r.client, r.type, r.reference, r.date, r.amount, r.instruction]);
+      name = 'cogs-to-customer-fund-reallocation-' + day + '.csv';
+    }
+    const csv = '\\ufeff' + [head].concat(rows).map(r => r.map(cell).join(',')).join('\\r\\n');
+    if (typeof document === 'undefined' || typeof Blob === 'undefined' || typeof URL === 'undefined' || !URL.createObjectURL) return csv;
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })), el = document.createElement('a');
+    el.href = url; el.download = name; document.body.appendChild(el); el.click(); el.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    this.flash('Downloaded ' + name, null, 'ph ph-download-simple');
+    return csv;
+  }
+  auditVals() {
+    const me = this.me(), s = this.state;
+    if (!this.canMgmtView(me)) return { show: false, tabs: [], stats: [], clientRows: [], accountRows: [], statusOptions: [], areaOptions: [] };
+    const a = this.auditState(), t = a.tab, cur = a[t] || {}, d = cur.data || null;
+    // Opening the page reads the audit once — never again in the background.
+    if (s.route === 'audit' && !d && !cur.loading && !cur.error && this._auditAuto !== t + ':' + s.userKey) { this._auditAuto = t + ':' + s.userKey; setTimeout(() => this.loadAudit(t), 0); }
+    const money = n => 'AED ' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
+    const TONE = { red: ['var(--fgRedDeep)', 'var(--chipRedBg)', 'var(--chipRedBd)'], amber: ['var(--fgAmberDeep)', 'var(--chipAmberBg)', 'var(--chipAmberBd)'], green: ['var(--fgGreen)', 'var(--chipGreenBg)', 'var(--chipGreenBd)'] };
+    const chip = (text, k) => ({ text: text, fg: TONE[k][0], bg: TONE[k][1], bd: TONE[k][2] });
+    const q = String(a.q || '').trim().toLowerCase();
+    const toggle = k => () => this.setAudit(x => ({ open: Object.assign({}, x.open, { [k]: !x.open[k] }) }));
+    let rows = [], total = 0, stats = [], statusOptions, areaOptions = [];
+    if (t === 'clients') {
+      statusOptions = [['all', 'All clients'], ['CORRECTIONS', 'Requires corrections'], ['REVIEW', 'Review'], ['ACCURATE', 'Accurate']];
+      areaOptions = [['all', 'All areas'], ['CREDIT_NOTES', 'Credit notes'], ['REFUNDS', 'Refunds'], ['PAYMENTS', 'Payments'], ['INVOICES', 'Invoices & journal entries'], ['LIABILITIES', 'Client liabilities']];
+      if (d) {
+        const S = d.summary || {};
+        stats = [
+          { label: 'Clients audited', value: String(S.clients || 0), fg: 'var(--ink)' },
+          { label: 'Accurate', value: String(S.accurate || 0), fg: 'var(--fgGreen)' },
+          { label: 'Require corrections', value: String(S.corrections || 0), fg: S.corrections ? 'var(--fgRedDeep)' : 'var(--fgGreen)' },
+          { label: 'To review', value: String(S.review || 0), fg: S.review ? 'var(--fgAmberDeep)' : 'var(--fgGreen)' },
+          { label: 'Entries with no client tag', value: String(S.untagged || 0), fg: S.untagged ? 'var(--fgRedDeep)' : 'var(--fgGreen)' },
+          { label: 'Client funds held', value: money(S.liabilitiesHeld), fg: 'var(--fgBlue)' }
+        ];
+        const list = (d.clients || []).filter(c => (a.status === 'all' || c.status === a.status) && (!q || String(c.name || '').toLowerCase().indexOf(q) >= 0)
+          && (a.area === 'all' || (c.exceptions || []).some(e => e.area === a.area)));
+        total = list.length;
+        rows = list.slice(0, a.limit).map(c => {
+          const k = 'c:' + c.id, open = !!a.open[k], L = c.liability, f = c.figures || {}, ex = (c.exceptions || []).filter(e => a.area === 'all' || e.area === a.area);
+          return {
+            key: k, name: c.name, open: open, toggle: toggle(k), caret: open ? 'ph ph-caret-up' : 'ph ph-caret-down',
+            st: !c.id ? chip(plural((c.exceptions || []).length, 'entry', 'entries') + ' to fix', 'red') : chip(c.statusText, c.status === 'CORRECTIONS' ? 'red' : c.status === 'REVIEW' ? 'amber' : 'green'),
+            rail: !c.id || c.status === 'CORRECTIONS' ? 'var(--fgRed)' : c.status === 'REVIEW' ? 'var(--fgAmber)' : 'transparent',
+            counts: !(c.exceptions || []).length ? 'No exceptions — the account is accurate.' : [c.errors ? plural(c.errors, 'correction', 'corrections') : '', c.reviews ? plural(c.reviews, 'item', 'items') + ' to review' : ''].filter(Boolean).join(' · '),
+            liab: L ? L.text : 'Entries that are in no client’s fund balance until they are tagged.',
+            facts: c.id ? [
+              ['Invoices', f.invoices + (f.openInvoices ? ' · ' + f.openInvoices + ' open, ' + money(f.outstanding) : '')],
+              ['Payments', f.payments + (f.unusedPayments ? ' · ' + money(f.unusedPayments) + ' unused' : '')],
+              ['Credit notes', f.creditNotes + (f.openCredits ? ' · ' + money(f.openCredits) + ' open' : '')],
+              ['Refunds', f.refunds + (f.refunded ? ' · ' + money(f.refunded) : '')],
+              ['Client funds (CFD)', L ? money(L.held) + ' · ' + ({ OPEN: 'open liability', SETTLED: 'settled', OVERDRAWN: 'overdrawn', NONE: 'none on file' })[L.status] : '—'],
+              ['Ledger lines', String(f.ledgerLines || 0)]
+            ].map(x => ({ label: x[0], value: String(x[1]) })) : [],
+            hasFacts: !!c.id,
+            hasSettle: !!(L && L.settlementText), settleLabel: L && L.status === 'SETTLED' ? 'Settled by' : 'Last disbursement', settle: (L && L.settlementText) || '',
+            hasEx: ex.length > 0,
+            ex: ex.map(e => ({ type: e.type, issue: e.issue, cause: e.rootCause, fix: e.correction, area: e.areaLabel, amount: e.amount ? money(e.amount) : '', hasAmount: !!e.amount,
+              sev: chip(e.severity === 'error' ? 'Requires correction' : 'Review', e.severity === 'error' ? 'red' : 'amber') }))
+          };
+        });
+      }
+    } else {
+      statusOptions = [['all', 'All accounts'], ['UNEXPECTED', 'Unexpected balance'], ['EXPECTED', 'Expected balance'], ['ZERO', 'Must be zero'], ['NEGATIVE', 'Negative balance']];
+      if (d) {
+        const S = d.summary || {}, R = S.cogsRealloc || {};
+        stats = [
+          { label: 'Accounts reviewed', value: String(S.accounts || 0), fg: 'var(--ink)' },
+          { label: 'Unexpected balances', value: String(S.unexpected || 0), fg: S.unexpected ? 'var(--fgRedDeep)' : 'var(--fgGreen)' },
+          { label: 'Zero-balance accounts not at zero', value: (S.zeroBreached || 0) + ' of ' + (S.zeroAccounts || 0), fg: S.zeroBreached ? 'var(--fgRedDeep)' : 'var(--fgGreen)' },
+          { label: 'Negative balances', value: String(S.negative || 0), fg: S.negative ? 'var(--fgAmberDeep)' : 'var(--fgGreen)' },
+          { label: 'Client costs in COGS to reallocate', value: money(R.amount), fg: R.count ? 'var(--fgRedDeep)' : 'var(--fgGreen)' }
+        ];
+        const list = (d.accounts || []).filter(x => (a.status === 'all' || (a.status === 'ZERO' ? x.zeroRequired : a.status === 'NEGATIVE' ? (x.findings || []).some(f => f.code === 'NEGATIVE') : x.status === a.status))
+          && (!q || (x.name + ' ' + x.type + ' ' + x.code).toLowerCase().indexOf(q) >= 0));
+        total = list.length;
+        rows = list.slice(0, a.limit).map(x => {
+          const k = 'a:' + x.id, open = !!a.open[k], ln = (a.lines || {})[x.id], tr = x.trace, re = x.realloc, fi = x.findings || [];
+          const reN = re ? re.entries.length : 0;
+          return {
+            key: k, name: x.name, open: open, toggle: toggle(k), caret: open ? 'ph ph-caret-up' : 'ph ph-caret-down',
+            sub: [x.type, x.code, x.zeroRequired ? 'must be zero' : '', x.contra ? 'contra account' : '', x.active ? '' : 'inactive'].filter(Boolean).join(' · '),
+            balance: x.balanceText, source: x.source, st: chip(x.statusText, x.status === 'UNEXPECTED' ? 'red' : 'green'),
+            rail: x.status === 'UNEXPECTED' ? 'var(--fgRed)' : 'transparent',
+            hasFindings: fi.length > 0, noFindings: fi.length === 0,
+            findings: fi.map(f => ({ issue: f.issue, cause: f.cause, detail: f.detail || '', hasDetail: !!f.detail, fix: f.fix })),
+            hasSources: (x.sources || []).length > 0,
+            sources: (x.sources || []).slice(0, 8).map(e => ({ label: e.label, dr: money(e.debit), cr: money(e.credit), lines: plural(e.lines, 'line', 'lines') + (e.untagged ? ' · ' + e.untagged + ' untagged' : '') })),
+            hasTrace: !!(tr && tr.open.length),
+            traceHead: tr ? plural(tr.openCount, 'entry has', 'entries have') + ' no opposite entry · open debits ' + money(tr.openDebits) + ' · open credits ' + money(tr.openCredits) + (tr.openCount > tr.open.length ? ' · latest ' + tr.open.length + ' shown' : '') : '',
+            trace: tr ? tr.open.map(e => ({ date: e.date, what: e.type + (e.reference ? ' ' + e.reference : ''), client: e.client, amount: money(e.amount) + ' ' + e.side, bg: e.likely ? 'var(--chipAmberBg)' : 'transparent', mark: e.likely ? 'Likely cause' : '', hasMark: !!e.likely })) : [],
+            hasRealloc: reN > 0,
+            reallocHead: reN ? plural(reN, 'client cost', 'client costs') + ' · ' + money(re.entries.reduce((n, r) => n + Number(r.amount || 0), 0)) + ' to move to Customer Fund Disbursement' : '',
+            realloc: reN ? re.entries.slice(0, 30).map(r => ({ client: r.client, what: r.type + ' ' + r.reference + ' · ' + r.date, amount: money(r.amount), instruction: r.instruction })) : [],
+            hasReallocMore: reN > 30, reallocMore: reN > 30 ? 'Showing 30 of ' + reN + ' — the CSV has every entry.' : '', reallocCsv: () => this.auditCsv('realloc'),
+            linesGo: () => this.loadAuditLines(x.id), linesBusy: !!(ln && ln.loading),
+            linesLabel: ln && ln.data ? 'Hide transactions' : ln && ln.loading ? 'Reading transactions…' : 'Show transactions',
+            hasLinesError: !!(ln && ln.error), linesError: (ln && ln.error) || '',
+            hasLines: !!(ln && ln.data),
+            linesNote: ln && ln.data ? (ln.data.total > ln.data.lines.length ? 'Newest ' + ln.data.lines.length + ' of ' + ln.data.total + ' transactions' : plural(ln.data.total, 'transaction', 'transactions')) : '',
+            lines: ln && ln.data ? ln.data.lines.map(l => ({ date: l.date, what: (l.label || l.type || '') + (l.reference ? ' ' + l.reference : ''), client: l.client || '', dr: l.debit ? money(l.debit) + ' Dr' : '', cr: l.credit ? money(l.credit) + ' Cr' : '' })) : []
+          };
+        });
+      }
+    }
+    const tabs = [['clients', 'Client accounts', 'ph ph-users-three'], ['accounts', 'Chart of accounts', 'ph ph-tree-structure']].map(x => ({
+      key: x[0], label: x[1], icon: x[2], go: () => this.auditTab(x[0]),
+      bg: t === x[0] ? 'var(--sf)' : 'transparent', fg: t === x[0] ? 'var(--fgBlue)' : 'var(--mut)', sh: t === x[0] ? '0 2px 6px rgba(16,38,66,.08)' : 'none' }));
+    const filtered = !!q || a.status !== 'all' || (t === 'clients' && a.area !== 'all');
+    return {
+      show: true, title: 'Ledger Audit',
+      sub: t === 'clients' ? 'Every client’s credit notes, refunds, payments, invoices and journal entries, and what the client is owed — checked against the Customer Fund ledger.'
+        : 'Every account in the chart of accounts: its balance, whether that balance is expected, where it comes from, and what to correct.',
+      note: 'Read-only: read from Zoho Analytics, nothing is changed in Zoho. Make each correction in Zoho Books.',
+      tabs: tabs, stats: stats, hasStats: stats.length > 0,
+      loading: !!cur.loading, loadingText: d ? 'Re-reading Zoho Analytics…' : 'Reading the ledger from Zoho Analytics — this can take up to a minute.',
+      hasError: !!cur.error, error: cur.error || '', retry: () => this.loadAudit(t),
+      at: d ? 'Read from Zoho Analytics ' + d.atText : cur.loading ? '' : 'Not read yet',
+      refresh: () => this.loadAudit(t, true), refreshDisabled: !!cur.loading,
+      canCsv: !!d, csv: () => this.auditCsv(t), csvLabel: t === 'clients' ? 'Exceptions CSV' : 'Accounts CSV',
+      hasSummaryCsv: t === 'clients' && !!d, summaryCsv: () => this.auditCsv('summary'),
+      q: a.q || '', onQ: e => this.setAudit({ q: e.target.value, limit: 40 }), qHint: t === 'clients' ? 'Search clients' : 'Search accounts, types or codes',
+      status: a.status, onStatus: e => this.setAudit({ status: e.target.value, limit: 40 }), statusOptions: statusOptions.map(o => ({ value: o[0], label: o[1] })),
+      isClients: t === 'clients', area: a.area, onArea: e => this.setAudit({ area: e.target.value, limit: 40 }), areaOptions: areaOptions.map(o => ({ value: o[0], label: o[1] })),
+      showClients: t === 'clients' && !!d, showAccounts: t === 'accounts' && !!d,
+      clientRows: t === 'clients' ? rows : [], accountRows: t === 'accounts' ? rows : [],
+      countLine: !d ? '' : total === rows.length ? plural(total, t === 'clients' ? 'client' : 'account', t === 'clients' ? 'clients' : 'accounts') : rows.length + ' of ' + total + ' shown',
+      more: total > rows.length, moreText: 'Show ' + Math.min(40, Math.max(0, total - rows.length)) + ' more', showMore: () => this.setAudit(x => ({ limit: x.limit + 40 })),
+      none: !!d && total === 0, noneText: filtered ? 'Nothing matches the filters.' : 'Nothing to show.'
+    };
+  }
+`;
+
+const CHIP = (v, extra = '') => `font-size:11px; padding:3px 9px; border-radius:8px; background:{{ ${v}.bg }}; border:1px solid {{ ${v}.bd }}; color:{{ ${v}.fg }}; white-space:nowrap${extra}`;
+const AUDIT_PAGE = `    <sc-if value="{{ r_audit }}" hint-placeholder-val="{{ false }}">
+      <div style="max-width:1120px; margin:0 auto; display:flex; flex-direction:column; gap:{{ L.gap }}; animation:riseIn .3s ease">
+        <section style="position:relative; overflow:hidden; border-radius:{{ L.heroRadius }}; padding:{{ L.secPad }}; background:linear-gradient(135deg,var(--sf4) 0%,var(--sf2) 52%,var(--sf) 100%); box-shadow:0 14px 40px rgba(16,38,66,.08), 0 0 0 1px var(--line)">
+          <div style="position:relative; display:flex; align-items:center; gap:13px; flex-wrap:wrap">
+            <span style="width:44px; height:44px; flex:none; border-radius:15px; display:grid; place-items:center; background:var(--chipBlueBg); color:var(--fgBlue); box-shadow:0 6px 16px rgba(29,99,230,.14)"><i class="ph ph-list-checks" style="font-size:22px"></i></span>
+            <div style="flex:1; min-width:200px">
+              <h2 style="margin:0; font-size:22px; letter-spacing:-0.02em">{{ ledgerAudit.title }}</h2>
+              <p style="margin:4px 0 0; font-size:13px; color:var(--ink3); max-width:70ch; line-height:1.5">{{ ledgerAudit.sub }}</p>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap">
+              <button type="button" sc-camel-on-click="{{ ledgerAudit.refresh }}" disabled="{{ ledgerAudit.refreshDisabled }}" ${BTN_SOFT}><i class="ph ph-arrows-clockwise" style="font-size:14px"></i>Refresh from Zoho</button>
+              <sc-if value="{{ ledgerAudit.canCsv }}" hint-placeholder-val="{{ false }}">
+                <button type="button" sc-camel-on-click="{{ ledgerAudit.csv }}" ${BTN_SOFT}><i class="ph ph-download-simple" style="font-size:14px"></i>{{ ledgerAudit.csvLabel }}</button>
+              </sc-if>
+              <sc-if value="{{ ledgerAudit.hasSummaryCsv }}" hint-placeholder-val="{{ false }}">
+                <button type="button" sc-camel-on-click="{{ ledgerAudit.summaryCsv }}" ${BTN_SOFT}><i class="ph ph-file-csv" style="font-size:14px"></i>Summary CSV</button>
+              </sc-if>
+            </div>
+          </div>
+          <div role="tablist" style="position:relative; display:inline-flex; gap:4px; margin-top:16px; padding:4px; border-radius:12px; background:var(--tint); flex-wrap:wrap">
+            <sc-for list="{{ ledgerAudit.tabs }}" as="lt" hint-placeholder-count="2">
+              <button type="button" role="tab" sc-camel-on-click="{{ lt.go }}" style="cursor:pointer; border:0; padding:7px 13px; border-radius:9px; font-size:13px; display:inline-flex; align-items:center; gap:6px; background:{{ lt.bg }}; color:{{ lt.fg }}; box-shadow:{{ lt.sh }}; transition:all .18s ease"><i class="{{ lt.icon }}" style="font-size:15px"></i>{{ lt.label }}</button>
+            </sc-for>
+          </div>
+          <sc-if value="{{ ledgerAudit.hasStats }}" hint-placeholder-val="{{ false }}">
+            <div style="position:relative; display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-top:14px">
+              <sc-for list="{{ ledgerAudit.stats }}" as="ls" hint-placeholder-count="5">
+                <div style="padding:11px 13px; border-radius:15px; background:var(--sf); border:1px solid var(--line); display:flex; flex-direction:column; gap:2px; min-width:0">
+                  <span style="font-size:20px; letter-spacing:-0.02em; color:{{ ls.fg }}; font-variant-numeric:tabular-nums; overflow-wrap:anywhere">{{ ls.value }}</span>
+                  <span style="font-size:11.5px; color:var(--mut)">{{ ls.label }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+          <div style="position:relative; display:flex; gap:6px 14px; flex-wrap:wrap; margin-top:12px; font-size:11.5px; color:var(--mut2)">
+            <span><i class="ph ph-clock" style="font-size:12px"></i> {{ ledgerAudit.at }}</span>
+            <span><i class="ph ph-lock-simple" style="font-size:12px"></i> {{ ledgerAudit.note }}</span>
+          </div>
+        </section>
+
+        <section style="${CARD}; margin-top:0; padding:14px 16px; display:flex; gap:10px; flex-wrap:wrap; align-items:center">
+          <input class="input" placeholder="{{ ledgerAudit.qHint }}" value="{{ ledgerAudit.q }}" sc-camel-on-change="{{ ledgerAudit.onQ }}" autocomplete="off" spellcheck="false" style="flex:1 1 220px; min-width:0; border-radius:12px">
+          <sc-raw-select class="input" value="{{ ledgerAudit.status }}" sc-camel-on-change="{{ ledgerAudit.onStatus }}" style="flex:0 1 210px; border-radius:12px">
+            <sc-for list="{{ ledgerAudit.statusOptions }}" as="lo" hint-placeholder-count="4"><option value="{{ lo.value }}">{{ lo.label }}</option></sc-for>
+          </sc-raw-select>
+          <sc-if value="{{ ledgerAudit.isClients }}" hint-placeholder-val="{{ true }}">
+            <sc-raw-select class="input" value="{{ ledgerAudit.area }}" sc-camel-on-change="{{ ledgerAudit.onArea }}" style="flex:0 1 230px; border-radius:12px">
+              <sc-for list="{{ ledgerAudit.areaOptions }}" as="la" hint-placeholder-count="6"><option value="{{ la.value }}">{{ la.label }}</option></sc-for>
+            </sc-raw-select>
+          </sc-if>
+          <span style="font-size:12px; color:var(--mut2); margin-left:auto">{{ ledgerAudit.countLine }}</span>
+        </section>
+
+        <sc-if value="{{ ledgerAudit.loading }}" hint-placeholder-val="{{ false }}">
+          <section role="status" aria-live="polite" style="${CARD}; margin-top:0; display:flex; align-items:center; gap:12px">
+            <span style="width:28px; height:28px; flex:none; border-radius:50%; border:2px solid var(--line); border-top-color:var(--fgBlue); animation:spin .9s linear infinite"></span>
+            <span style="font-size:13px; color:var(--ink2)">{{ ledgerAudit.loadingText }}</span>
+          </section>
+        </sc-if>
+        <sc-if value="{{ ledgerAudit.hasError }}" hint-placeholder-val="{{ false }}">
+          <section role="alert" style="${CARD}; margin-top:0; display:flex; align-items:center; gap:12px; flex-wrap:wrap; background:var(--chipRedBg); box-shadow:0 0 0 1px var(--chipRedBd)">
+            <i class="ph ph-warning-circle" style="font-size:20px; color:var(--fgRedDeep)"></i>
+            <span style="flex:1; min-width:200px; font-size:13px; color:var(--fgRedDeep); line-height:1.5">The audit could not be read from Zoho Analytics: {{ ledgerAudit.error }}</span>
+            <button type="button" sc-camel-on-click="{{ ledgerAudit.retry }}" ${BTN_SOFT}>Try again</button>
+          </section>
+        </sc-if>
+
+        <sc-if value="{{ ledgerAudit.showClients }}" hint-placeholder-val="{{ false }}">
+          <section style="border-radius:24px; background:var(--sf); box-shadow:0 4px 16px rgba(16,38,66,.06), 0 0 0 1px var(--line); overflow:hidden">
+            <sc-for list="{{ ledgerAudit.clientRows }}" as="lc" hint-placeholder-count="4">
+              <div style="border-top:1px solid var(--line2); box-shadow:inset 3px 0 0 {{ lc.rail }}">
+                <button type="button" sc-camel-on-click="{{ lc.toggle }}" aria-expanded="{{ lc.open }}" style="display:flex; align-items:center; gap:10px 14px; flex-wrap:wrap; width:100%; box-sizing:border-box; text-align:left; padding:{{ L.rowPad }}; border:0; background:transparent; cursor:pointer; color:inherit; font:inherit" style-hover="background:var(--sf2)">
+                  <span style="flex:1 1 260px; min-width:0; display:flex; flex-direction:column; gap:3px">
+                    <span style="font-size:13.5px; color:var(--ink); overflow-wrap:anywhere">{{ lc.name }}</span>
+                    <span style="font-size:11.5px; color:var(--mut); line-height:1.45">{{ lc.counts }}</span>
+                    <span style="font-size:11.5px; color:var(--mut2); line-height:1.45">{{ lc.liab }}</span>
+                  </span>
+                  <span style="display:flex; align-items:center; gap:10px; margin-left:auto">
+                    <span style="${CHIP('lc.st')}">{{ lc.st.text }}</span>
+                    <i class="{{ lc.caret }}" style="font-size:13px; color:var(--mut3)"></i>
+                  </span>
+                </button>
+                <sc-if value="{{ lc.open }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex; flex-direction:column; gap:10px; padding:2px 18px 18px">
+                    <sc-if value="{{ lc.hasFacts }}" hint-placeholder-val="{{ false }}">
+                      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px">
+                        <sc-for list="{{ lc.facts }}" as="lf" hint-placeholder-count="6">
+                          <div style="padding:8px 11px; border-radius:12px; background:var(--sf2); border:1px solid var(--line2); min-width:0">
+                            <div style="${LABEL}">{{ lf.label }}</div>
+                            <div style="font-size:12.5px; color:var(--ink2); margin-top:2px; overflow-wrap:anywhere">{{ lf.value }}</div>
+                          </div>
+                        </sc-for>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{ lc.hasSettle }}" hint-placeholder-val="{{ false }}">
+                      <div style="display:flex; gap:8px; align-items:flex-start; font-size:12px; color:var(--ink2); line-height:1.5"><i class="ph ph-arrow-bend-down-right" style="font-size:14px; color:var(--mut2); margin-top:2px"></i><span><b style="font-weight:600">{{ lc.settleLabel }}:</b> {{ lc.settle }}</span></div>
+                    </sc-if>
+                    <sc-if value="{{ lc.hasEx }}" hint-placeholder-val="{{ false }}">
+                      <sc-for list="{{ lc.ex }}" as="le" hint-placeholder-count="2">
+                        <div style="border-radius:14px; border:1px solid var(--line2); background:var(--sf2); padding:12px 14px; display:flex; flex-direction:column; gap:7px">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap">
+                            <span style="${CHIP('le.sev')}">{{ le.sev.text }}</span>
+                            <span style="font-size:12.5px; color:var(--ink); overflow-wrap:anywhere">{{ le.type }}</span>
+                            <span style="font-size:11px; color:var(--mut3)">{{ le.area }}</span>
+                            <sc-if value="{{ le.hasAmount }}" hint-placeholder-val="{{ false }}"><span style="margin-left:auto; font-size:13px; color:var(--ink); font-variant-numeric:tabular-nums">{{ le.amount }}</span></sc-if>
+                          </div>
+                          <div style="font-size:12.5px; color:var(--ink2); line-height:1.5"><span style="${LABEL}">Issue</span><br>{{ le.issue }}</div>
+                          <div style="font-size:12.5px; color:var(--ink2); line-height:1.5"><span style="${LABEL}">Root cause</span><br>{{ le.cause }}</div>
+                          <div style="font-size:12.5px; color:var(--ink); line-height:1.5; padding:8px 10px; border-radius:10px; background:var(--sf); border:1px solid var(--line2)"><span style="${LABEL}">Required correction</span><br>{{ le.fix }}</div>
+                        </div>
+                      </sc-for>
+                    </sc-if>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-for>
+          </section>
+        </sc-if>
+
+        <sc-if value="{{ ledgerAudit.showAccounts }}" hint-placeholder-val="{{ false }}">
+          <section style="border-radius:24px; background:var(--sf); box-shadow:0 4px 16px rgba(16,38,66,.06), 0 0 0 1px var(--line); overflow:hidden">
+            <sc-for list="{{ ledgerAudit.accountRows }}" as="lr" hint-placeholder-count="4">
+              <div style="border-top:1px solid var(--line2); box-shadow:inset 3px 0 0 {{ lr.rail }}">
+                <button type="button" sc-camel-on-click="{{ lr.toggle }}" aria-expanded="{{ lr.open }}" style="display:flex; align-items:center; gap:10px 14px; flex-wrap:wrap; width:100%; box-sizing:border-box; text-align:left; padding:{{ L.rowPad }}; border:0; background:transparent; cursor:pointer; color:inherit; font:inherit" style-hover="background:var(--sf2)">
+                  <span style="flex:1 1 260px; min-width:0; display:flex; flex-direction:column; gap:3px">
+                    <span style="font-size:13.5px; color:var(--ink); overflow-wrap:anywhere">{{ lr.name }}</span>
+                    <span style="font-size:11px; color:var(--mut3)">{{ lr.sub }}</span>
+                    <span style="font-size:11.5px; color:var(--mut); line-height:1.45; overflow-wrap:anywhere">{{ lr.source }}</span>
+                  </span>
+                  <span style="display:flex; align-items:center; gap:10px; margin-left:auto; flex-wrap:wrap; justify-content:flex-end">
+                    <span style="font-size:14px; color:var(--ink); font-variant-numeric:tabular-nums; white-space:nowrap">{{ lr.balance }}</span>
+                    <span style="${CHIP('lr.st')}">{{ lr.st.text }}</span>
+                    <i class="{{ lr.caret }}" style="font-size:13px; color:var(--mut3)"></i>
+                  </span>
+                </button>
+                <sc-if value="{{ lr.open }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex; flex-direction:column; gap:10px; padding:2px 18px 18px">
+                    <sc-if value="{{ lr.noFindings }}" hint-placeholder-val="{{ false }}">
+                      <div style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--mut2)"><i class="ph ph-check-circle" style="font-size:15px; color:var(--fgGreen)"></i>The balance is on its expected side — nothing to correct.</div>
+                    </sc-if>
+                    <sc-if value="{{ lr.hasFindings }}" hint-placeholder-val="{{ false }}">
+                      <sc-for list="{{ lr.findings }}" as="lx" hint-placeholder-count="1">
+                        <div style="border-radius:14px; border:1px solid var(--line2); background:var(--sf2); padding:12px 14px; display:flex; flex-direction:column; gap:7px">
+                          <div style="font-size:13px; color:var(--ink); line-height:1.45">{{ lx.issue }}</div>
+                          <div style="font-size:12.5px; color:var(--ink2); line-height:1.5"><span style="${LABEL}">Cause</span><br>{{ lx.cause }}</div>
+                          <sc-if value="{{ lx.hasDetail }}" hint-placeholder-val="{{ false }}"><div style="font-size:12.5px; color:var(--ink2); line-height:1.5"><span style="${LABEL}">Source</span><br>{{ lx.detail }}</div></sc-if>
+                          <div style="font-size:12.5px; color:var(--ink); line-height:1.5; padding:8px 10px; border-radius:10px; background:var(--sf); border:1px solid var(--line2)"><span style="${LABEL}">Correction needed</span><br>{{ lx.fix }}</div>
+                        </div>
+                      </sc-for>
+                    </sc-if>
+                    <sc-if value="{{ lr.hasTrace }}" hint-placeholder-val="{{ false }}">
+                      <div style="display:flex; flex-direction:column; gap:4px">
+                        <span style="${LABEL}">Open entries · {{ lr.traceHead }}</span>
+                        <sc-for list="{{ lr.trace }}" as="lo2" hint-placeholder-count="3">
+                          <div style="display:flex; gap:4px 12px; flex-wrap:wrap; align-items:baseline; padding:6px 9px; border-radius:9px; background:{{ lo2.bg }}; font-size:12px; color:var(--ink2)">
+                            <span style="width:88px; color:var(--mut2); font-variant-numeric:tabular-nums">{{ lo2.date }}</span>
+                            <span style="flex:1 1 200px; min-width:0; overflow-wrap:anywhere">{{ lo2.what }}</span>
+                            <span style="flex:0 1 200px; min-width:0; color:var(--mut); overflow-wrap:anywhere">{{ lo2.client }}</span>
+                            <sc-if value="{{ lo2.hasMark }}" hint-placeholder-val="{{ false }}"><span style="font-size:10.5px; padding:1px 7px; border-radius:7px; background:var(--chipAmberBg); border:1px solid var(--chipAmberBd); color:var(--fgAmberDeep)">{{ lo2.mark }}</span></sc-if>
+                            <span style="margin-left:auto; font-variant-numeric:tabular-nums; white-space:nowrap">{{ lo2.amount }}</span>
+                          </div>
+                        </sc-for>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{ lr.hasRealloc }}" hint-placeholder-val="{{ false }}">
+                      <div style="display:flex; flex-direction:column; gap:6px">
+                        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+                          <span style="${LABEL}">Reallocate to Customer Fund Disbursement · {{ lr.reallocHead }}</span>
+                          <button type="button" sc-camel-on-click="{{ lr.reallocCsv }}" ${BTN_SOFT}><i class="ph ph-download-simple" style="font-size:14px"></i>Reallocation CSV</button>
+                        </div>
+                        <sc-for list="{{ lr.realloc }}" as="lj" hint-placeholder-count="2">
+                          <div style="padding:8px 10px; border-radius:10px; border:1px solid var(--line2); display:flex; flex-direction:column; gap:3px">
+                            <div style="display:flex; gap:10px; flex-wrap:wrap; font-size:12.5px; color:var(--ink)"><span style="flex:1; min-width:0; overflow-wrap:anywhere">{{ lj.client }} · {{ lj.what }}</span><span style="font-variant-numeric:tabular-nums">{{ lj.amount }}</span></div>
+                            <div style="font-size:11.5px; color:var(--mut); line-height:1.45; overflow-wrap:anywhere">{{ lj.instruction }}</div>
+                          </div>
+                        </sc-for>
+                        <sc-if value="{{ lr.hasReallocMore }}" hint-placeholder-val="{{ false }}"><span style="font-size:11.5px; color:var(--mut3)">{{ lr.reallocMore }}</span></sc-if>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{ lr.hasSources }}" hint-placeholder-val="{{ false }}">
+                      <div style="display:flex; flex-direction:column; gap:3px">
+                        <span style="${LABEL}">Where the balance comes from</span>
+                        <sc-for list="{{ lr.sources }}" as="lq" hint-placeholder-count="3">
+                          <div style="display:flex; gap:4px 12px; flex-wrap:wrap; font-size:12px; color:var(--ink2); padding:3px 0">
+                            <span style="flex:1 1 160px">{{ lq.label }}</span>
+                            <span style="color:var(--mut2)">{{ lq.lines }}</span>
+                            <span style="font-variant-numeric:tabular-nums">Dr {{ lq.dr }}</span>
+                            <span style="font-variant-numeric:tabular-nums">Cr {{ lq.cr }}</span>
+                          </div>
+                        </sc-for>
+                      </div>
+                    </sc-if>
+                    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+                      <button type="button" sc-camel-on-click="{{ lr.linesGo }}" disabled="{{ lr.linesBusy }}" ${BTN_SOFT}><i class="ph ph-magnifying-glass" style="font-size:14px"></i>{{ lr.linesLabel }}</button>
+                      <span style="font-size:11.5px; color:var(--mut2)">{{ lr.linesNote }}</span>
+                    </div>
+                    <sc-if value="{{ lr.hasLinesError }}" hint-placeholder-val="{{ false }}"><div role="alert" style="font-size:12px; color:var(--fgRedDeep)">{{ lr.linesError }}</div></sc-if>
+                    <sc-if value="{{ lr.hasLines }}" hint-placeholder-val="{{ false }}">
+                      <div style="display:flex; flex-direction:column; max-height:420px; overflow:auto; border-radius:12px; border:1px solid var(--line2)">
+                        <sc-for list="{{ lr.lines }}" as="ll" hint-placeholder-count="3">
+                          <div style="display:flex; gap:4px 12px; flex-wrap:wrap; align-items:baseline; padding:6px 10px; border-top:1px solid var(--line2); font-size:12px; color:var(--ink2)">
+                            <span style="width:88px; color:var(--mut2); font-variant-numeric:tabular-nums">{{ ll.date }}</span>
+                            <span style="flex:1 1 200px; min-width:0; overflow-wrap:anywhere">{{ ll.what }}</span>
+                            <span style="flex:0 1 200px; min-width:0; color:var(--mut); overflow-wrap:anywhere">{{ ll.client }}</span>
+                            <span style="margin-left:auto; font-variant-numeric:tabular-nums; white-space:nowrap">{{ ll.dr }}{{ ll.cr }}</span>
+                          </div>
+                        </sc-for>
+                      </div>
+                    </sc-if>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-for>
+          </section>
+        </sc-if>
+
+        <sc-if value="{{ ledgerAudit.none }}" hint-placeholder-val="{{ false }}">
+          <section style="${CARD}; margin-top:0; text-align:center; padding:28px 22px; font-size:13px; color:var(--mut2)">{{ ledgerAudit.noneText }}</section>
+        </sc-if>
+        <sc-if value="{{ ledgerAudit.more }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex; justify-content:center"><button type="button" sc-camel-on-click="{{ ledgerAudit.showMore }}" ${BTN_SOFT}>{{ ledgerAudit.moreText }}</button></div>
+        </sc-if>
+      </div>
+    </sc-if>
+
+`;
+
 export const TEMPLATE_RULES = [
   // markup — client field becomes a type-ahead; the old Verify button and hint are hidden in a display:none wrapper
   [CLIENT_FIELD_FROM, CLIENT_FIELD_TO],
@@ -2058,7 +2483,21 @@ ${PEEK_MORE}              <div style="display:flex; flex-direction:column; gap:8
   ["TIMEOUT: ['Timed out after 8 seconds', 'The route was reached but did not answer. Zoho Analytics queries should be cached or run asynchronously — approval stays paused, never auto-approved.'],",
    "TIMEOUT: ['Zoho did not answer within 60 seconds', 'Nothing was approved. Try the check again in a minute — if it keeps happening, Zoho is down and Sven has been told.'],"],
   // the Zoho loader overlay
-  ['  <sc-if value="{{ booting }}" hint-placeholder-val="{{ false }}">', LOADER + '  <sc-if value="{{ booting }}" hint-placeholder-val="{{ false }}">']
+  ['  <sc-if value="{{ booting }}" hint-placeholder-val="{{ false }}">', LOADER + '  <sc-if value="{{ booting }}" hint-placeholder-val="{{ false }}">'],
+
+  // ── round 3: Ledger Audit — nav (desktop, phone, palette), the page, its view model and methods ──
+  // (phone: the bar keeps five items — Audit takes the Workbook's place when it would not fit; the header search still opens the Workbook)
+  [".concat(this.canMgmtView(me) ? [['mgmt', 'Management Requests']] : [])", ".concat(this.canMgmtView(me) ? [['mgmt', 'Management Requests'], ['audit', 'Ledger Audit']] : [])"],
+  ["return { hasIcon: nv[0] === 'mgmt', icon: nv[0] === 'mgmt' ? 'ph ph-briefcase' : '',", "return { hasIcon: nv[0] === 'mgmt' || nv[0] === 'audit', icon: nv[0] === 'mgmt' ? 'ph ph-briefcase' : nv[0] === 'audit' ? 'ph ph-list-checks' : '',"],
+  // the bar is already full: the item reads "Audit" (its name for screen readers and the tooltip: "Ledger Audit")
+  ["label: nv[0] === 'mgmt' && s.vw < 1500 ? 'Management' : nv[1],", "label: nv[0] === 'mgmt' && s.vw < 1500 ? 'Management' : nv[0] === 'audit' ? 'Audit' : nv[1],"],
+  ["      { label: 'Workbook', icon: 'ph ph-table', route: 'ledger', go: () => this.go('ledger') }\n    ].filter(b => !b.skip)",
+   "      { label: 'Audit', icon: 'ph ph-list-checks', route: 'audit', go: () => this.go('audit'), skip: !this.canMgmtView(me) },\n      { label: 'Workbook', icon: 'ph ph-table', route: 'ledger', go: () => this.go('ledger') }\n    ].filter(b => !b.skip).filter((b, i, all) => all.length <= 5 || b.route !== 'ledger')"],
+  ["go: () => { this.setState({ palette: false }); this.go('mgmt'); } },\n",
+   "go: () => { this.setState({ palette: false }); this.go('mgmt'); } },\n      { label: 'Ledger Audit', hint: 'Client accounts · chart of accounts', icon: 'ph ph-list-checks', skip: !this.canMgmtView(me), go: () => { this.setState({ palette: false }); this.go('audit'); } },\n"],
+  ["r_mgmt: s.route === 'mgmt' && this.canMgmtView(me), mgmtReq: this.mgmtVals(),", "r_mgmt: s.route === 'mgmt' && this.canMgmtView(me), mgmtReq: this.mgmtVals(), r_audit: s.route === 'audit' && this.canMgmtView(me), ledgerAudit: this.auditVals(),"],
+  ['    <sc-if value="{{ r_home }}" hint-placeholder-val="{{ true }}">', AUDIT_PAGE + '    <sc-if value="{{ r_home }}" hint-placeholder-val="{{ true }}">'],
+  ["  mgmtCount() {\n", AUDIT_JS + "  mgmtCount() {\n"]
 ];
 
 // Returns { text, hit, total }. All-or-nothing: if any rule does not match exactly once, the input is returned unchanged.

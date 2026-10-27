@@ -57,3 +57,19 @@ test('commissions-core.js does no I/O', () => {
   const code = src('commissions-core.js');
   assert.ok(!/\bimport\b|\bfetch\(|require\(/.test(code.replace(/\/\/.*$/gm, '')));
 });
+
+test('ledger-audit.js (the ledger audit rules) does no I/O', () => {
+  const code = src('ledger-audit.js').replace(/\/\/.*$/gm, '');
+  assert.ok(!/\bfetch\(|require\(|\bfs\.|process\.env/.test(code));
+  assert.deepEqual([...code.matchAll(/^import .* from '([^']+)';$/gm)].map(m => m[1]), ['./finance-rules.js']);
+});
+
+test('the ledger audit only reads Zoho Analytics with SELECT exports', () => {
+  const s = src('server.js'), a = s.indexOf('// ---- ledger-audit data ----'), b = s.indexOf('// ---- rules.js ----');
+  assert.ok(a > 0 && b > a);
+  const mod = s.slice(a, b).replace(/\/\/.*$/gm, '');
+  assert.ok(!/\bbooks\(|\bfetch\(|method\s*:|kvSet|writeFile/.test(mod), 'no Books calls, no direct fetch, no writes');
+  const sql = [...mod.matchAll(/^\s{2}(\w+): (?:\w+ => )?`([^`]*)`/gm)].map(m => [m[1], m[2].trim()]);
+  assert.ok(sql.length >= 10, 'every audit export is listed: ' + sql.map(x => x[0]).join(', '));
+  for (const [k, q] of sql) { assert.match(q, /^(SELECT|WITH)\s/, k); assert.ok(!/\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE)\b/i.test(q), k); }
+});

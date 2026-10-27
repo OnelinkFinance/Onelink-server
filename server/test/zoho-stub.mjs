@@ -14,6 +14,9 @@
 //   aliases:  [{ Source, Canonical }],
 //   recent:   [{ Customer, Account, 'Entity ID', 'Transaction ID', 'Entity Type', Credit, Debit, Date }],  // Analytics recent ledger lines
 //   watermark: [{ Watermark }],                                                  // Analytics max "Last Modified Time"
+//   auditCustomers, auditCreditNotes, auditCnApply, auditPayments, auditRefunds, auditInvoices, auditLedger, auditCounter,
+//   auditCoa, auditLines: rows of the ledger audit's exports, with the columns in HEAD below (auditLines is filtered
+//   to the accounts the query names)
 //   books: {                                                                     // Zoho Books cross-verification (live API)
 //     transactions: { '<account id>': [{ transaction_id, categorized_transaction_id, transaction_type, transaction_date,
 //                     customer_id, payee, debit_amount, credit_amount, reference_number, description }] },
@@ -43,7 +46,18 @@ const HEAD = {
   settlement: ['Customer', 'Invoices', 'Invoiced', 'Outstanding', 'Written off', 'Paid', 'Credited'],
   aliases: ['Source', 'Canonical'],
   recent: ['Customer', 'Account', 'Entity ID', 'Transaction ID', 'Entity Type', 'Credit', 'Debit', 'Date'],
-  watermark: ['Watermark']
+  watermark: ['Watermark'],
+  // the ledger audit (Sven and management)
+  auditCustomers: ['Customer', 'Name'],
+  auditCreditNotes: ['Customer', 'ID', 'Number', 'Status', 'Date', 'Total', 'Balance'],
+  auditCnApply: ['Credit Note ID', 'Invoice Customer', 'Invoice', 'Amount', 'Date'],
+  auditPayments: ['Customer', 'ID', 'Number', 'Date', 'Amount', 'Unused', 'Refunded', 'Applied', 'Deposit Account', 'Account Name', 'Account Type'],
+  auditRefunds: ['Customer', 'Account', 'Entity Type', 'Entity ID', 'Transaction ID', 'Reference', 'Date', 'Debit', 'Credit', 'Account Name', 'Account Type'],
+  auditInvoices: ['Customer', 'ID', 'Number', 'Status', 'Date', 'Due', 'Total', 'Balance', 'Write Off', 'Paid', 'Credited'],
+  auditLedger: ['Customer', 'Customer Name', 'Account', 'Entity Type', 'Entity ID', 'Transaction ID', 'Reference', 'Date', 'Debit', 'Credit', 'Reference No', 'Tag Status'],
+  auditCounter: ['Transaction ID', 'Account', 'Account Name', 'Account Type', 'Debit', 'Credit'],
+  auditCoa: ['Account', 'Name', 'Code', 'Type', 'Base', 'Active', 'Entity Type', 'Debits', 'Credits', 'Lines', 'Untagged Lines'],
+  auditLines: ['Customer', 'Account', 'Entity Type', 'Entity ID', 'Transaction ID', 'Reference', 'Date', 'Debit', 'Credit', 'Description']
 };
 const fixture = () => {
   const f = process.env.ZOHO_STUB_FIXTURE;
@@ -61,6 +75,17 @@ const jobs = new Map(); // jobId -> kind
 const seen = new Map(); // kind -> requests so far (for flaky)
 let seq = 1;
 function kindOf(sql) {
+  // the ledger audit's exports first (some read the same tables as the checks)
+  if (sql.includes('FROM "Customers" C')) return 'auditCustomers';
+  if (sql.includes('FROM "Credit Notes" CN')) return 'auditCreditNotes';
+  if (sql.includes('FROM "Creditnotes Invoice" CI')) return 'auditCnApply';
+  if (sql.includes('AS "Deposit Account"')) return 'auditPayments';
+  if (sql.includes("'creditnote_refund'")) return 'auditRefunds';
+  if (sql.includes('AS "Write Off"')) return 'auditInvoices';
+  if (sql.includes('AS "Tag Status"')) return 'auditLedger';
+  if (sql.includes('DISB_TXN')) return 'auditCounter';
+  if (sql.includes('AS "Untagged Lines"')) return 'auditCoa';
+  if (sql.includes('T."Description" AS "Description"')) return 'auditLines';
   if (sql.includes('AS "Source"')) return 'aliases';                 // the alias table on its own
   if (sql.includes('"Invoice Payments"')) return 'settlement';       // invoice settlement (before the plain invoice list)
   if (sql.includes('CFD Customer Balances')) return 'balances';
@@ -167,6 +192,7 @@ globalThis.fetch = async function stubFetch(input, init = {}) {
       if (!kind) return json({ status: 'failure', summary: 'unknown table' }, 400);
       const jobId = String(1000000 + seq++);
       jobs.set(jobId, kind);
+      if (kind === 'auditLines') jobs.set(jobId + ':ids', [...String(cfg.sqlQuery).matchAll(/'(\d+)'/g)].map(m => m[1]));
       return json({ status: 'success', data: { jobId } });
     }
     log(entry);
@@ -176,7 +202,8 @@ globalThis.fetch = async function stubFetch(input, init = {}) {
       const kind = jobs.get(j[1]);
       if (!kind) return json({ status: 'failure' }, 404);
       if (!j[2]) return json({ status: 'success', data: { jobId: j[1], jobCode: '1004', jobStatus: 'JOB COMPLETED' } });
-      return text(csv(HEAD[kind], fx[kind]));
+      const rows = kind === 'auditLines' ? (fx.auditLines || []).filter(r => (jobs.get(j[1] + ':ids') || []).includes(String(r.Account))) : fx[kind];
+      return text(csv(HEAD[kind], rows));
     }
     return json({ status: 'failure' }, 404);
   }

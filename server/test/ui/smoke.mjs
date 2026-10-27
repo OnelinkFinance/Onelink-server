@@ -1133,6 +1133,151 @@ const fin5 = () => ({
   assert.equal(vm.detail.esc.decisionNote, 'Which bank?');
 }
 
+// ── scenario 21: Ledger Audit — Sven and management only; both modules, rows opened, transactions, CSV, errors ──
+{
+  const { auditClientAccounts, reviewChartOfAccounts } = await import(path.join(root, 'ledger-audit.js'));
+  const CFD = '7050654000000685179', COGS = '7050654000000034003', DOE = '7050654000001129012';
+  const at = { at: '2026-10-27T10:00:00.000Z', atText: '27 Oct · 14:00' };
+  const clients = auditClientAccounts({
+    accounts: { cfd: CFD, cogs: COGS }, customers: [{ id: '1', name: 'Alpha LLC' }],
+    balances: [{ clientId: '1', clientName: 'Alpha LLC', available: 2500, allocated: 12500, used: 10000 }],
+    creditNotes: [{ customer: '1', id: 'c1', number: 'CN-1', status: 'Open', date: '02 Oct 2026', total: 500, balance: 500 }], cnApplications: [], refunds: [], payments: [],
+    invoices: [{ customer: '1', id: 'i2', number: 'INV-2', status: 'Overdue', date: '03 Oct 2026', total: 900, balance: 900, writeOff: 0, paid: 0, credited: 0 }],
+    ledger: [
+      { customer: '1', customerName: 'Alpha LLC', account: CFD, type: 'expense', entityId: 'e1', txnId: 't1', reference: 'Visa', date: '05 Oct 2026', debit: 10000, credit: 0, tagged: true },
+      { customer: '', account: CFD, type: 'journal', entityId: 'j1', txnId: 't2', reference: 'JV-1', date: '06 Oct 2026', debit: 50, credit: 0, tagged: false }
+    ],
+    counter: [{ txnId: 't1', account: '9', accountName: 'Alaan Main Account', accountType: 'Bank', debit: 0, credit: 10000 }]
+  });
+  const accounts = reviewChartOfAccounts({
+    accounts: [
+      { id: CFD, name: 'Customers Fund Disbursement Account', type: 'Other Current Liability', base: 'Liability', active: 'Yes' },
+      { id: COGS, name: 'Cost of Goods Sold-Clients Payments', type: 'Cost Of Goods Sold', base: 'Expense', active: 'Yes' },
+      { id: DOE, name: 'Disbursements Of Expenses', type: 'Expense', base: 'Expense', active: 'Yes' }
+    ],
+    movements: [{ account: CFD, type: 'invoice', debit: 0, credit: 12500, lines: 2, untagged: 0 }, { account: CFD, type: 'expense', debit: 10050, credit: 0, lines: 2, untagged: 1 },
+      { account: COGS, type: 'expense', debit: 400, credit: 0, lines: 1, untagged: 0 }, { account: DOE, type: 'expense', debit: 2000, credit: 0, lines: 1, untagged: 1 }, { account: DOE, type: 'invoice', debit: 0, credit: 2497.8, lines: 2, untagged: 0 }],
+    lines: { [DOE]: [{ customer: '', type: 'expense', entityId: 'x1', reference: 'Visa A', date: '01 Oct 2026', debit: 2000, credit: 0 }, { customer: '1', type: 'invoice', entityId: 'x2', reference: 'INV-950', date: '02 Oct 2026', debit: 0, credit: 2000 }, { customer: '2', type: 'invoice', entityId: 'x3', reference: 'INV-3', date: '05 Oct 2026', debit: 0, credit: 497.8 }] },
+    cogsLines: [{ customer: '1', type: 'expense', entityId: 'g1', reference: 'EXP-1', date: '06 Oct 2026', debit: 400, credit: 0, tagged: true }],
+    funded: { 1: 12500 }, names: { 1: 'Alpha LLC', 2: 'Beta FZE' }, config: { cfd: CFD, cogs: COGS }
+  });
+  const reads = p => calls.filter(c => c.path === p).length;
+  replies['/api/ledger-audit/clients'] = { ok: true, status: 200, json: Object.assign({ ok: true }, at, clients) };
+  replies['/api/ledger-audit/accounts'] = { ok: true, status: 200, json: Object.assign({ ok: true }, at, accounts) };
+  replies['/api/ledger-audit/accounts/' + DOE + '/lines'] = { ok: true, status: 200, json: { ok: true, account: DOE, total: 2, lines: [
+    { date: '05 Oct 2026', type: 'invoice', label: 'Invoice', reference: 'INV-3', client: 'Beta FZE', debit: 0, credit: 497.8 },
+    { date: '01 Oct 2026', type: 'expense', label: 'Expense', reference: 'Visa A', client: '', debit: 2000, credit: 0 }] } };
+
+  // Operations: no page, no nav item, nothing read
+  const ops = make('maram');
+  ops.setState({ route: 'audit' });
+  let vm = ops.renderVals();
+  await tick(); await tick();
+  assert.equal(vm.r_audit, false, 'Operations never see the page');
+  assert.equal(vm.ledgerAudit.show, false);
+  assert.ok(!vm.navs.some(n => /Audit/.test(n.label)));
+  assert.ok(!vm.bottomNav.some(b => b.route === 'audit'));
+  assert.equal(reads('/api/ledger-audit/clients'), 0);
+
+  // Sven: opening the page reads the client audit once
+  const sv = make('sven');
+  sv.setState({ route: 'audit', vw: 1600 });
+  vm = sv.renderVals();
+  assert.equal(vm.r_audit, true);
+  assert.ok(vm.navs.some(n => n.label === 'Audit' && n.aria === 'Ledger Audit' && n.icon === 'ph ph-list-checks'));
+  assert.ok(vm.bottomNav.some(b => b.route === 'audit'));
+  await tick(); await tick();
+  vm = sv.renderVals(); sv.renderVals(); await tick();
+  assert.equal(reads('/api/ledger-audit/clients'), 1, 'read once, not on every render');
+  assert.equal(vm.ledgerAudit.showClients, true);
+  assert.equal(vm.ledgerAudit.at, 'Read from Zoho Analytics 27 Oct · 14:00');
+  assert.deepEqual(vm.ledgerAudit.stats.map(x => x.label), ['Clients audited', 'Accurate', 'Require corrections', 'To review', 'Entries with no client tag', 'Client funds held']);
+  assert.equal(vm.ledgerAudit.stats[5].value, 'AED 2,500.00');
+  assert.equal(vm.ledgerAudit.clientRows[0].name, 'No client tag', 'untagged entries first');
+  vm.ledgerAudit.clientRows.forEach(r => r.toggle());
+  vm = sv.renderVals();
+  const alpha = vm.ledgerAudit.clientRows.find(r => r.name === 'Alpha LLC');
+  assert.equal(alpha.open, true);
+  assert.equal(alpha.st.text, 'Requires correction'.replace('correction', 'corrections'));
+  assert.ok(alpha.ex.some(e => /Apply AED 500\.00 of CN-1: AED 500\.00 to INV-2/.test(e.fix)));
+  assert.match(alpha.settle, /Expense Visa on 05 Oct 2026, AED 10,000\.00 — paid from Alaan Main Account \(Bank\)/);
+  resolveAll(markupOf(tpl), vm, seen);
+  // filters
+  vm.ledgerAudit.onStatus({ target: { value: 'ACCURATE' } });
+  assert.equal(sv.renderVals().ledgerAudit.none, true);
+  sv.renderVals().ledgerAudit.onStatus({ target: { value: 'all' } });
+  sv.renderVals().ledgerAudit.onArea({ target: { value: 'CREDIT_NOTES' } });
+  assert.deepEqual(sv.renderVals().ledgerAudit.clientRows.map(r => r.name), ['Alpha LLC']);
+  resolveAll(markupOf(tpl), sv.renderVals(), seen); // a real client first: its facts
+  sv.renderVals().ledgerAudit.onQ({ target: { value: 'zzz' } });
+  assert.equal(sv.renderVals().ledgerAudit.noneText, 'Nothing matches the filters.');
+  // CSV: the five report fields first; a formula-looking cell stays text
+  const csv = sv.auditCsv('clients');
+  assert.match(csv, /^﻿Client Name,Account \/ Transaction Type,Issue Description,Root Cause,Required Correction,Severity,Area,Reference,Amount \(AED\)\r\n/);
+  assert.ok(csv.includes('Alpha LLC,Credit note · CN-1,'));
+  assert.match(sv.auditCsv('summary'), /^﻿Client Name,Result,/);
+
+  // the chart of accounts tab: read on first open; rows opened; one account's transactions
+  sv.auditTab('accounts');
+  await tick(); await tick();
+  assert.equal(reads('/api/ledger-audit/accounts'), 1);
+  vm = sv.renderVals();
+  assert.equal(vm.ledgerAudit.showAccounts, true);
+  assert.equal(vm.ledgerAudit.isClients, false);
+  vm.ledgerAudit.accountRows.forEach(r => r.toggle());
+  vm = sv.renderVals();
+  const doe = vm.ledgerAudit.accountRows.find(r => r.name === 'Disbursements Of Expenses');
+  assert.equal(doe.balance, 'AED 497.80 Cr');
+  assert.equal(doe.st.text, 'Unexpected');
+  assert.equal(doe.trace[0].mark, 'Likely cause');
+  const cogs = vm.ledgerAudit.accountRows.find(r => r.name === 'Cost of Goods Sold-Clients Payments');
+  assert.equal(cogs.hasRealloc, true);
+  assert.match(cogs.realloc[0].instruction, /^Journal dated 06 Oct 2026: Dr Customers Fund Disbursement Account AED 400\.00/);
+  assert.match(sv.auditCsv('realloc'), /Reallocation journal\r\nAlpha LLC,Expense,EXP-1,06 Oct 2026,400,Journal dated/);
+  assert.match(sv.auditCsv('accounts'), /^﻿Account Name,Current Balance,Expected \/ Unexpected,Source of Balance,Corrections Needed,/);
+  doe.linesGo();
+  await tick(); await tick();
+  vm = sv.renderVals();
+  const doe2 = vm.ledgerAudit.accountRows.find(r => r.name === 'Disbursements Of Expenses');
+  assert.equal(doe2.hasLines, true);
+  assert.equal(doe2.linesLabel, 'Hide transactions');
+  assert.deepEqual(doe2.lines.map(l => l.what + ' ' + l.dr + l.cr), ['Invoice INV-3 AED 497.80 Cr', 'Expense Visa A AED 2,000.00 Dr']);
+  resolveAll(markupOf(tpl), vm, seen);
+  doe2.linesGo();
+  assert.equal(sv.renderVals().ledgerAudit.accountRows.find(r => r.name === 'Disbursements Of Expenses').hasLines, false, 'a second click hides them');
+  sv.renderVals().ledgerAudit.onQ({ target: { value: 'cost of goods' } });
+  vm = sv.renderVals();
+  assert.deepEqual(vm.ledgerAudit.accountRows.map(r => r.name), ['Cost of Goods Sold-Clients Payments']);
+  resolveAll(markupOf(tpl), vm, seen); // the COGS account first: its reallocation list
+  // refresh asks the server to re-read
+  sv.renderVals().ledgerAudit.refresh();
+  await tick(); await tick();
+  assert.ok(calls.some(c => c.path === '/api/ledger-audit/accounts?refresh=1'));
+  // Sven viewing as Operations: the page and the data are gone
+  sv.setState({ userKey: 'maram' });
+  vm = sv.renderVals();
+  assert.equal(vm.r_audit, false);
+  assert.equal(vm.ledgerAudit.show, false);
+
+  // management: an error from Zoho is shown with a retry; and the loading state
+  replies['/api/ledger-audit/clients'] = { ok: false, status: 429, json: { ok: false, error: 'Zoho Analytics is limiting requests for this plan — pausing for a minute' } };
+  const ad = make('adnan');
+  ad.setState({ route: 'audit' });
+  ad.renderVals();
+  await tick(); await tick();
+  vm = ad.renderVals();
+  assert.equal(vm.r_audit, true);
+  assert.equal(vm.ledgerAudit.hasError, true);
+  assert.match(vm.ledgerAudit.error, /limiting requests/);
+  assert.equal(vm.ledgerAudit.canCsv, false);
+  resolveAll(markupOf(tpl), vm, seen);
+  ad.setAudit({ clients: { loading: true } });
+  vm = ad.renderVals();
+  assert.equal(vm.ledgerAudit.loading, true);
+  assert.equal(vm.ledgerAudit.refreshDisabled, true);
+  resolveAll(markupOf(tpl), vm, seen);
+}
+
 // ── scenario 20: brand — the logo replaces every coin badge; the page head carries title and icons; the title is kept ──
 {
   const markup = markupOf(tpl);
