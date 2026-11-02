@@ -102,6 +102,23 @@ td.nw { white-space: nowrap; }
 .err { color: var(--critical); margin-top: 8px; font-size: 13px; }
 .hide { display: none !important; }
 small.note { color: var(--muted); display: block; margin-top: 8px; }
+/* OneLink refine layer: brand-cool neutrals, focus, feedback. Remove this block to get the old look back. */
+:root { --page: #f6f8fb; --surface: #ffffff; --raised: #ffffff; --ink: #0b1a30; --ink-2: #4c5f80; --muted: #6e7f9b; --grid: #e3e8f0; --axis: #c6d0de; --border: rgba(11,26,48,0.10); --accent: #1f5cf0; --neutral-bg: #eef2f8; --ol-ease: cubic-bezier(0.23, 1, 0.32, 1); --ol-focus: rgba(31,99,255,.55); }
+@media (prefers-color-scheme: dark) { :root:where(:not([data-theme="light"])) { --page: #0b111c; --surface: #111a28; --raised: #16223a; --ink: #eaf1fb; --ink-2: #a9bbd4; --muted: #8495b0; --grid: #1f2b40; --axis: #2d3c56; --border: rgba(200,220,255,0.10); --accent: #6fa6ff; --neutral-bg: #17233a; --ol-focus: rgba(120,176,255,.7); } }
+:root[data-theme="dark"] { --page: #0b111c; --surface: #111a28; --raised: #16223a; --ink: #eaf1fb; --ink-2: #a9bbd4; --muted: #8495b0; --grid: #1f2b40; --axis: #2d3c56; --border: rgba(200,220,255,0.10); --accent: #6fa6ff; --neutral-bg: #17233a; --ol-focus: rgba(120,176,255,.7); }
+body { -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
+h1 { letter-spacing: -0.015em; text-wrap: balance; }
+input, select, button { transition: border-color .2s ease, background-color .2s ease, box-shadow .2s ease, transform .14s var(--ol-ease); }
+input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--ol-focus); outline-offset: 2px; }
+button:active:not(:disabled) { transform: scale(.97); }
+button.primary { background: linear-gradient(135deg, #2a6dff, #1746d1); box-shadow: inset 0 1px 0 rgba(255,255,255,.2), 0 4px 12px rgba(23,70,209,.22); }
+nav.tabs button { transition: color .2s ease, border-color .2s var(--ol-ease); }
+nav.tabs button:hover { color: var(--ink); }
+tbody tr:hover td { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.card, .kpi { border-color: var(--border); }
+.empty { text-align: center; padding: 28px 4px; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: .001ms !important; animation-duration: .001ms !important; } button:active:not(:disabled) { transform: none; } }
 </style>
 </head>
 <body>
