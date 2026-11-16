@@ -1,0 +1,64 @@
+// Zoho Books custom function: Client Payment Request -> re-check this client's other open requests
+//
+// Workflow rule: "Re-check client's other open requests" (module: Client Payment Request)
+// Runs when a request is approved or rejected. It writes a timestamp into "Recheck requested"
+// (cf_recheck_requested) on every other request for the same client that is still waiting for
+// approval. That edit fires the balance-check rule again, so a request blocked only because of
+// this one gets a fresh check.
+//
+// Connection: use the same Zoho Books connection your balance-check function already uses
+// (scopes ZohoBooks.custommodules.READ and ZohoBooks.custommodules.UPDATE). Put its link name below.
+// API domain: same data centre as your existing function (www.zohoapis.com, or zohoapis.eu / .in / .sa ...).
+
+conn = "zbooks";
+apiBase = "https://www.zohoapis.com/books/v3/cm_client_payment_request";
+
+orgId = organization.get("organization_id");
+thisId = cm_client_payment_request.get("module_record_id");
+clientId = cm_client_payment_request.get("cf_client");
+if(clientId == null || clientId.toString() == "")
+{
+	return;
+}
+stamp = zoho.currenttime.toString("yyyy-MM-dd HH:mm") + " Dubai - " + cm_client_payment_request.get("record_name") + " was decided";
+
+touched = 0;
+// Deluge has no while loop: walk up to 10 pages of 200 records (2,000 requests)
+for each  pg in {1,2,3,4,5,6,7,8,9,10}
+{
+	resp = invokeurl
+	[
+		url :apiBase + "?organization_id=" + orgId + "&filter_by=Status.All&per_page=200&page=" + pg
+		type :GET
+		connection:conn
+	];
+	recs = resp.get("module_records");
+	if(recs == null)
+	{
+		break;
+	}
+	for each  r in recs
+	{
+		if(r.get("module_record_id") != thisId && r.get("cf_client").toString() == clientId.toString() && r.get("status") == "pending_approval")
+		{
+			body = Map();
+			body.put("cf_recheck_requested",stamp);
+			upd = invokeurl
+			[
+				url :apiBase + "/" + r.get("module_record_id") + "?organization_id=" + orgId
+				type :PUT
+				parameters:body.toString()
+				headers:{"Content-Type":"application/json"}
+				connection:conn
+			];
+			info "Re-check requested on " + r.get("record_name") + ": " + upd.get("message");
+			touched = touched + 1;
+		}
+	}
+	more = resp.get("page_context");
+	if(more == null || more.get("has_more_page") != true)
+	{
+		break;
+	}
+}
+info "Requests re-checked for client " + clientId + ": " + touched;
