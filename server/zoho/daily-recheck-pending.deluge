@@ -1,0 +1,52 @@
+// Zoho Books scheduled custom function: daily re-check of every request still waiting for approval
+//
+// Schedule: Settings -> Automation -> Schedules -> New Schedule, daily (e.g. 07:00 Dubai).
+// Covers what workflow rules cannot: a pending request deleted, so the other request for that
+// client was never re-checked. It stamps "Recheck requested" (cf_recheck_requested) on every
+// pending request, and that edit fires the balance-check rule.
+//
+// Connection and API domain: same as recheck-open-requests.deluge.
+
+conn = "zbooks";
+apiBase = "https://www.zohoapis.com/books/v3/cm_client_payment_request";
+
+orgId = organization.get("organization_id");
+stamp = zoho.currenttime.toString("yyyy-MM-dd HH:mm") + " Dubai - daily re-check";
+touched = 0;
+for each  pg in {1,2,3,4,5,6,7,8,9,10}
+{
+	resp = invokeurl
+	[
+		url :apiBase + "?organization_id=" + orgId + "&filter_by=Status.All&per_page=200&page=" + pg
+		type :GET
+		connection:conn
+	];
+	recs = resp.get("module_records");
+	if(recs == null)
+	{
+		break;
+	}
+	for each  r in recs
+	{
+		if(r.get("status") == "pending_approval")
+		{
+			body = Map();
+			body.put("cf_recheck_requested",stamp);
+			invokeurl
+			[
+				url :apiBase + "/" + r.get("module_record_id") + "?organization_id=" + orgId
+				type :PUT
+				parameters:body.toString()
+				headers:{"Content-Type":"application/json"}
+				connection:conn
+			];
+			touched = touched + 1;
+		}
+	}
+	pc = resp.get("page_context");
+	if(pc == null || pc.get("has_more_page") != true)
+	{
+		break;
+	}
+}
+info "Pending requests re-checked: " + touched;
