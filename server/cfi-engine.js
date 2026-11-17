@@ -100,9 +100,9 @@ export function evaluateClient({ cfda = {}, requests = [], refunds = [], reserve
   const available = r2(current - openTotal - reserved);
   const projected = r2(available + upcoming);
   const shortfall = r2(Math.max(0, -available));
-  const hasFunds = received > 0 || current !== 0;
 
-  const fundStatus = !hasFunds && !open.length && upcoming === 0 ? 'No funds held'
+  // a settled client (nothing held, nothing open, nothing due back) holds no funds; it is not "low"
+  const fundStatus = current === 0 && !open.length && upcoming === 0 ? 'No funds held'
     : available < 0 ? (projected >= 0 ? 'Covered after refund' : 'Short')
     : available < LOW_BALANCE ? 'Low balance' : 'Available';
   const approvalStatus = !open.length ? 'No open requests'
@@ -111,7 +111,7 @@ export function evaluateClient({ cfda = {}, requests = [], refunds = [], reserve
     : projected >= 0 ? (overdue > 0 ? 'Await refund collection' : 'Available after refund recovery')
     : 'Hold requests';
 
-  const risk = riskOf({ current, available, projected, overdue, openCount: open.length, hasFunds });
+  const risk = riskOf({ current, available, projected, overdue, openCount: open.length, hasFunds: current > 0 });
 
   const reqs = open.map((r) => {
     const amount = r2(num(r.amount));

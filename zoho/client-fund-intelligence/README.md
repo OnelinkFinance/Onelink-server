@@ -65,7 +65,7 @@ Refunds already received are part of the current balance (they arrive in the CFD
 | ⚠ Low balance | 0 ≤ available < AED 1,000 |
 | ⏳ Covered after refund | available < 0, projected ≥ 0 |
 | ⛔ Short | projected < 0 |
-| ⚪ No funds held | nothing received, nothing open, no refunds |
+| ⚪ No funds held | balance 0, nothing open, no refunds due |
 
 | Approval Status | When |
 |---|---|
@@ -158,7 +158,7 @@ Each alert is raised once (per client, type and day, or per request/refund). **W
 * Work is per client and event-driven: one request touches one client, about 10 API calls.
 * With the two custom views (4.5) the engine reads only open requests and open refunds, so its cost does not grow with history.
 * The backfill is batched; raise `BATCH` to match your plan's daily API allowance.
-* The dashboard reads Client Fund Intelligence, which holds one row per client, 200 per call.
+* The dashboard (Claude artifact "Client Fund Intelligence") reads the source modules live — CFDA balances, payment requests, refunds, Funds Reserved, alerts and audit log, 200 records per call — and works the figures out with the same rules, so it is correct before the Deluge is installed. It reads up to 600 clients and the 400 newest requests today; add pages to its datasets as the book grows.
 
 ## 7. Known limits
 

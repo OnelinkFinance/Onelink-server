@@ -101,6 +101,12 @@ test('alerts fire on the transition, not on every check', () => {
   assert.deepEqual(alertsBetween(ok, ok, { paidIncrease: 12000 }).map((a) => a.type), ['Large expense']);
 });
 
+test('a settled client with nothing open holds no funds, and is not low risk', () => {
+  const r = evaluateClient({ cfda: { received: 12000, paid: 12000, balance: 0 }, today: TODAY });
+  assert.equal(r.fundStatus, 'No funds held');
+  assert.equal(r.riskScore, 0);
+});
+
 test('money text', () => {
   assert.equal(aed(3483.5), 'AED 3,483.50');
   assert.equal(aed(-1280), '-AED 1,280.00');

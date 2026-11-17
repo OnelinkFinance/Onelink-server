@@ -206,11 +206,10 @@ for each f in ifnull(rf.get("module_records"), List())
 available = (current - openTotal - reserved).round(2);
 projected = (available + upcoming).round(2);
 shortfall = if(available < 0, (0 - available).round(2), 0.0);
-hasFunds = received > 0 || current != 0;
 openCount = openReqs.size();
 
 fundStatus = "✅ Available";
-if(!hasFunds && openCount == 0 && upcoming == 0)
+if(current == 0 && openCount == 0 && upcoming == 0)
 {
 	fundStatus = "⚪ No funds held";
 }
@@ -276,7 +275,7 @@ if(overdue > 0)
 	risk = risk + 15;
 	riskWhy.add("+15 refunds overdue AED " + overdue.round(2));
 }
-if(available >= 0 && available < LOW && hasFunds)
+if(available >= 0 && available < LOW && current > 0)
 {
 	risk = risk + 10;
 	riskWhy.add("+10 available balance below AED 1,000");
