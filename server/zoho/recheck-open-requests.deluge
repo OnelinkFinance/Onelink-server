@@ -1,3 +1,7 @@
+// DO NOT INSTALL: Zoho does not run workflow rules for edits made by a custom function
+// ("not executed as it was triggered by custom function(s)"), so this stamp cannot re-trigger
+// the CFDA balance check. To be replaced by a version that runs the cfda check logic directly.
+
 // Zoho Books custom function: Client Payment Request -> re-check this client's other open requests
 //
 // Workflow rule: "Re-check client's other open requests" (module: Client Payment Request)

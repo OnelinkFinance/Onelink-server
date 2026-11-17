@@ -1,3 +1,7 @@
+// DO NOT INSTALL: Zoho does not run workflow rules for edits made by a custom function
+// ("not executed as it was triggered by custom function(s)"), so this stamp cannot re-trigger
+// the CFDA balance check. To be replaced by a version that runs the cfda check logic directly.
+
 // Zoho Books scheduled custom function: daily re-check of every request still waiting for approval
 //
 // Schedule: Settings -> Automation -> Schedules -> New Schedule, daily (e.g. 07:00 Dubai).
