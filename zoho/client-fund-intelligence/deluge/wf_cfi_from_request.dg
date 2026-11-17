@@ -1,0 +1,68 @@
+// =====================================================================================================
+// wf_cfi_from_request — re-check a client's funds whenever one of their payment requests changes
+// Zoho Books > Settings > Automation > Custom Functions > New > Module: Client Payment Request
+// Keep the header Zoho generates (record arrives as `cm_client_payment_request`); paste this as the body.
+// Workflow rule: see README ("Client Payment Request — fund check").
+// =====================================================================================================
+orgId = "898300452";
+base = "https://www.zohoapis.com/books/v3/";
+conn = "cfibooks";
+
+r = cm_client_payment_request;
+clientId = ifnull(r.get("cf_client"), "").toString();
+if(clientId == "")
+{
+	return;
+}
+rid = ifnull(r.get("module_record_id"), ifnull(r.get("record_id"), r.get("id"))).toString();
+reason = zoho.currenttime.toString("yyyy-MM-dd HH:mm:ss") + "|request|" + rid + "|" + zoho.loginuser;
+
+// the client's name, for the Client Fund Intelligence row
+contact = invokeurl
+[
+	url :base + "contacts/" + clientId
+	type :GET
+	parameters:{"organization_id":orgId}
+	connection:conn
+];
+clientName = contact.get("contact").get("contact_name").toString().trim();
+
+// one row per client: update it if it exists, create it if not (creating it runs the engine too)
+found = "";
+search = invokeurl
+[
+	url :base + "cm_client_fund_intelligence"
+	type :GET
+	parameters:{"organization_id":orgId,"search_text":clientName,"per_page":50}
+	connection:conn
+];
+for each x in ifnull(search.get("module_records"), List())
+{
+	if(ifnull(x.get("cf_client"), "").toString() == clientId)
+	{
+		found = x.get("module_record_id").toString();
+	}
+}
+if(found != "")
+{
+	resp = invokeurl
+	[
+		url :base + "cm_client_fund_intelligence/" + found + "?organization_id=" + orgId
+		type :PUT
+		parameters:{"cf_recalc_requested":reason}.toString()
+		headers:{"Content-Type":"application/json"}
+		connection:conn
+	];
+}
+else
+{
+	resp = invokeurl
+	[
+		url :base + "cm_client_fund_intelligence?organization_id=" + orgId
+		type :POST
+		parameters:{"record_name":clientName,"cf_client":clientId,"cf_client_id":clientId,"cf_recalc_requested":reason}.toString()
+		headers:{"Content-Type":"application/json"}
+		connection:conn
+	];
+}
+info resp;

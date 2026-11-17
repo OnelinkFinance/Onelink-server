@@ -1,0 +1,112 @@
+// =====================================================================================================
+// sch_cfi_nightly — daily at 02:00 Dubai
+// Zoho Books > Settings > Automation > Schedules > New > Custom Schedule, Daily 02:00; paste this.
+//
+// 1. Marks refunds whose expected date has passed as Overdue. That edit runs wf_cfi_from_refund, which
+//    raises the "Refund overdue" alert and re-checks the client.
+// 2. Backfills Client Fund Intelligence: each night it takes the next BATCH clients from Client CFDA
+//    Balance that have no row yet and creates one (which runs the engine). With ~350 clients and BATCH 40
+//    the backfill finishes in about 9 nights; after that only new clients are picked up. Raise BATCH if your
+//    Zoho Books plan's daily API allowance is large (each engine run uses about 10 API calls).
+// =====================================================================================================
+orgId = "898300452";
+base = "https://www.zohoapis.com/books/v3/";
+conn = "cfibooks";
+BATCH = 40;
+today = zoho.currentdate.toString("yyyy-MM-dd");
+stamp = zoho.currenttime.toString("yyyy-MM-dd HH:mm:ss");
+
+// ---------- 1. overdue refunds ----------
+marked = 0;
+for each p in {1,2,3,4,5}
+{
+	rf = invokeurl
+	[
+		url :base + "cm_client_refund"
+		type :GET
+		parameters:{"organization_id":orgId,"per_page":200,"page":p}
+		connection:conn
+	];
+	for each f in ifnull(rf.get("module_records"), List())
+	{
+		st = ifnull(f.get("cf_refund_status"), "Expected").toString();
+		fd = ifnull(f.get("cf_expected_date"), "").toString();
+		if((st == "Expected" || st == "Partly received") && fd != "" && fd < today)
+		{
+			resp = invokeurl
+			[
+				url :base + "cm_client_refund/" + f.get("module_record_id") + "?organization_id=" + orgId
+				type :PUT
+				parameters:{"cf_refund_status":"Overdue"}.toString()
+				headers:{"Content-Type":"application/json"}
+				connection:conn
+			];
+			marked = marked + 1;
+		}
+	}
+	pc = rf.get("page_context");
+	if(pc == null || pc.get("has_more_page") == false)
+	{
+		break;
+	}
+}
+
+// ---------- 2. backfill: clients with a CFDA balance but no Client Fund Intelligence row ----------
+have = List();
+for each p in {1,2,3,4,5,6,7,8,9,10}
+{
+	ci = invokeurl
+	[
+		url :base + "cm_client_fund_intelligence"
+		type :GET
+		parameters:{"organization_id":orgId,"per_page":200,"page":p}
+		connection:conn
+	];
+	for each x in ifnull(ci.get("module_records"), List())
+	{
+		have.add(ifnull(x.get("cf_client"), "").toString());
+	}
+	pc = ci.get("page_context");
+	if(pc == null || pc.get("has_more_page") == false)
+	{
+		break;
+	}
+}
+created = 0;
+for each p in {1,2,3,4,5,6,7,8,9,10}
+{
+	if(created >= BATCH)
+	{
+		break;
+	}
+	cb = invokeurl
+	[
+		url :base + "cm_client_cfda_balance"
+		type :GET
+		parameters:{"organization_id":orgId,"per_page":200,"page":p,"sort_column":"record_name","sort_order":"A"}
+		connection:conn
+	];
+	for each b in ifnull(cb.get("module_records"), List())
+	{
+		cid = ifnull(b.get("cf_client"), "").toString();
+		if(cid != "" && !have.contains(cid) && created < BATCH)
+		{
+			resp = invokeurl
+			[
+				url :base + "cm_client_fund_intelligence?organization_id=" + orgId
+				type :POST
+				parameters:{"record_name":ifnull(b.get("record_name"), cid).toString().trim(),"cf_client":cid,"cf_client_id":cid,"cf_recalc_requested":stamp + "|nightly|backfill|schedule"}.toString()
+				headers:{"Content-Type":"application/json"}
+				connection:conn
+			];
+			have.add(cid);
+			created = created + 1;
+		}
+	}
+	pc = cb.get("page_context");
+	if(pc == null || pc.get("has_more_page") == false)
+	{
+		break;
+	}
+}
+info "Refunds marked overdue: " + marked + " · client rows created: " + created;

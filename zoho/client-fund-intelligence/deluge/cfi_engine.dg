@@ -1,0 +1,583 @@
+// =====================================================================================================
+// cfi_engine — Client Fund Intelligence balance engine
+// Zoho Books > Settings > Automation > Custom Functions > New > Module: Client Fund Intelligence
+// Keep the function header Zoho generates (it passes the record as `cm_client_fund_intelligence`);
+// paste everything below as the body.
+//
+// Runs when a Client Fund Intelligence row is created, or when its "Recalc Requested" field changes.
+// The small trigger functions (wf_cfi_from_request / wf_cfi_from_refund / wf_cfi_from_cfda / the nightly
+// schedule) set that field, so every payment request, refund and CFDA balance change re-runs this check.
+//
+// The rules are the same as server/cfi-engine.js (tested there). Change both together.
+// =====================================================================================================
+orgId = "898300452";
+base = "https://www.zohoapis.com/books/v3/";
+conn = "cfibooks";                 // Zoho Books connection, scope ZohoBooks.fullaccess.all
+openRequestView = "";              // optional: ID of the "Open payment requests" custom view (see README)
+openRefundView = "";               // optional: ID of the "Open refunds" custom view
+alertEmails = "";                  // comma-separated addresses for Warning/Critical alert emails; blank = no email
+LOW = 1000.0;
+VERY_LOW = 500.0;
+LARGE_EXPENSE = 10000.0;
+DUP_DAYS = 30;
+
+cfi = cm_client_fund_intelligence;
+cfiId = ifnull(cfi.get("module_record_id"), ifnull(cfi.get("record_id"), cfi.get("id"))).toString();
+clientId = ifnull(cfi.get("cf_client"), "").toString();
+if(clientId == "")
+{
+	info "Client Fund Intelligence row " + cfiId + " has no client";
+	return;
+}
+clientName = ifnull(cfi.get("record_name"), "").toString().trim();
+nowText = zoho.currenttime.toString("yyyy-MM-dd HH:mm") + " Dubai";
+today = zoho.currentdate.toString("yyyy-MM-dd");
+trigger = ifnull(cfi.get("cf_recalc_requested"), "created").toString();
+triggerKind = trigger;
+if(trigger.contains("|"))
+{
+	parts = trigger.toList("|");
+	triggerKind = if(parts.size() > 1, parts.get(1), trigger);
+}
+triggerUser = if(trigger.contains("|") && trigger.toList("|").size() > 3, trigger.toList("|").get(3), "");
+
+// ---------- previous values (for alerts that fire on a change, not on every check) ----------
+prevAvailableText = ifnull(cfi.get("cf_available_balance"), "").toString();
+prevAvailable = 999999999.0;
+if(prevAvailableText != "")
+{
+	prevAvailable = prevAvailableText.toDecimal();
+}
+prevFund = ifnull(cfi.get("cf_fund_status"), "").toString();
+prevRisk = ifnull(cfi.get("cf_risk_status"), "").toString();
+prevExpensesText = ifnull(cfi.get("cf_total_expenses_used"), "").toString();
+reservedText = ifnull(cfi.get("cf_funds_reserved"), "").toString();
+reserved = 0.0;
+if(reservedText != "")
+{
+	reserved = reservedText.toDecimal();
+}
+
+// ---------- 1. CFDA balance for this client ----------
+received = 0.0;
+paid = 0.0;
+current = 0.0;
+cfdaUpdatedAt = "";
+cfdaResp = invokeurl
+[
+	url :base + "cm_client_cfda_balance"
+	type :GET
+	parameters:{"organization_id":orgId,"search_text":clientName,"per_page":50}
+	connection:conn
+];
+for each b in ifnull(cfdaResp.get("module_records"), List())
+{
+	if(ifnull(b.get("cf_client"), "").toString() == clientId)
+	{
+		receivedTxt = ifnull(b.get("cf_received_into_cfda"), "").toString();
+		received = 0.0;
+		if(receivedTxt != "")
+		{
+			received = receivedTxt.toDecimal();
+		}
+		paidTxt = ifnull(b.get("cf_paid_out_of_cfda"), "").toString();
+		paid = 0.0;
+		if(paidTxt != "")
+		{
+			paid = paidTxt.toDecimal();
+		}
+		currentTxt = ifnull(b.get("cf_cfda_balance"), "").toString();
+		current = received - paid;
+		if(currentTxt != "")
+		{
+			current = currentTxt.toDecimal();
+		}
+		cfdaUpdatedAt = ifnull(b.get("cf_updated_at"), "").toString();
+	}
+}
+
+// ---------- 2. this client's payment requests (open view + the 600 most recent) ----------
+seenIds = List();
+requests = List();
+pagesToRead = List();
+if(openRequestView != "")
+{
+	pagesToRead.add({"organization_id":orgId,"customview_id":openRequestView,"per_page":200,"page":1});
+}
+for each p in {1,2,3}
+{
+	pagesToRead.add({"organization_id":orgId,"per_page":200,"page":p,"sort_column":"created_time","sort_order":"D"});
+}
+for each params in pagesToRead
+{
+	rr = invokeurl
+	[
+		url :base + "cm_client_payment_request"
+		type :GET
+		parameters:params
+		connection:conn
+	];
+	for each r in ifnull(rr.get("module_records"), List())
+	{
+		rid = r.get("module_record_id").toString();
+		if(ifnull(r.get("cf_client"), "").toString() == clientId && !seenIds.contains(rid))
+		{
+			seenIds.add(rid);
+			requests.add(r);
+		}
+	}
+	pc = rr.get("page_context");
+	if(pc != null && pc.get("has_more_page") == false && params.get("customview_id") == null)
+	{
+		break;
+	}
+}
+openReqs = List();
+openIds = List();
+openTotal = 0.0;
+for each r in requests
+{
+	st = ifnull(r.get("status"), "").toString();
+	ps = ifnull(r.get("cf_status"), "").toString();
+	isOpen = (st == "pending_approval" || st == "approved") && !ps.containsIgnoreCase("paid") && !ps.containsIgnoreCase("reject");
+	if(isOpen)
+	{
+		openReqs.add(r);
+		openIds.add(r.get("module_record_id").toString());
+		aTxt = ifnull(r.get("cf_amount_aed"), "").toString();
+		if(aTxt != "")
+		{
+			openTotal = openTotal + aTxt.toDecimal();
+		}
+	}
+}
+
+// ---------- 3. this client's refunds ----------
+upcoming = 0.0;
+overdue = 0.0;
+refundsReceived = 0.0;
+refundParams = {"organization_id":orgId,"per_page":200,"page":1,"sort_column":"created_time","sort_order":"D"};
+if(openRefundView != "")
+{
+	refundParams.put("customview_id", openRefundView);
+}
+rf = invokeurl
+[
+	url :base + "cm_client_refund"
+	type :GET
+	parameters:refundParams
+	connection:conn
+];
+for each f in ifnull(rf.get("module_records"), List())
+{
+	if(ifnull(f.get("cf_client"), "").toString() == clientId)
+	{
+		fs = ifnull(f.get("cf_refund_status"), "Expected").toString();
+		feTxt = ifnull(f.get("cf_expected_amount"), "").toString();
+		fe = 0.0;
+		if(feTxt != "")
+		{
+			fe = feTxt.toDecimal();
+		}
+		frTxt = ifnull(f.get("cf_received_amount"), "").toString();
+		fr = 0.0;
+		if(frTxt != "")
+		{
+			fr = frTxt.toDecimal();
+		}
+		if(fs == "Received" || fs == "Partly received")
+		{
+			refundsReceived = refundsReceived + fr;
+		}
+		if(fs == "Expected" || fs == "Partly received" || fs == "Overdue")
+		{
+			outstanding = if(fe - fr > 0, fe - fr, 0.0);
+			upcoming = upcoming + outstanding;
+			fd = ifnull(f.get("cf_expected_date"), "").toString();
+			if(outstanding > 0 && fd != "" && fd < today)
+			{
+				overdue = overdue + outstanding;
+			}
+		}
+	}
+}
+
+// ---------- 4. the balance engine ----------
+available = (current - openTotal - reserved).round(2);
+projected = (available + upcoming).round(2);
+shortfall = if(available < 0, (0 - available).round(2), 0.0);
+hasFunds = received > 0 || current != 0;
+openCount = openReqs.size();
+
+fundStatus = "✅ Available";
+if(!hasFunds && openCount == 0 && upcoming == 0)
+{
+	fundStatus = "⚪ No funds held";
+}
+else if(available < 0)
+{
+	fundStatus = if(projected >= 0, "⏳ Covered after refund", "⛔ Short");
+}
+else if(available < LOW)
+{
+	fundStatus = "⚠ Low balance";
+}
+
+approval = "— No open requests";
+if(openCount > 0)
+{
+	if(available >= LOW)
+	{
+		approval = "✅ Safe to approve";
+	}
+	else if(available >= 0)
+	{
+		approval = "⚠ Low available balance";
+	}
+	else if(projected >= 0)
+	{
+		approval = if(overdue > 0, "⚠ Await refund collection", "✅ Available after refund recovery");
+	}
+	else
+	{
+		approval = "⛔ Hold requests";
+	}
+}
+
+// risk: 0-100 (same weights as server/cfi-engine.js)
+risk = 0;
+riskWhy = List();
+if(current < 0)
+{
+	risk = risk + 25;
+	riskWhy.add("+25 client owes Elite Onelink");
+}
+if(available < 0)
+{
+	risk = risk + 25;
+	riskWhy.add("+25 open requests exceed funds held");
+	steps = ((0 - available + 999.99) / 1000).toLong();
+	shortPts = if(steps * 4 > 20, 20, steps * 4);
+	risk = risk + shortPts;
+	riskWhy.add("+" + shortPts + " short by AED " + shortfall);
+	if(projected >= 0)
+	{
+		risk = risk + 5;
+		riskWhy.add("+5 relies on expected refunds");
+	}
+}
+if(projected < 0)
+{
+	risk = risk + 20;
+	riskWhy.add("+20 short even after expected refunds");
+}
+if(overdue > 0)
+{
+	risk = risk + 15;
+	riskWhy.add("+15 refunds overdue AED " + overdue.round(2));
+}
+if(available >= 0 && available < LOW && hasFunds)
+{
+	risk = risk + 10;
+	riskWhy.add("+10 available balance below AED 1,000");
+}
+if(openCount >= 3)
+{
+	risk = risk + 5;
+	riskWhy.add("+5 " + openCount + " open requests");
+}
+risk = if(risk > 100, 100, risk);
+riskStatus = "Low";
+if(risk >= 75)
+{
+	riskStatus = "Critical";
+}
+else if(risk >= 50)
+{
+	riskStatus = "High";
+}
+else if(risk >= 25)
+{
+	riskStatus = "Medium";
+}
+
+// client recommendation
+if(openCount == 0)
+{
+	rec = if(current < 0, "⛔ Client owes Elite Onelink AED " + (0 - current).round(2) + ". Collect before any new payment. ", "Client holds AED " + current.round(2) + ". ");
+	rec = rec + if(upcoming > 0, "Expected refunds: AED " + upcoming.round(2) + ". ", "") + "No open payment requests.";
+}
+else if(approval == "✅ Safe to approve" || approval == "⚠ Low available balance")
+{
+	rec = approval + ": client holds AED " + current.round(2) + ", open requests total AED " + openTotal.round(2) + if(reserved > 0, ", AED " + reserved.round(2) + " reserved", "") + ", leaving AED " + available + " available.";
+}
+else if(approval == "⛔ Hold requests")
+{
+	rec = "⛔ Hold requests: client is short by AED " + shortfall + " (holds AED " + current.round(2) + ", open requests AED " + openTotal.round(2) + ")" + if(upcoming > 0, " and still short by AED " + (0 - projected) + " after expected refunds of AED " + upcoming.round(2), "") + ".";
+}
+else
+{
+	rec = approval + ": client currently holds AED " + current.round(2) + " and has expected refunds of AED " + upcoming.round(2) + ". Projected balance after recovery equals AED " + projected + " after open requests of AED " + openTotal.round(2) + "." + if(overdue > 0, " AED " + overdue.round(2) + " of the refunds is overdue.", "");
+}
+
+// ---------- 5. alerts (on a change only, de-duplicated per client, type and day) ----------
+alerts = List();
+if(available >= 0 && available < VERY_LOW && !(prevAvailable < VERY_LOW))
+{
+	alerts.add({"type":"Balance below AED 500","severity":"Warning","amount":available,"ref":"","msg":clientName + ": available balance fell to AED " + available + "."});
+}
+else if(available >= 0 && available < LOW && !(prevAvailable < LOW))
+{
+	alerts.add({"type":"Balance below AED 1,000","severity":"Warning","amount":available,"ref":"","msg":clientName + ": available balance fell to AED " + available + "."});
+}
+if(fundStatus == "⛔ Short" && prevFund != "⛔ Short")
+{
+	alerts.add({"type":"Client became short","severity":"Critical","amount":shortfall,"ref":"","msg":clientName + " is short by AED " + shortfall + ". " + rec});
+}
+if((riskStatus == "High" || riskStatus == "Critical") && !(prevRisk == "High" || prevRisk == "Critical"))
+{
+	alerts.add({"type":"High risk client","severity":if(riskStatus == "Critical", "Critical", "Warning"),"amount":risk,"ref":"","msg":clientName + " risk " + risk + "/100 (" + riskStatus + "): " + riskWhy.toString("; ")});
+}
+paidRise = 0.0;
+if(prevExpensesText != "")
+{
+	paidRise = (paid - prevExpensesText.toDecimal()).round(2);
+}
+if(paidRise >= LARGE_EXPENSE)
+{
+	alerts.add({"type":"Large expense","severity":"Warning","amount":paidRise,"ref":"","msg":clientName + ": AED " + paidRise + " paid out of the CFDA since the last check."});
+}
+
+// ---------- 6. each open request: figures, duplicates, approval decisions, stale CFDA check ----------
+auditRows = List();
+for each r in requests
+{
+	rid = r.get("module_record_id").toString();
+	rname = ifnull(r.get("record_name"), "").toString().trim();
+	st = ifnull(r.get("status"), "").toString();
+	ps = ifnull(r.get("cf_status"), "").toString();
+	amountTxt = ifnull(r.get("cf_amount_aed"), "").toString();
+	amount = 0.0;
+	if(amountTxt != "")
+	{
+		amount = amountTxt.toDecimal();
+	}
+	seen = ifnull(r.get("cf_engine_seen_status"), "").toString();
+	isOpen = openIds.contains(rid);
+	upd = Map();
+	if(isOpen)
+	{
+		otherOpen = (openTotal - amount).round(2);
+		availableAfter = (current - reserved - otherOpen - amount).round(2);
+		projectedAfter = (availableAfter + upcoming).round(2);
+		fs = "✅ COVERED";
+		if(availableAfter < 0)
+		{
+			fs = if(projectedAfter >= 0, "⏳ PENDING REFUND", "⛔ SHORT");
+		}
+		held = "Client holds AED " + current.round(2) + if(otherOpen > 0, ", AED " + otherOpen + " already committed to other open requests", "") + if(reserved > 0, ", AED " + reserved.round(2) + " reserved", "") + ".";
+		if(fs == "✅ COVERED")
+		{
+			note = "✅ APPROVE: " + held + " After this request of AED " + amount.round(2) + ", AED " + availableAfter + " remains available.";
+		}
+		else if(fs == "⏳ PENDING REFUND")
+		{
+			note = if(overdue > 0, "⚠ AWAIT REFUND COLLECTION: ", "✅ AVAILABLE AFTER REFUND RECOVERY: ") + held + " Expected refunds of AED " + upcoming.round(2) + " bring the projected balance after this request to AED " + projectedAfter + "." + if(overdue > 0, " AED " + overdue.round(2) + " of those refunds is overdue: collect before paying.", " Pay once the refund is in, or approve now as an override.");
+		}
+		else
+		{
+			note = "⛔ HOLD: " + held + " Client is short by AED " + (0 - availableAfter) + " for this request of AED " + amount.round(2) + if(upcoming > 0, ", and still short by AED " + (0 - projectedAfter) + " after expected refunds of AED " + upcoming.round(2), "") + ". Collect funds first, or approve as an override.";
+		}
+		dup = "";
+		createdDate = ifnull(r.get("created_time"), "").toString().subString(0,10);
+		for each o in openReqs
+		{
+			oid = o.get("module_record_id").toString();
+			oamountTxt = ifnull(o.get("cf_amount_aed"), "").toString();
+			oamount = 0.0;
+			if(oamountTxt != "")
+			{
+				oamount = oamountTxt.toDecimal();
+			}
+			if(oid != rid && abs(oamount - amount) <= 1 && dup == "")
+			{
+				ocreated = ifnull(o.get("created_time"), "").toString().subString(0,10);
+				if(createdDate != "" && ocreated != "" && abs(daysBetween(createdDate.toDate("yyyy-MM-dd"), ocreated.toDate("yyyy-MM-dd"))) <= DUP_DAYS)
+				{
+					dup = "Possible duplicate of " + ifnull(o.get("record_name"), oid).toString().trim() + " (" + oid + ")";
+				}
+			}
+		}
+		if(ifnull(r.get("cf_fund_status"), "").toString() != fs)
+		{
+			upd.put("cf_fund_status", fs);
+		}
+		if(ifnull(r.get("cf_ai_recommendation"), "").toString() != note)
+		{
+			upd.put("cf_ai_recommendation", note);
+		}
+		upd.put("cf_expected_refunds", upcoming.round(2));
+		upd.put("cf_projected_after_refunds", projectedAfter);
+		upd.put("cf_client_risk_score", risk);
+		if(ifnull(r.get("cf_duplicate_check"), "").toString() != dup)
+		{
+			upd.put("cf_duplicate_check", dup);
+			if(dup != "")
+			{
+				alerts.add({"type":"Duplicate request","severity":"Warning","amount":amount,"ref":rid,"msg":rname + " (AED " + amount.round(2) + ") for " + clientName + ": " + dup + "."});
+			}
+		}
+		// the existing CFDA check only re-runs when a request is saved: when the client's CFDA balance has been
+		// updated since this request was checked, ask it to re-check (it watches "Recheck requested")
+		checkedAt = ifnull(r.get("cf_balance_checked_at"), "").toString();
+		oldBalTxt = ifnull(r.get("cf_cfda_balance"), "").toString();
+		oldBal = 0.0;
+		if(oldBalTxt != "")
+		{
+			oldBal = oldBalTxt.toDecimal();
+		}
+		if(cfdaUpdatedAt != "" && checkedAt != "" && cfdaUpdatedAt > checkedAt && abs(oldBal - current) > 0.01)
+		{
+			upd.put("cf_recheck_requested", nowText + " | CFDA balance changed to AED " + current.round(2));
+		}
+	}
+	// approval decisions and overrides, logged once per status the engine has not seen yet
+	stateNow = st + if(ps != "", " / " + ps, "");
+	if(seen != stateNow)
+	{
+		upd.put("cf_engine_seen_status", stateNow);
+		if(seen == "")
+		{
+			alerts.add({"type":"New payment request","severity":"Info","amount":amount,"ref":rid,"msg":"New payment request " + rname + " for " + clientName + ": AED " + amount.round(2) + ". " + ifnull(upd.get("cf_ai_recommendation"), ifnull(r.get("cf_ai_recommendation"), "")).toString()});
+		}
+		else
+		{
+			fsNow = ifnull(upd.get("cf_fund_status"), ifnull(r.get("cf_fund_status"), "")).toString();
+			shortNow = fsNow.contains("SHORT") || ifnull(r.get("cf_covered_or_short"), "").toString().contains("Short");
+			override = st == "approved" && shortNow && !seen.startsWith("approved");
+			auditRows.add({"type":if(override, "Manual override", "Approval decision"),"ref":rid,"amount":amount,"before":seen,"after":stateNow,"details":rname + ": " + seen + " -> " + stateNow + if(override, ". Approved while the client was short.", "")});
+			if(override)
+			{
+				alerts.add({"type":"Approved while short","severity":"Critical","amount":amount,"ref":rid,"msg":rname + " for " + clientName + " (AED " + amount.round(2) + ") was approved while the client is short. " + ifnull(r.get("cf_ai_recommendation"), "").toString()});
+			}
+		}
+	}
+	if(upd.size() > 0)
+	{
+		resp = invokeurl
+		[
+			url :base + "cm_client_payment_request/" + rid + "?organization_id=" + orgId
+			type :PUT
+			parameters:upd.toString()
+			headers:{"Content-Type":"application/json"}
+			connection:conn
+		];
+	}
+}
+
+// ---------- 7. write the alerts (once per client, type and day; per request for request alerts) ----------
+alertLines = List();
+for each a in alerts
+{
+	key = clientId + "|" + a.get("type") + "|" + if(a.get("ref") != "", a.get("ref"), today);
+	title = a.get("type") + " | " + clientName;
+	exists = false;
+	ex = invokeurl
+	[
+		url :base + "cm_fund_alert"
+		type :GET
+		parameters:{"organization_id":orgId,"search_text":title,"per_page":50}
+		connection:conn
+	];
+	for each e in ifnull(ex.get("module_records"), List())
+	{
+		if(ifnull(e.get("cf_dedupe_key"), "").toString() == key)
+		{
+			exists = true;
+		}
+	}
+	if(!exists)
+	{
+		sev = a.get("severity");
+		emailState = "Not needed";
+		if(alertEmails != "" && sev != "Info")
+		{
+			sendmail
+			[
+				from :zoho.adminuserid
+				to :alertEmails
+				subject :"[" + sev + "] " + title
+				message :a.get("msg") + "<br><br>Available: AED " + available + " · Projected: AED " + projected + " · Risk " + risk + "/100 (" + riskStatus + ")<br>" + rec
+			]
+			emailState = "Sent";
+		}
+		body = {"record_name":title,"cf_client":clientId,"cf_alert_type":a.get("type"),"cf_severity":sev,"cf_alert_message":a.get("msg"),"cf_alert_amount":a.get("amount"),"cf_request_reference":a.get("ref"),"cf_email_status":emailState,"cf_whatsapp_status":if(sev == "Critical", "Queued", "Not needed"),"cf_alert_status":"Open","cf_raised_at":nowText,"cf_dedupe_key":key};
+		resp = invokeurl
+		[
+			url :base + "cm_fund_alert?organization_id=" + orgId
+			type :POST
+			parameters:body.toString()
+			headers:{"Content-Type":"application/json"}
+			connection:conn
+		];
+		alertLines.add(nowText + " " + sev + ": " + a.get("type"));
+	}
+}
+
+// ---------- 8. audit: the check itself, when something moved, plus approval decisions ----------
+changed = prevAvailableText == "" || abs(prevAvailable - available) > 0.01 || prevFund != fundStatus || prevRisk != riskStatus;
+eventType = "Recommendation";
+if(triggerKind == "request")
+{
+	eventType = "Request checked";
+}
+else if(triggerKind == "refund")
+{
+	eventType = "Refund recorded";
+}
+else if(triggerKind == "cfda")
+{
+	eventType = "Balance changed";
+}
+else if(triggerKind == "nightly")
+{
+	eventType = "Nightly sweep";
+}
+if(changed || triggerKind == "request")
+{
+	auditRows.add({"type":eventType,"ref":trigger,"amount":openTotal,"before":prevFund,"after":fundStatus,"details":"Held AED " + current.round(2) + " · open requests AED " + openTotal.round(2) + " · reserved AED " + reserved.round(2) + " · expected refunds AED " + upcoming.round(2) + " · available AED " + available + " · projected AED " + projected + " · risk " + risk + " (" + riskWhy.toString("; ") + ")\n" + rec,"availableBefore":if(prevAvailableText == "", "", prevAvailable)});
+}
+for each e in auditRows
+{
+	body = {"record_name":e.get("type") + " | " + clientName,"cf_client":clientId,"cf_event_type":e.get("type"),"cf_source_record":e.get("ref").toString().left(250),"cf_event_amount":e.get("amount"),"cf_available_after":available,"cf_status_before":e.get("before"),"cf_status_after":e.get("after"),"cf_performed_by":if(triggerUser != "", triggerUser, zoho.loginuser),"cf_event_time":nowText,"cf_event_details":e.get("details")};
+	if(e.get("availableBefore") != null && e.get("availableBefore") != "")
+	{
+		body.put("cf_available_before", e.get("availableBefore"));
+	}
+	resp = invokeurl
+	[
+		url :base + "cm_fund_audit_log?organization_id=" + orgId
+		type :POST
+		parameters:body.toString()
+		headers:{"Content-Type":"application/json"}
+		connection:conn
+	];
+}
+
+// ---------- 9. the client's row ----------
+oldAlerts = ifnull(cfi.get("cf_balance_alert"), "").toString();
+newAlerts = if(alertLines.size() > 0, alertLines.toString("\n") + if(oldAlerts != "", "\n" + oldAlerts, ""), oldAlerts);
+if(newAlerts.length() > 3000)
+{
+	newAlerts = newAlerts.left(3000);
+}
+row = {"cf_client_id":clientId,"cf_deposit_received":received,"cf_total_expenses_used":paid,"cf_total_refunds_received":refundsReceived.round(2),"cf_current_balance":current.round(2),"cf_upcoming_refunds":upcoming.round(2),"cf_overdue_refunds":overdue.round(2),"cf_open_requests":openTotal.round(2),"cf_open_request_count":openCount,"cf_available_balance":available,"cf_projected_balance":projected,"cf_shortfall":shortfall,"cf_fund_status":fundStatus,"cf_risk_score":risk,"cf_risk_status":riskStatus,"cf_approval_status":approval,"cf_ai_recommendation":rec + "\n\nRisk " + risk + "/100: " + riskWhy.toString("; "),"cf_balance_alert":newAlerts,"cf_last_checked":nowText + " · " + triggerKind};
+resp = invokeurl
+[
+	url :base + "cm_client_fund_intelligence/" + cfiId + "?organization_id=" + orgId
+	type :PUT
+	parameters:row.toString()
+	headers:{"Content-Type":"application/json"}
+	connection:conn
+];
+info resp;

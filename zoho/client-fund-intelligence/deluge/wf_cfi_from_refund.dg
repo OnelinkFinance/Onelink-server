@@ -1,0 +1,147 @@
+// =====================================================================================================
+// wf_cfi_from_refund — a refund was logged, received, became overdue or was written off
+// Zoho Books > Settings > Automation > Custom Functions > New > Module: Client Refund
+// Keep the header Zoho generates (record arrives as `cm_client_refund`); paste this as the body.
+// Workflow rule: see README ("Client Refund — fund check").
+// =====================================================================================================
+orgId = "898300452";
+base = "https://www.zohoapis.com/books/v3/";
+conn = "cfibooks";
+alertEmails = "";                  // same list as in cfi_engine; blank = no email
+
+f = cm_client_refund;
+clientId = ifnull(f.get("cf_client"), "").toString();
+if(clientId == "")
+{
+	return;
+}
+fid = ifnull(f.get("module_record_id"), ifnull(f.get("record_id"), f.get("id"))).toString();
+fname = ifnull(f.get("record_name"), fid).toString().trim();
+status = ifnull(f.get("cf_refund_status"), "Expected").toString();
+nowText = zoho.currenttime.toString("yyyy-MM-dd HH:mm") + " Dubai";
+reason = zoho.currenttime.toString("yyyy-MM-dd HH:mm:ss") + "|refund|" + fid + "|" + zoho.loginuser;
+
+contact = invokeurl
+[
+	url :base + "contacts/" + clientId
+	type :GET
+	parameters:{"organization_id":orgId}
+	connection:conn
+];
+clientName = contact.get("contact").get("contact_name").toString().trim();
+
+// "Refund received" / "Refund overdue": one alert per refund and status
+alertType = "";
+severity = "Info";
+amountTxt = "";
+if(status == "Received" || status == "Partly received")
+{
+	alertType = "Refund received";
+	amountTxt = ifnull(f.get("cf_received_amount"), "").toString();
+}
+else if(status == "Overdue")
+{
+	alertType = "Refund overdue";
+	severity = "Warning";
+	amountTxt = ifnull(f.get("cf_expected_amount"), "").toString();
+}
+if(alertType != "")
+{
+	amount = 0.0;
+	if(amountTxt != "")
+	{
+		amount = amountTxt.toDecimal();
+	}
+	key = clientId + "|" + alertType + "|" + fid + "|" + status;
+	title = alertType + " | " + clientName;
+	exists = false;
+	ex = invokeurl
+	[
+		url :base + "cm_fund_alert"
+		type :GET
+		parameters:{"organization_id":orgId,"search_text":title,"per_page":50}
+		connection:conn
+	];
+	for each e in ifnull(ex.get("module_records"), List())
+	{
+		if(ifnull(e.get("cf_dedupe_key"), "").toString() == key)
+		{
+			exists = true;
+		}
+	}
+	if(!exists)
+	{
+		msg = clientName + ": " + fname + " (" + ifnull(f.get("cf_authority"), "").toString() + ", " + ifnull(f.get("cf_refund_reason"), "").toString() + ") is " + status.toLowerCase() + ": AED " + amount.round(2) + if(status == "Overdue", ", expected by " + ifnull(f.get("cf_expected_date"), "").toString(), "") + ".";
+		emailState = "Not needed";
+		if(alertEmails != "" && severity != "Info")
+		{
+			sendmail
+			[
+				from :zoho.adminuserid
+				to :alertEmails
+				subject :"[" + severity + "] " + title
+				message :msg
+			]
+			emailState = "Sent";
+		}
+		resp = invokeurl
+		[
+			url :base + "cm_fund_alert?organization_id=" + orgId
+			type :POST
+			parameters:{"record_name":title,"cf_client":clientId,"cf_alert_type":alertType,"cf_severity":severity,"cf_alert_message":msg,"cf_alert_amount":amount,"cf_request_reference":fid,"cf_email_status":emailState,"cf_whatsapp_status":"Not needed","cf_alert_status":"Open","cf_raised_at":nowText,"cf_dedupe_key":key}.toString()
+			headers:{"Content-Type":"application/json"}
+			connection:conn
+		];
+		if(alertType == "Refund received")
+		{
+			resp = invokeurl
+			[
+				url :base + "cm_fund_audit_log?organization_id=" + orgId
+				type :POST
+				parameters:{"record_name":"Refund received | " + clientName,"cf_client":clientId,"cf_event_type":"Refund received","cf_source_record":fid,"cf_event_amount":amount,"cf_status_after":status,"cf_performed_by":zoho.loginuser,"cf_event_time":nowText,"cf_event_details":msg}.toString()
+				headers:{"Content-Type":"application/json"}
+				connection:conn
+			];
+		}
+	}
+}
+
+// re-check the client's funds
+found = "";
+search = invokeurl
+[
+	url :base + "cm_client_fund_intelligence"
+	type :GET
+	parameters:{"organization_id":orgId,"search_text":clientName,"per_page":50}
+	connection:conn
+];
+for each x in ifnull(search.get("module_records"), List())
+{
+	if(ifnull(x.get("cf_client"), "").toString() == clientId)
+	{
+		found = x.get("module_record_id").toString();
+	}
+}
+if(found != "")
+{
+	resp = invokeurl
+	[
+		url :base + "cm_client_fund_intelligence/" + found + "?organization_id=" + orgId
+		type :PUT
+		parameters:{"cf_recalc_requested":reason}.toString()
+		headers:{"Content-Type":"application/json"}
+		connection:conn
+	];
+}
+else
+{
+	resp = invokeurl
+	[
+		url :base + "cm_client_fund_intelligence?organization_id=" + orgId
+		type :POST
+		parameters:{"record_name":clientName,"cf_client":clientId,"cf_client_id":clientId,"cf_recalc_requested":reason}.toString()
+		headers:{"Content-Type":"application/json"}
+		connection:conn
+	];
+}
+info resp;
