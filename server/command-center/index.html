@@ -345,6 +345,10 @@ th { background: var(--th); }
 .tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .titlerow h1 { background: linear-gradient(92deg, var(--ink) 30%, var(--accent)); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .eyebrow { font: 500 11.5px/1 var(--f-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); margin: 0 0 6px; }
+/* month strip: one click per month */
+.monthstrip { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+.monthstrip::-webkit-scrollbar { display: none; }
+.monthstrip .chip { flex: none; min-height: 32px; padding: 0 12px; }
 /* roll-up panes (Sales, Clients) */
 .rollbar { display: grid; grid-template-columns: minmax(90px, 200px) minmax(0, 1fr) 110px; gap: 12px; align-items: center; font-size: 13px; padding: 5px 0; }
 .rollbar .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -409,6 +413,7 @@ th { background: var(--th); }
   <div id="notice" class="banner info" hidden></div>
   <div id="loading" class="banner load">Loading…</div>
   <div id="body" hidden>
+    <nav class="chips monthstrip" id="monthStrip" aria-label="Month"></nav>
     <nav class="chips" id="zoneChips" aria-label="Free zone"></nav>
     <section class="kpis" id="kpis" aria-label="Key figures"></section>
     <nav class="tabs" role="tablist" id="tabs"></nav>
@@ -1048,7 +1053,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   let data = null;              // the dashboard built from inputs for the chosen month/span
   let tab = 'overview', gz = '', drawerOpen = false, busy = false;
   // Period shown: 1 = the chosen month, 3/6/12 = that many months ending with it, 0 = every month loaded.
-  let span = 0; try { const v = localStorage.getItem('fzc.span'); if (v != null && [0, 1, 3, 6, 12].includes(+v)) span = +v; } catch (e) {}
+  let span = 1; try { const v = localStorage.getItem('fzc.span2'); if (v != null && [0, 1, 3, 6, 12].includes(+v)) span = +v; } catch (e) {}
   const MAX_MONTHS = 24;
   let db = null, user = null, canWrite = false;
   // Background switcher: three light backgrounds and one dark. Remembered in this browser only.
@@ -1421,7 +1426,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   $('refresh').addEventListener('click', () => goLive(true));
   $('save').addEventListener('click', async () => { $('save').disabled = true; await saveSnapshot(); $('save').disabled = false; renderStatus(); });
   $('spanSeg').querySelectorAll('[data-span]').forEach(b => b.onclick = () => {
-    span = +b.dataset.span; paintSpan(); try { localStorage.setItem('fzc.span', String(span)); } catch (e) {}
+    span = +b.dataset.span; paintSpan(); try { localStorage.setItem('fzc.span2', String(span)); } catch (e) {}
     if (!data) return;
     setPeriod(); if (fx.scope !== 'all') fx.scope = span === 1 ? 'month' : 'period'; render();
     const have = data.summary.length;
@@ -1446,7 +1451,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
 
   // ---- filters ----
   const TX0 = { scope: 'period', zone: '', type: '', status: '', source: '', trackerStatus: '', ciStatus: '', agent: '', from: '', to: '', min: '', q: '', ckey: '', cname: '', ready: '', problems: false, more: false };
-  let fx = { ...TX0 }, fe = { severity: '', kind: '', zone: '', q: '' }, fr = { state: '', zone: '', manager: '', q: '' }, fi = { status: '', zone: '', q: '' }, fs = { set: 'lines', q: '' };
+  let fx = { ...TX0 }, fe = { severity: '', kind: '', zone: '', q: '' }, fr = { state: '', zone: '', manager: '', q: '' }, fi = { status: '', zone: '', q: '', all: false }, fs = { set: 'lines', q: '' };
   const OK_STATES = ['Completed', 'No commission', 'Awaiting payment'];
   const zoneOk = z => !gz || z === gz;
   const txAllRows = () => fx.scope === 'month' ? data.work : data.workAll;
@@ -1541,7 +1546,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     invoiced: { t: 'Invoiced to free zones', f: () => `Sum, ex VAT, of the commission invoices in Zoho Books${zt()} that bill the months in ${data.periodLabel}. The month an invoice bills is read from its number or text, else it is the month before the invoice date. The bar shows that as a share of the commission earned.` },
     collected: { t: 'Collected', f: () => `What has been paid on the Zoho Books commission invoices${zt()} that bill the months in ${data.periodLabel}: each invoice's total less its open balance. Amounts include 5% VAT.` },
     uninvoiced: { t: 'Not yet invoiced', f: () => `Sum of the commission on deals in ${data.periodLabel}${zt()} whose free zone and month have no commission invoice in Zoho Books, or one for less than the commission due. The smaller figure underneath adds every month loaded.`, go: { scope: 'period', status: 'Pending commission invoice' }, filter: w => (w.flags || []).includes('Pending commission invoice') },
-    ready: { t: 'Ready to invoice', f: () => `Across every month loaded${zt()}: commission not yet invoiced on deals whose client invoice is paid in full in Zoho Books. Payment in full is taken as the sign that the work is done, so the commission invoice can be raised. Deals whose client invoice still has a balance are counted as waiting on client payment.`, filter: w => w.readiness === 'Ready to invoice', all: true },
+    ready: { t: 'Ready to invoice', f: () => `For ${data.periodLabel}${zt()}: commission not yet invoiced on deals whose client invoice is paid in full in Zoho Books. Payment in full is taken as the sign that the work is done, so the commission invoice can be raised. Deals whose client invoice still has a balance are counted as waiting on client payment.`, filter: w => w.readiness === 'Ready to invoice' },
     toCollect: { t: 'Still to collect', f: () => `Open today, whatever the period: the open balance on every commission invoice in Zoho Books${zt()}. Amounts include 5% VAT. The coloured bar splits it by days since the invoice date.` },
     deals: { t: 'Free zone deals', f: () => `GP report deals in ${data.periodLabel}${zt() || ' for RAK DAO, RAK ICC, Meydan and RAKEZ'}. Complete = Completed, No commission or Awaiting payment.`, go: { scope: 'period' } },
     renewals: { t: 'Renewals due', f: () => `As of today: Renewals sheet rows${zt()} that are Not started, Overdue or In progress — due within ${data.windowDays} days or already expired, with no renewal on the GP reports.` }
@@ -1675,7 +1680,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
       uninvoicedAll: sumMonths(data.summary.map(x => x.month), gz).uninvoiced,
       collected: Math.round(recd.reduce((a, x) => a + (x.amount || 0), 0) * 100) / 100, collectedCount: recd.length, recd,
       toCollect: data.commissionInvoices ? coll.reduce((a, x) => a + (x.toCollect || 0), 0) : null, toCollectCount: coll.length, coll,
-      ...(() => { const open = dealsIn(data.summary.map(x => x.month)), rd = open.filter(w => w.readiness === 'Ready to invoice'), wt = open.filter(w => w.readiness === 'Waiting on client payment'); const sum = l => Math.round(l.reduce((a, w) => a + (w.commission || 0), 0) * 100) / 100; return { ready: sum(rd), readyCount: rd.length, waiting: sum(wt) }; })(),
+      ...(() => { const open = dealsIn(data.pm), rd = open.filter(w => w.readiness === 'Ready to invoice'), wt = open.filter(w => w.readiness === 'Waiting on client payment'); const sum = l => Math.round(l.reduce((a, w) => a + (w.commission || 0), 0) * 100) / 100; return { ready: sum(rd), readyCount: rd.length, waiting: sum(wt) }; })(),
       deals: deals.length, completed: deals.filter(w => OK_STATES.includes(w.status)).length, renewals: ren.length, overdue: ren.filter(r => r.state === 'Overdue').length };
   }
   function spark(values, color) {
@@ -1703,6 +1708,9 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     if (!introDone) { introDone = true; document.body.classList.add('intro'); setTimeout(() => document.body.classList.remove('intro'), 1900); }
     $('month').value = data.month;
     renderStatus();
+    // Every month that was read, newest first: click one to see that month alone.
+    $('monthStrip').innerHTML = `<span class="plabel">Month</span>` + inputs.months.slice().reverse().map(m => `<button class="chip" type="button" data-m="${m}" aria-pressed="${span === 1 && m === data.month}">${monthLabel(m)}</button>`).join('');
+    $('monthStrip').querySelectorAll('[data-m]').forEach(b => b.onclick = () => { span = 1; paintSpan(); try { localStorage.setItem('fzc.span2', '1'); } catch (e) {} fx.scope = 'month'; setMonth(b.dataset.m); });
     $('zoneChips').innerHTML = `<span class="plabel">${esc(periodName(span))} · <b>${esc(data.periodLabel)}</b></span><button class="chip" type="button" data-z="" aria-pressed="${!gz}">All free zones <span class="n">${aed(periodCell('').commission)}</span></button>` + data.zones.filter(z => z.code !== 'OTHER').map(z => `<button class="chip" type="button" data-z="${z.code}" aria-pressed="${gz === z.code}"><i style="background:${SERIES[z.code]}"></i>${esc(z.name)} <span class="n">${aed(periodCell(z.code).commission)}</span></button>`).join('');
     $('zoneChips').querySelectorAll('[data-z]').forEach(b => b.onclick = () => { gz = b.dataset.z; render(); });
 
@@ -1729,7 +1737,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     $('kpis').querySelectorAll('[data-ktab]').forEach(b => b.onclick = () => { tab = b.dataset.ktab; render(); });
 
     const exN = exList().length, exHigh = exList().filter(e => e.severity === 'high').length;
-    const tabs = [['overview', 'Executive'], ['report', 'Commission engine'], ['ready', 'Ready to invoice', kpiVals().readyCount], ['sales', 'Sales'], ['invoices', 'CFO · Collections', (data.commissionInvoices || []).filter(c => zoneOk(c.zone)).length], ['clients', 'Clients'], ['exceptions', 'Tasks', exN, exHigh], ['renewals', 'Renewals', data.renewals.filter(r => zoneOk(r.zone)).length], ['work', 'Transactions', txBase().length], ...(data.emails ? [['emails', 'Emails', data.emails.length]] : []), ['source', 'Source data'], ['how', 'Logic & sources']];
+    const tabs = [['overview', 'Executive'], ['report', 'Commission engine'], ['ready', 'Ready to invoice', kpiVals().readyCount], ['sales', 'Sales'], ['invoices', 'CFO · Collections', invBase().length], ['clients', 'Clients'], ['exceptions', 'Tasks', exN, exHigh], ['renewals', 'Renewals', data.renewals.filter(r => zoneOk(r.zone)).length], ['work', 'Transactions', txBase().length], ...(data.emails ? [['emails', 'Emails', data.emails.length]] : []), ['source', 'Source data'], ['how', 'Logic & sources']];
     if (!tabs.some(t => t[0] === tab)) tab = 'overview';
     $('tabs').innerHTML = tabs.map(([id, l, n, hot]) => `<button role="tab" type="button" data-tab="${id}" aria-selected="${id === tab}">${l}${n != null ? ` <span class="badge ${hot ? 'hot' : ''}">${n}</span>` : ''}</button>`).join('');
     $('tabs').querySelectorAll('button').forEach(b => b.onclick = () => { tab = b.dataset.tab; render(); });
@@ -1773,9 +1781,9 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
 
   // ---- Ready to invoice: has the client paid in Zoho Books? ----
   function ready() {
-    const open = dealsIn(allMonths()).filter(w => w.readiness);
+    const open = dealsIn(data.pm).filter(w => w.readiness);
     if (!data.sources.zoho || !data.sources.zoho.ok) return `<div class="card empty">Zoho Books was not read, so client payments cannot be checked. ${esc((data.sources.zoho && data.sources.zoho.detail) || '')}</div>`;
-    if (!open.length) return '<div class="card empty">No commission is waiting to be invoiced in the months loaded.</div>';
+    if (!open.length) return `<div class="card empty">No commission is waiting to be invoiced for ${esc(data.periodLabel)}.</div>`;
     const groups = [['Ready to invoice', 'The client invoice is paid in full in Zoho Books, so the work is treated as complete and the commission invoice can be raised.'], ['Waiting on client payment', 'The client invoice still has a balance in Zoho Books. Hold the commission invoice until it is paid.'], ['Client payment not confirmed', 'No Zoho invoice number on the GP report row, or the invoice was not found, is void or is a draft. Check the deal before invoicing.']];
     const sum = l => l.reduce((a, w) => a + (w.commission || 0), 0);
     const rd = open.filter(w => w.readiness === 'Ready to invoice');
@@ -1783,16 +1791,16 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     const table = l => `<div class="tablewrap"><table><thead><tr><th>Client / company</th><th>Free zone</th><th>Month</th><th>Client invoice</th><th>Paid in Zoho Books</th><th class="r">Client balance</th><th class="r">Commission to invoice</th><th></th></tr></thead><tbody>
       ${l.sort((a, b) => (a.zone || '').localeCompare(b.zone || '') || (a.date || '').localeCompare(b.date || '')).map(w => { const ci = w.clientInvoiceRecord; return `<tr><td><b>${esc(w.name)}</b><div class="muted small">${esc(w.services)}${w.agent ? ' · ' + esc(w.agent) : ''}</div></td><td class="nw">${zoneDots([w.zone])}</td><td class="nw">${monthLabel(w.month)}</td><td class="nw">${ci && ci.id ? ext(booksUrl(ci.id), esc(w.invoice) + ' ↗') : esc(w.invoice || '—')}${w.invoiceStatus ? `<div>${pill(w.invoiceStatus)}</div>` : ''}</td><td>${yn(w.clientPaid)}</td><td class="r">${w.clientBalance == null ? '—' : aedFull(w.clientBalance)}</td><td class="r"><b>${aedFull(w.commission)}</b></td><td><button class="btn sm" type="button" data-deal="${data.workAll.indexOf(w)}">Explain</button></td></tr>`; }).join('')}
       <tr class="total"><td colspan="6">Total</td><td class="r">${aedFull(sum(l))}</td><td></td></tr></tbody></table></div>`;
-    return `<div class="card"><h2>Commission invoices you can raise now${gz ? ' · ' + esc(zoneName(gz)) : ''} <span class="acts"><button class="btn sm" type="button" id="rd_csv">Export CSV</button></span></h2>
+    return `<div class="card"><h2>Commission invoices you can raise · ${esc(data.periodLabel)}${gz ? ' · ' + esc(zoneName(gz)) : ''} <span class="acts"><button class="btn sm" type="button" id="rd_csv">Export CSV</button></span></h2>
         ${byZone.length ? `<p class="finding">${aed(sum(rd))} of commission is ready to invoice across ${rd.length} deal${rd.length === 1 ? '' : 's'}: the client has paid in full.</p>
         <div class="tablewrap"><table><thead><tr><th>Free zone</th><th class="r">Deals</th><th>Months covered</th><th class="r">Commission ex VAT</th><th class="r">Invoice total incl. 5% VAT</th></tr></thead><tbody>${byZone.map(x => `<tr><td>${zoneDots([x.z.code])}</td><td class="r">${x.n}</td><td>${x.months.map(monthLabel).join(', ')}</td><td class="r"><b>${aedFull(x.amt)}</b></td><td class="r">${aedFull(x.amt * 1.05)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="finding">Nothing is ready to invoice yet: no deal with commission outstanding has a fully paid client invoice.</p>'}
-        <small class="note">Covers every month loaded, not just the period chosen above. "Not yet invoiced" is judged per free zone and month: a month counts as invoiced once Zoho Books holds commission invoices for at least the commission due.</small></div>
+        <small class="note">Covers ${esc(data.periodLabel)}; choose another month or a longer period at the top. "Not yet invoiced" is judged per free zone and month: a month counts as invoiced once Zoho Books holds commission invoices for at least the commission due.</small></div>
       ${groups.map(([name, why]) => { const l = open.filter(w => w.readiness === name); return l.length ? `<div class="card"><h2>${pill(name)} <span class="muted" style="font-weight:400;font-size:13px">${l.length} deal${l.length === 1 ? '' : 's'} · ${aed(sum(l))}</span></h2><p class="muted" style="margin:0 0 10px">${esc(why)}</p>${table(l)}</div>` : ''; }).join('')}`;
   }
   function wireReady() {
     wireDealLinks($('panes'));
     const b = $('rd_csv'); if (b) b.onclick = () => saveCsv(`commission-ready-to-invoice-${data.month}.csv`, [['Readiness', 'Client / company', 'Client', 'Free zone', 'Month', 'Date', 'Service', 'Agent', 'Client invoice', 'Client invoice status', 'Client balance AED', 'Commission AED'],
-      ...dealsIn(allMonths()).filter(w => w.readiness).map(w => [w.readiness, w.name, w.client, zoneName(w.zone), w.month, w.date, w.services, w.agent, w.invoice, w.invoiceStatus, w.clientBalance, w.commission])]);
+      ...dealsIn(data.pm).filter(w => w.readiness).map(w => [w.readiness, w.name, w.client, zoneName(w.zone), w.month, w.date, w.services, w.agent, w.invoice, w.invoiceStatus, w.clientBalance, w.commission])]);
   }
 
   function sales() {
@@ -1869,7 +1877,8 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   }
 
   // ---- Overview ----
-  function exList() { return data.exceptions.filter(e => zoneOk(e.zone)); }
+  // Deal-level items follow the month(s) shown; collections and renewals are today's position, so they always show.
+  function exList() { return data.exceptions.filter(e => zoneOk(e.zone) && (!e.month || inPm(e.month))); }
   function overview() {
     const cards = data.zones.map(z => {
       const c = periodCell(z.code), tot = Math.max(c.commission, 0.01);
@@ -2019,7 +2028,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
         ${zrows.map(({ z, c, rec }) => `<tr><td class="nw"><span class="zn"><i style="background:${SERIES[z.code]}"></i>${esc(z.name)}</span></td><td class="r">${c.count}</td><td class="r">${c.newCount} / ${c.renewalCount}</td><td class="r">${aedFull(c.fees)}</td><td class="r"><b>${aedFull(c.commission)}</b></td><td class="r">${aedFull(c.invoicedLines)}</td><td class="r">${aedFull(c.uninvoiced)}</td><td class="r">${aedFull(c.missed)}</td><td class="r">${aedFull(c.invoiced)}</td><td class="r">${aedFull(rec)}</td></tr>`).join('')}
       </tbody></table></div>
       <h3 class="rh">Commission invoices raised in the period (${raised.length})</h3>
-      ${raised.length ? `<div class="tablewrap"><table><thead><tr><th>Invoice</th><th>Free zone</th><th>Date</th><th class="r">Amount</th><th>Tracker</th><th>Received on</th><th>Zoho</th><th></th></tr></thead><tbody>${raised.map(c => `<tr><td class="nw"><b>${esc(c.number)}</b>${c.sheetRow ? `<div class="small">${rowLink(L.checklist(c.sheetRow), 'Checklist row ' + c.sheetRow)}</div>` : ''}</td><td>${esc(zoneName(c.zone))}</td><td class="nw">${fmtDate(c.date)}</td><td class="r">${aedFull(c.amount)}</td><td>${c.inTracker ? pill(c.status) : pill('Not on tracker')}</td><td class="nw">${fmtDate(c.receivedOn)}</td><td>${c.zoho ? pill(c.zoho.status) : '<span class="muted">—</span>'}</td><td><button class="btn sm" type="button" data-ri="${(data.commissionInvoices || []).indexOf(c)}">Explain</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No commission invoices dated in this period.</div>'}
+      ${raised.length ? `<div class="tablewrap"><table><thead><tr><th>Invoice</th><th>Free zone</th><th>Date</th><th class="r">Amount</th><th>Status</th><th>Received on</th><th>Zoho</th><th></th></tr></thead><tbody>${raised.map(c => `<tr><td class="nw"><b>${esc(c.number)}</b>${c.sheetRow ? `<div class="small">${rowLink(L.checklist(c.sheetRow), 'Checklist row ' + c.sheetRow)}</div>` : ''}</td><td>${esc(zoneName(c.zone))}</td><td class="nw">${fmtDate(c.date)}</td><td class="r">${aedFull(c.amount)}</td><td>${c.inTracker ? pill(c.status) : pill('Not on tracker')}</td><td class="nw">${fmtDate(c.receivedOn)}</td><td>${c.zoho ? pill(c.zoho.status) : '<span class="muted">—</span>'}</td><td><button class="btn sm" type="button" data-ri="${(data.commissionInvoices || []).indexOf(c)}">Explain</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No commission invoices dated in this period.</div>'}
       <small class="note">Commission, invoiced, not yet invoiced and missed are the monthly summary figures (tracker where it covers the month — from ${esc(data.rules.trackerFrom ? monthLabel(data.rules.trackerFrom) : '—')} — otherwise the GP report checked against Zoho). Collected uses the Invoice Checklist's "Received on" date and includes VAT. Months before the tracker started show "Under review" because nothing on the tracker confirms them.</small></div>`;
   }
   function wireReport() {
@@ -2147,7 +2156,8 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   }
 
   // ---- Commission invoices ----
-  const invBase = () => (data.commissionInvoices || []).filter(c => zoneOk(c.zone));
+  const invMonth = c => (c.zoho && c.zoho.period) || String(c.date || '').slice(0, 7);
+  const invBase = () => (data.commissionInvoices || []).filter(c => zoneOk(c.zone) && (fi.all || inPm(invMonth(c))));
   function invRows() { const q = fi.q.toLowerCase(); return invBase().filter(c => (!fi.status || (c.inTracker ? c.status : 'Not on tracker') === fi.status) && (!q || c.number.toLowerCase().includes(q) || String(c.notes || '').toLowerCase().includes(q))); }
   function invoices() {
     const all = data.commissionInvoices || [];
@@ -2157,9 +2167,9 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     const mismatch = base.filter(x => x.zoho && x.inTracker && ((x.status === 'TO COLLECT' && x.zoho.status === 'paid') || (x.status === 'RECEIVED' && x.zoho.balance > 0.5)));
     return `<div class="card"><div class="statusrow"><button class="chip" type="button" data-is="" aria-pressed="${!fi.status}">All <span class="n">${base.length}</span></button>${Object.keys(c).sort().map(s => `<button class="chip" type="button" data-is="${esc(s)}" aria-pressed="${fi.status === s}">${pill(s)} <span class="n">${c[s]} · ${aed(tot(s))}</span></button>`).join('')}</div>
       ${mismatch.length ? `<div class="banner info" style="margin:0 0 12px">${mismatch.length} invoice${mismatch.length > 1 ? 's' : ''} where Zoho and the tracker disagree: ${mismatch.map(x => `<b>${esc(x.number)}</b>`).join(', ')} — Zoho shows ${mismatch[0].zoho.status === 'paid' ? 'paid' : 'a balance'} while the tracker says ${esc(mismatch[0].status)}.</div>` : ''}
-      <div class="fbar"><input type="search" id="i_q" value="${esc(fi.q)}" placeholder="Invoice no. or note" aria-label="Search"><button class="btn sm" type="button" id="i_reset">Reset</button><button class="btn sm" type="button" id="i_csv">Export CSV</button></div>
+      <div class="fbar"><input type="search" id="i_q" value="${esc(fi.q)}" placeholder="Invoice no. or note" aria-label="Search"><label class="btn sm" style="cursor:pointer"><input type="checkbox" id="i_all" ${fi.all ? 'checked' : ''} style="min-height:auto"> All months</label><button class="btn sm" type="button" id="i_reset">Reset</button><button class="btn sm" type="button" id="i_csv">Export CSV</button></div>
       <div id="invCount" class="count"></div><div class="tablewrap" id="invTable"></div>
-      <small class="note">Every commission invoice to the four free zones in Zoho Books for the months loaded. RECEIVED = no balance left; TO COLLECT = a balance is still open. Amounts include 5% VAT; commission on deals is ex VAT.</small></div>`;
+      <small class="note">Commission invoices in Zoho Books that bill ${esc(data.periodLabel)} — tick "All months" to see every one. RECEIVED = no balance left; TO COLLECT = a balance is still open. Amounts include 5% VAT; commission on deals is ex VAT.</small></div>`;
   }
   function wireInvoices() {
     if (!(data.commissionInvoices || []).length) return;
@@ -2167,7 +2177,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     const draw = () => {
       const rows = invRows();
       $('invCount').textContent = `${rows.length} invoice${rows.length === 1 ? '' : 's'} · AED ${aedFull(rows.reduce((a, c) => a + (c.amount || 0), 0))} invoiced · AED ${aedFull(rows.reduce((a, c) => a + (c.toCollect || 0), 0))} to collect`;
-      $('invTable').innerHTML = !rows.length ? '<div class="empty">Nothing matches.</div>' : `<table><thead><tr><th>Invoice</th><th>Free zone</th><th>Date</th><th class="r">Amount</th><th>Tracker</th><th>Received on</th><th class="r">To collect</th><th class="r">Days</th>${zi ? '<th>Zoho</th><th>Bills month</th>' : ''}<th></th></tr></thead><tbody>
+      $('invTable').innerHTML = !rows.length ? '<div class="empty">Nothing matches.</div>' : `<table><thead><tr><th>Invoice</th><th>Free zone</th><th>Date</th><th class="r">Amount</th><th>Status</th><th>Received on</th><th class="r">To collect</th><th class="r">Days</th>${zi ? '<th>Zoho</th><th>Bills month</th>' : ''}<th></th></tr></thead><tbody>
         ${rows.map(i => `<tr><td class="nw"><b>${esc(i.number)}</b>${i.sheetRow ? `<div class="small">${rowLink(L.checklist(i.sheetRow), 'Checklist row ' + i.sheetRow)}</div>` : ''}</td><td>${esc(zoneName(i.zone))}</td><td class="nw">${fmtDate(i.date)}</td><td class="r">${aedFull(i.amount)}</td>
           <td>${i.inTracker ? pill(i.status) : pill('Not on tracker')}</td><td class="nw">${fmtDate(i.receivedOn)}</td><td class="r">${i.toCollect ? aedFull(i.toCollect) : '—'}</td><td class="r">${i.daysOutstanding ?? '—'}</td>
           ${zi ? `<td class="nw">${i.zoho ? `${pill(i.zoho.status)}<div class="muted small">balance ${aedFull(i.zoho.balance)}</div>` : (i.date && i.date < data.months[0] + '-01' ? '<span class="muted">before period</span>' : '<span class="no">✗ not found</span>')}</td><td class="nw">${i.zoho ? `${monthLabel(i.zoho.period)}<div class="muted small">${esc(i.zoho.periodBasis)}</div>` : '—'}</td>` : ''}
@@ -2176,7 +2186,8 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     };
     $('panes').querySelectorAll('[data-is]').forEach(b => b.onclick = () => { fi.status = b.dataset.is; render(); });
     $('i_q').oninput = e => { fi.q = e.target.value; draw(); };
-    $('i_reset').onclick = () => { fi = { status: '', zone: '', q: '' }; render(); };
+    $('i_reset').onclick = () => { fi = { status: '', zone: '', q: '', all: false }; render(); };
+    $('i_all').onchange = e => { fi.all = e.target.checked; render(); };
     $('i_csv').onclick = () => document.querySelector('[data-export="inv"]').click();
     draw();
   }
