@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Freezone Command Center</title>
 <meta name="claude:viewport-fit-sides" content="cover">
+<script>(function(){var b="aurora";try{b=localStorage.getItem("fzc.bg")||b}catch(e){}var r=document.documentElement;r.setAttribute("data-bg",b);r.setAttribute("data-theme",b==="night"?"dark":"light");})();</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
@@ -301,10 +302,10 @@ h3.rh { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spa
 }
 /* ---- Command Center glass layer (presentation only; no figures are computed here) ---- */
 :root {
-  --page: #e8edfb; --surface: rgba(255,255,255,.64); --raised: rgba(255,255,255,.96); --sunk: rgba(33,68,255,.05);
+  --page: #f3f6fe; --surface: rgba(255,255,255,.72); --raised: rgba(255,255,255,.96); --sunk: rgba(33,68,255,.05);
   --line: rgba(11,20,48,.11); --border: rgba(11,20,48,.11); --grid: rgba(11,20,48,.07);
   --edge: rgba(255,255,255,.8); --th: #f3f6fd;
-  --glow1: rgba(33,68,255,.22); --glow2: rgba(0,200,240,.22); --glow3: rgba(122,92,255,.13);
+  --glow1: rgba(80,120,255,.16); --glow2: rgba(60,205,240,.16); --glow3: rgba(150,120,255,.09);
   --glass-shadow: inset 0 1px 0 rgba(255,255,255,.65), 0 0 0 1px rgba(11,20,48,.05), 0 12px 32px rgba(20,40,110,.09);
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
@@ -321,6 +322,9 @@ h3.rh { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spa
   --glow1: rgba(54,84,255,.34); --glow2: rgba(0,190,230,.20); --glow3: rgba(130,90,255,.20);
   --glass-shadow: inset 0 1px 0 rgba(255,255,255,.07), 0 14px 40px rgba(0,0,0,.38);
 }
+/* backgrounds (switched with the Background button; Night is the only dark one) */
+:root[data-bg="pearl"] { --page: #fbfcfe; --surface: rgba(255,255,255,.94); --glow1: transparent; --glow2: transparent; --glow3: transparent; --th: #f6f8fc; }
+:root[data-bg="sand"] { --page: #faf6ee; --surface: rgba(255,255,255,.74); --glow1: rgba(255,176,96,.20); --glow2: rgba(255,132,150,.12); --glow3: rgba(80,120,255,.08); --th: #f8f3ea; --accent-soft: #f3ecdf; }
 body::before { content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
   background: radial-gradient(62vmax 52vmax at 6% -12%, var(--glow1), transparent 62%), radial-gradient(52vmax 46vmax at 102% 2%, var(--glow2), transparent 60%), radial-gradient(64vmax 52vmax at 48% 112%, var(--glow3), transparent 62%); }
 .card, .kpi, .zcard, .banner, .tabs, .chip, .btn:not(.primary), .seg, .stepper { -webkit-backdrop-filter: blur(18px) saturate(150%); backdrop-filter: blur(18px) saturate(150%); }
@@ -361,6 +365,7 @@ th { background: var(--th); }
     <div class="brandrow">
       <span class="mark"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAJiElEQVR42u2aS6xk11WG/3+tfc6pqvv07ffT193txoa0TdQxxlIQYKRIiTPwhDCJyDBSMrJAAoRiBTGIFMkSDGDIDBkhRAigTBAjsLExiglE8SN+dbvdbbe7c7vvo27VOXuvn8G5l7YVKe52N5FQqnTqaNWufXbtbz/W/veqzdXfEEzhDAcMkRCO6A1DOIojO7pKxSEHnEy9ASQgAf9rO+hQEhJgZIISYH02wbmbc9c27BTVZ/PdEnrbRGdv0wFCBpjI/luCAGD4f/6aAcwAZgAzgBnADGAGMAOYAcwAZgA/uwDp9ovgzhv6cCIJ8EZin9In9pd+7KmfKkBfbwESkAEA3teSASigDgBQfSAxAwGEdreghIMEgfhpARAAmB1eROQWtPlGC/Og43JnuTimHQa2b5iPLOXs9sbmYBzUdHvY+P0Lk3vm7fB8RcOVNl7P+aWuWZ+YRjQzQZSJIEBJ+r/pAUMnsOSYH47vOWQnV+r9i36xLf/xHvKkrMy1nz6uhw6m4yvND7b4t+cxzt3RYfnivfGFo+nEwsKC0XZGjbZQXdzGd9byn1+LV6cNBw7PFh5JMorkzbToLUUlYFQSFKePdmdXfWlY1a4XL5fn3lEnPnqqPH5fOrzkNfDXb06ffpOlxZd+fvq1TzYnh3U/1KRURFBkeABuAN8t+tNL46fWohvOVWC4Ipl4I0LxE6IS6VbbP+XyS6f14GqjgqrE8+/q+YuefPrlT+ozPzfIXe6i/OWr9q03kvn0jx7Gk2fmIeQiQaQRESYAHlZoUkjlIPiNo3P3zW199WK7PahBUAJ1M07yVtwoia49ezLOHrM8iTC+vB4vXABj+tu/GJ+7t9kaR5Xs2Qv41uuCtb//AJ48Myo5WikZswnmbl4z1Uzu5lYEOlU8l4gv3TX31GEgTwADpZsaQR/VA8He0REMdTx9sDxw93A7R824nvXc+S7a9Oun8+funV+fBBtcnOLpVwoi/eqx6ZMPLUYJGirrSlRDs+3If3c5v7gFKk4u+Gf3poMOlUqGsIgoX76r+ffx5C8mpaZ3vBOTWAARhBVoWJUzp5q6RUuw4Q8vTDc2ubyAx8+M0MnEJuFvXplcGdfDuvvDT40aWMdINEVywzPX4/e+u/3MVoW6AoW63D/ceupU89mVmtE5XXQIv7u//vu381UaBYG3O4Q8AEQxqOXJ/bEyb23IzDYzz10pKPbw3Ti6YJvBgcWVbTx/yVn80YPdo/uryOG0QCHtpc38xX/ZfGZzWA+balB8yKpqXmoXf+vl+KeNzswRRuYO5f7KHh+a1MF1B6SECf3MT9DqXq9KDsJd72/G1UnD2h85DEYQ4YmvXdPlbYjtZ1bpYJAkDJnUN3+Q3ypz9YjRoeSqgBG5acYbNvjjt7pJMQK7kdR4bI5WTHdEC4VJcBWNGi3NGzIBGuPaVuRid43yoUXLHV2Wk11YK5E9VXH2QANAFgqQ9bvT8p3LyZKrteIhCmHFvMuNO59t+Z/TKS0kGAXYLwy5TCh4uwAUZEUAQ8NB1MlVnITArQkQPDBs6yFLCEIBrm5NgbRc2+GRA0EEIMBe3YgfTTOAAslN7BUSBQNLyfXLG4YdPREoWErYV2WUm3JDHzmEKAKSsTghwlVCnGRAGBkSCYIUC64HAM2lrqn6kqte4VyZliIGGTQU7ng17ao6lcttAP3S6yBrYiluVuZ91Dog7roj9p+CtvP7RDE4YGGyLhgW3os7gUAhYOgAGBxI1A3d2re/C4RD3lkANCEEWKR+8hG8EwAGQKZACkiUQAJVElAmshIiEAySIyOgcWcbHQAxJALQgYEz5R9vmUKFANfBhrsrJQG1xa+rX43v0IaGYDthlyGCIQeGA4JlbavebkkKUSdw37yBWmvt7XHZ0daoAJxawPE03ZVwN1YYgAIW1D44SoD60Qrg3RKXSr91uAMAokDn9hQbW+EGAAwtjxKTfrTJ9zcLEiAycGTZ6DkX/9572wAkGBjBfbV9/lCtaVQm9sqfMKAmVcojc/aJoSsKECEA9sp2t1GMxtvtARFhYQFQU9mFK5GIIHOUQyMsDdBl/deltkoANCk4tWz76yD8H8+h7MzWACPEJz7RnFnYbLcDbomoBAOmnQ5y/PUTqWERzUSTBHx7CzI33YlJLBgIC9HttffLtancMEFaqOzuFQPTM+fi2nZJbl1g/9AfPGwyPPdO9c8XZc4WEoGIEzWf/vTosb3bzXg9t+rakrvxL482/uH+5pGhd6LBQmaOF3L77U2YUbqpXZovn/g6CBllO5pbBnH33s8rk5KNM+DtyX0JJWScn7O3rnVXxzXr/NCR1HWdGfcs+rOX8nYZvHV98pv3pQEMkFMl7EDjXziefmWfnV2Mz+8pX7nb/2B1cKLxIjg9M8QpWT1xofsuvDLPBHvRb+g9X3+RgO1O+J8M0D8QrmIsRiW7st4tzfPAYpoUzQ+sTuX8dbx2jcdX4tjeqhvryJDJ8otXcX46XS/tY0cHiChy95DgsntG/vCSPbSUTg/SQCgFxWkqHnTzb7zf/tn1Kg28qwTZTr0/PgAAQ3EVM7lkCqsurMXyovYveldi32IqpXtn3b9/pTuxko+u1FtZJ/dyvc1vbAxeuOxttL92tE7GEur9ZgEVCKkwRKPJJDen8ZuXp1+7HBrVKVNGQLjNHpAhDCJFhENGOjP93NVJ8bxvOTXGo3dVxfKb19LzF9q61uqeNHI9cKDenrY/3PJ/fQ/fX5uc3uNHBm40FxygyUiCzjDKiFenfOLtyVNXPQZDkmV3A3m7Q+iDGOE7fUJjsfTOWrm4nrNxmHBif7WypCtt+re39d/XlV0rCZ9arY8td+8VPbfW/NX56flxN0oYJVYVnCBRiKtRvrde/uRS+Z2L3bPThk29W7md+80A3OKmvj9tUJGpVwztaA7Lc9q3yKn7+Q2Ms8HLyjCOLeZjewZjxQtrvgFD16Y6Di3l1QH21ybnRonX5eeKFxALSPRC6taPGvDWz0r0MSlZEpJH6lfVDnVCY+aAI1wgYAU13MmKqlgSEYIJVYtEWAMDhtncYEbL4Sa3WwW45cAWBWhniaKUIuRUXdMFlegFm4lu5q4kkYWk4KGdYx6pgYGOSEJIBhYoUcaPEWe8VQCJfcCJPUbhrr4XCesTISooAwph6CVqiLoRiyT7slRJQILk0MeJNd9ucFcfiOtqR3/pQ2KcHzD0oXBBvzG4YX+sMO/s/4EZwAxgBjADmAHMAGYAM4AZwAzgZxfgfwDumV5hhecZ1QAAAABJRU5ErkJggg==" alt=""><b>Elite OneLink</b><span class="sep">·</span><span>Finance</span></span>
       <div class="util">
+        <button id="bgBtn" class="btn" type="button" title="Switch the page background">Background</button>
         <button id="copy" class="btn" type="button">Copy summary</button>
         <button id="shareBtn" class="btn" type="button">Share</button>
       </div>
@@ -1042,6 +1047,12 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   let span = 0; try { const v = localStorage.getItem('fzc.span'); if (v != null && [0, 1, 3, 6, 12].includes(+v)) span = +v; } catch (e) {}
   const MAX_MONTHS = 24;
   let db = null, user = null, canWrite = false;
+  // Background switcher: three light backgrounds and one dark. Remembered in this browser only.
+  const BGS = [['aurora', 'Aurora'], ['pearl', 'Pearl'], ['sand', 'Sand'], ['night', 'Night']];
+  const paintBg = () => { const cur = document.documentElement.getAttribute('data-bg'), b = BGS.find(x => x[0] === cur) || BGS[0]; $('bgBtn').textContent = 'Background: ' + b[1]; };
+  $('bgBtn').addEventListener('click', () => { const r = document.documentElement, i = BGS.findIndex(x => x[0] === r.getAttribute('data-bg')), b = BGS[(i + 1) % BGS.length];
+    r.setAttribute('data-bg', b[0]); r.setAttribute('data-theme', b[0] === 'night' ? 'dark' : 'light'); try { localStorage.setItem('fzc.bg', b[0]); } catch (e) {} paintBg(); });
+  paintBg();
   const now = new Date();
   $('month').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const dubaiToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dubai' }).format(new Date());
@@ -1067,17 +1078,25 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     if (c === 'not_in_manifest' || c === 'consent_required') return `${server} is not allowed for this page yet — press Refresh and choose Allow`;
     if (c === 'blocked_by_policy' || c === 'approval_required') return `${server} is blocked by your organisation's settings`;
     if (c === 'server_unavailable' || c === 'rate_limited') return `${server} did not answer — press Refresh to try again`;
+    if (c === 'upstream_error') return `${server} could not be reached, or its Allow prompt was closed before an answer — press Refresh live and choose Allow`;
+    if (c === 'not_granted' || c === 'capability_disabled' || c === 'capability_removed') return `${server} cannot be used in this view — open the page in claude.ai`;
     if (c === 'tool_error') return `${server}: ${String(e.message || 'the tool reported an error').slice(0, 220)}`;
     return `${server}: ${String((e && e.message) || e).slice(0, 220)}`;
   }
   async function call(server, tool, input, fresh) {
     const opts = { cache: { staleTime: fresh ? 0 : 300000, gcTime: 3600000, refresh: !!fresh } };
-    try { return (await mcp.callTool(server, tool, input, opts)).payload; }
-    catch (e) {
-      if (!e || !e.retryable) throw e;
-      await sleep((e.retryAfterMs || 1500) + Math.random() * 800);
-      return (await mcp.callTool(server, tool, input, { cache: { staleTime: 0, gcTime: 3600000, refresh: true } })).payload;
+    // Every call here is a read, so a retryable failure (the connector was busy, or its Allow prompt was still
+    // open behind another one) is safe to repeat: up to three more tries, waiting as long as the error asks.
+    let last;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try { return (await mcp.callTool(server, tool, input, attempt ? { cache: { staleTime: 0, gcTime: 3600000, refresh: true } } : opts)).payload; }
+      catch (e) {
+        last = e;
+        if (!e || !e.retryable) throw e;
+        await sleep(Math.min(60000, (e.retryAfterMs || 2500 * (attempt + 1))) + Math.random() * 800);
+      }
     }
+    throw last;
   }
   // A sheet range with raw values (numbers stay numbers, dates arrive as serial numbers) and its tab id for links.
   async function sheet(id, range, fresh) {
@@ -1188,7 +1207,8 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     step('Reading the commission tracker…');
     let tracker = null;
     try {
-      const [l, c] = await Promise.all([sheet(TRACKER, RANGES.lines, fresh), sheet(TRACKER, RANGES.checklist, fresh)]);
+      // One after the other: the first Google Sheets call may be waiting on the viewer's Allow prompt.
+      const l = await sheet(TRACKER, RANGES.lines, fresh), c = await sheet(TRACKER, RANGES.checklist, fresh);
       const lines = core.parseTrackerLines(l.rows), checklist = core.parseInvoiceChecklist(c.rows);
       if (lines.error) throw new Error(lines.error);
       if (checklist.error) throw new Error(checklist.error);
@@ -1276,10 +1296,12 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     inp.renewals.forEach(unpackRow);
     return inp;
   }
+  const SRC_NAMES = { tracker: 'Commission tracker', gp: 'GP reports', renewals: 'Renewals sheet', zoho: 'Zoho', gmail: 'Gmail' };
+  const failedSources = S => Object.keys(SRC_NAMES).filter(k => S[k] && !S[k].ok && !S[k].off).map(k => `${SRC_NAMES[k]}: ${S[k].detail || 'not read'}.`).join(' ');
   async function saveSnapshot() {
     if (!db || !canWrite || !inputs || inputs.kind !== 'live') return false;
     const ok = inputs.sources.tracker && inputs.sources.tracker.ok && inputs.sources.gp && inputs.sources.gp.ok;
-    if (!ok) { notice('Not saved for viewers: the tracker or the GP reports could not be read this time.'); return false; }
+    if (!ok) { notice('Not saved for viewers, because a source could not be read. ' + failedSources(inputs.sources)); return false; }
     try {
       const s = JSON.stringify(slim(inputs)), parts = [];
       for (let i = 0; i < s.length; i += PART) parts.push(s.slice(i, i + PART));
@@ -1353,6 +1375,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
       if (allFailed && inputs) { errorMsg('Live refresh could not read any source: ' + (inp.sources.tracker && inp.sources.tracker.detail) + ' Showing the saved snapshot instead.'); }
       else {
         inputs = inp; mode = 'live'; if (first) month = bestMonth(inp, month); build(month); render();
+        const failed = failedSources(inp.sources); if (failed && !allFailed) errorMsg('Some sources could not be read, so figures that depend on them are missing. ' + failed);
         if (canWrite) await saveSnapshot(); else notice('');
       }
     } catch (e) {
