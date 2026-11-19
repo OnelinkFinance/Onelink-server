@@ -1104,8 +1104,10 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   }
   // A sheet range with raw values (numbers stay numbers, dates arrive as serial numbers) and its tab id for links.
   async function sheet(id, range, fresh) {
-    const p = await call(S_SHEETS, 'get_spreadsheet', { spreadsheetId: id, ranges: [range], includeGridData: true,
+    const got = await call(S_SHEETS, 'get_spreadsheet', { spreadsheetId: id, ranges: [range], includeGridData: true,
       fields: ['properties.title', 'sheets.properties.sheetId', 'sheets.properties.title', 'sheets.data.startRow', 'sheets.data.startColumn', 'sheets.data.rowData.values.effectiveValue'] }, fresh);
+    // The connector now wraps the spreadsheet in a "content" object; accept both shapes.
+    const p = got && got.content && got.content.sheets ? got.content : got;
     const sh = (p && p.sheets && p.sheets[0]) || {}, d = (sh.data && sh.data[0]) || {};
     const rows = [];
     for (let i = 0; i < (d.startRow || 0); i++) rows.push([]);
@@ -1215,7 +1217,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     const driveQuery = "title contains 'GP Report' and mimeType = 'application/vnd.google-apps.spreadsheet'";
     try {
       const p = await call(S_DRIVE, 'search_files', { query: driveQuery, pageSize: 50, excludeContentSnippets: true }, fresh);
-      for (const f of (p && p.files) || []) { const m = core.gpReportMonth(f.title); if (m && (!files[m] || f.modifiedTime > files[m].modifiedTime)) files[m] = f; }
+      for (const f of (p && (p.files || (p.content && p.content.files))) || []) { const m = core.gpReportMonth(f.title); if (m && (!files[m] || f.modifiedTime > files[m].modifiedTime)) files[m] = f; }
       reads.push({ source: 'Google Drive', what: 'Monthly GP report files', where: `Drive search: ${driveQuery}`, rows: Object.keys(files).length + ' monthly reports found (copies ignored; newest file per month)', at: at() });
     } catch (e) { sources.gp = { ok: false, detail: why(e, S_DRIVE), code: e.code }; }
     // Every month from the oldest GP report found (at most 24 months back) up to the chosen month.
