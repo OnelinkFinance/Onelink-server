@@ -816,8 +816,12 @@ function buildDashboard(input) {
     else if (inv && /void|draft/i.test(inv.status)) { flags.add('Pending invoice'); missing.push(`${t.invoice} is ${inv.status} in Zoho Books`); ck(invRule, false, `${t.invoice} is ${inv.status} in Zoho`); }
     else ck(invRule, inv ? true : null, inv ? `${t.invoice} · ${inv.status} · total AED ${inv.total} · balance AED ${inv.balance}` : `${t.invoice} (Zoho not checked)`);
     // Has the client paid? Paid in full in Zoho Books = the work is treated as done and the commission can be invoiced.
-    const clientPaid = !inv || /void|draft/i.test(inv.status) ? null : (inv.status === 'paid' || (inv.total > 0 && inv.balance <= TOL));
-    ck('Client has paid the invoice in full (Zoho Books)', clientPaid, inv ? `${t.invoice} · ${inv.status} · AED ${inv.balance} still unpaid of AED ${inv.total}` : 'No Zoho client invoice to check');
+    const settled = !!inv && !/void|draft/i.test(inv.status) && (inv.status === 'paid' || (inv.total > 0 && inv.balance <= TOL));
+    const pays = inv && Array.isArray(inv.payments) ? inv.payments : null;
+    // Closed with no payment recorded against it (a credit note or write-off) is not proof the client paid.
+    const noRecord = settled && pays !== null && !pays.length;
+    const clientPaid = !inv || /void|draft/i.test(inv.status) ? null : noRecord ? null : settled;
+    ck('Client has paid the invoice in full, with a payment recorded in Zoho Books', clientPaid, !inv ? 'No Zoho client invoice to check' : noRecord ? `${t.invoice} is ${inv.status} in Zoho Books but no payment is recorded against it — it may have been closed by a credit note or write-off` : `${t.invoice} · ${inv.status} · AED ${inv.balance} still unpaid of AED ${inv.total}${pays && pays.length ? ' · ' + pays.map(p => `payment ${p.no} on ${p.date}: AED ${p.amount}`).join('; ') : pays ? ' · no payment recorded yet' : ' · payment records not read'}`);
 
     if (!t.onGp && input.gp[t.month]) { flags.add('Pending GP'); missing.push(`Not on the ${t.month} GP report`); ck(`On the ${t.month} GP report`, false, 'No matching row (by invoice no., or company + free zone + date)'); }
     else ck(`On the ${t.month} GP report`, t.onGp ? true : null, t.onGp ? `Row ${t.gpRow}${t.joinedBy ? ' · matched: ' + t.joinedBy : ''}` : `No GP report loaded for ${t.month}`);
@@ -856,7 +860,7 @@ function buildDashboard(input) {
     else if (t.type !== 'Other' && st !== 'missed') { flags.add('No commission'); if (!t.onTracker) missing.push('No free zone commission recorded'); ck('Commission due', false, `A ${t.type} deal with no free zone commission on the ${t.onTracker ? 'tracker' : 'GP report'}`); }
     const status = STATUS_ORDER.find(s => flags.has(s)) || 'Completed';
     const readiness = t.commission > 0 && flags.has('Pending commission invoice') ? (clientPaid === true ? 'Ready to invoice' : clientPaid === false ? 'Waiting on client payment' : 'Client payment not confirmed') : null;
-    return { clientPaid, clientBalance: inv ? inv.balance : null, readiness, status, flags: [...flags], missing, checks, decidedBy: status === 'Completed' ? 'All checks passed' : `"${status}" is the first rule in the status order that applies`,
+    return { clientPaid, clientBalance: inv ? inv.balance : null, clientPayments: pays, clientNoRecord: noRecord, readiness, status, flags: [...flags], missing, checks, decidedBy: status === 'Completed' ? 'All checks passed' : `"${status}" is the first rule in the status order that applies`,
       invoiceStatus: inv ? inv.status : inv === null ? 'not found' : null, clientInvoiceRecord: inv || null, commissionInvoiceStatus: ciStatus, commissionInvoiceRecord: ciRecord };
   }
   for (const t of txAll) Object.assign(t, judge(t));
@@ -895,7 +899,7 @@ function buildDashboard(input) {
     const mail = emails ? [...new Set([...emailsFor(t.name, t.zone), ...(t.client !== t.name ? emailsFor(t.client, t.zone) : [])])] : null;
     return {
       source: t.onTracker && t.onGp ? 'Tracker + GP report' : t.onTracker ? 'Tracker only' : 'GP report only', month: t.month,
-      name: t.name, client: t.client, zone: t.zone, type: t.type, date: t.date, services: t.services, agent: t.agent, flags: t.flags, readiness: t.readiness, clientPaid: t.clientPaid, clientBalance: t.clientBalance,
+      name: t.name, client: t.client, zone: t.zone, type: t.type, date: t.date, services: t.services, agent: t.agent, flags: t.flags, readiness: t.readiness, clientPaid: t.clientPaid, clientBalance: t.clientBalance, clientPayments: t.clientPayments, clientNoRecord: t.clientNoRecord,
       trackerRow: t.trackerRow, trackerStatus: t.trackerStatus || null, gpRow: t.gpRow, gp: t.onGp, onTracker: t.onTracker,
       invoice: t.invoice || null, invoiceStatus: t.invoiceStatus, fee: t.fee, commission: t.commission, commissionPct: t.fee ? round2(t.commission / t.fee * 100) : null,
       commissionFrom: t.commissionFrom, commissionInvoice: t.commissionInvoice, commissionInvoiceStatus: t.commissionInvoiceStatus,
@@ -1185,6 +1189,16 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     for (const r of rows) map.set(String(r['Invoice Number']).toUpperCase(), { id: r['Invoice ID'], number: String(r['Invoice Number']).toUpperCase(), status: zStatus(r['Invoice Status']), total: money2(r.total), balance: money2(r.balance), date: core.parseSheetDate(r['Invoice Date']).date, customerId: r['Customer ID'] });
     return { map, sql };
   }
+  // Payments recorded in Zoho Books against a set of invoices: { invoiceId: [{ no, date, amount }] }.
+  async function invoicePayments(ids, fresh) {
+    const out = new Map(ids.map(i => [String(i), []]));
+    for (let i = 0; i < ids.length; i += 150) {
+      const rows = await zsql(`select ip."Invoice ID" as invoice_id, cp."Payment Number" as payment_no, cp."Payment Date" as payment_date, round(ip."Amount (BCY)", 2) as amount from "Invoice Payments" ip join "Customer Payments" cp on ip."Payment ID" = cp."Payment ID" where ip."Invoice ID" in (${ids.slice(i, i + 150).map(sqlStr).join(',')})`, fresh);
+      for (const r of rows) { const l = out.get(String(r.invoice_id)); if (l) l.push({ no: String(r.payment_no || ''), date: core.parseSheetDate(r.payment_date).date, amount: money2(r.amount) }); }
+    }
+    for (const l of out.values()) l.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    return out;
+  }
   async function gmailMessages(from, to, fresh) {
     const domains = core.ZONES.flatMap(z => z.domains).map(d => 'from:' + d).join(' ');
     const q = `after:${from.replace(/-/g, '/')} before:${to.replace(/-/g, '/')} ({${domains}} OR "RAK DAO" OR "RAK ICC" OR Meydan OR RAKEZ OR "business license" OR "company setup" OR incorporation OR renewal)`;
@@ -1283,6 +1297,14 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
       clientInv = [...ci.map.entries()];
       const zi = await zoneInvoices(months[0], month, fresh);
       zoneInv = zi.list;
+      // Confirm each payment against the payment records in Zoho Books (client invoices and commission invoices).
+      try {
+        const cis = clientInv.map(e => e[1]).filter(v => v && v.id);
+        const pm = await invoicePayments([...cis.map(v => v.id), ...zoneInv.map(z => z.id)], fresh);
+        for (const v of cis) v.payments = pm.get(String(v.id)) || [];
+        for (const z of zoneInv) z.payments = pm.get(String(z.id)) || [];
+        reads.push({ source: 'Zoho Analytics', what: 'Payments recorded against those invoices', where: 'Tables "Invoice Payments" and "Customer Payments"', rows: `${[...pm.values()].reduce((a, l) => a + l.length, 0)} payments on ${[...pm.values()].filter(l => l.length).length} invoices`, at: at() });
+      } catch (e) { lineWarn = 'Payment records could not be read, so "paid" rests on the invoice status alone: ' + (e.code ? why(e, S_ZOHO) : e.message); }
       // Line items of those invoices, and the quotes prepared for the free zones with their lines (to see which deal is on which document).
       try {
         const ids = core.TRACKED.map(z => sqlStr(z.booksCustomerId)).join(','), zoneOf = id => (core.TRACKED.find(z => z.booksCustomerId === String(id)) || {}).code;
@@ -1295,14 +1317,14 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
         const quotes = new Map(qs.filter(q => !/invoiced|declined|expired|void/i.test(q['Status'])).map(q => { const date = core.parseSheetDate(q['Quote Date']).date, pr = core.invoicePeriod({ invoice_number: q['Quote Number'], reference_number: q['Purchase Order#'], date }); return [String(q['Quote ID']), { docId: q['Quote ID'], number: String(q['Quote Number']).toUpperCase(), zone: zoneOf(q['Customer ID']), period: pr.month, date, status: String(q['Status'] || '').toLowerCase() }]; }));
         zoneQuotes = qi.filter(r => quotes.has(String(r.quote_id))).map(r => ({ ...quotes.get(String(r.quote_id)), amount: money2(r.amount) })).filter(q => q.zone && q.period);
         reads.push({ source: 'Zoho Analytics', what: 'Commission invoice lines and quotes to the free zones', where: 'Tables "Invoice Items", "Quotes", "Quote Items" for the four free zone customers', rows: `${zoneLines.length} invoice lines · ${zoneQuotes.length} open quote lines`, at: at() });
-      } catch (e) { zoneLines = null; zoneQuotes = null; lineWarn = 'Invoice and quote lines could not be read: ' + (e.code ? why(e, S_ZOHO) : e.message); }
+      } catch (e) { zoneLines = null; zoneQuotes = null; lineWarn = (lineWarn ? lineWarn + ' ' : '') + 'Invoice and quote lines could not be read: ' + (e.code ? why(e, S_ZOHO) : e.message); }
       reads.push({ source: 'Zoho Analytics', what: 'Commission invoices to the four free zones', where: `Workspace "Elite Onelink", table "Invoices": ${zi.sql}`, rows: `${zoneInv.length} invoices`, at: at() });
       if (ci.sql) reads.push({ source: 'Zoho Analytics', what: 'Client invoices for the deals loaded', where: `Table "Invoices": ${ci.sql}`, rows: `${clientInv.filter(e => e[1]).length} of ${clientInv.length} found`, at: at() });
       sources.zoho = { ok: true, detail: `${zoneInv.length} commission invoices · ${clientInv.length} client invoices checked`, warning: lineWarn };
       // Collections come straight from Zoho Books: one row per commission invoice, open while it has a balance.
       const today = dubaiToday();
       tracker = { fromZoho: true, lines: [], checklist: zoneInv.filter(z => !/draft/i.test(z.status)).map(z => ({ sheetRow: null, date: z.date, zone: z.zone, number: z.number, amount: z.total,
-        status: z.balance <= 1 ? 'RECEIVED' : 'TO COLLECT', receivedOn: null, daysTaken: null, toCollect: z.balance > 1 ? z.balance : 0, daysOutstanding: z.balance > 1 && z.date ? core.daysBetween(z.date, today) : null, notes: z.reference || '', cells: [] })) };
+        status: z.balance <= 1 ? 'RECEIVED' : 'TO COLLECT', receivedOn: z.payments && z.payments.length ? z.payments[z.payments.length - 1].date : null, payments: z.payments || null, daysTaken: null, toCollect: z.balance > 1 ? z.balance : 0, daysOutstanding: z.balance > 1 && z.date ? core.daysBetween(z.date, today) : null, notes: z.reference || '', cells: [] })) };
     } catch (e) { clientInv = null; zoneInv = null; sources.zoho = { ok: false, detail: e.code ? why(e, S_ZOHO) : 'Zoho Analytics: ' + e.message }; }
 
     step('Searching Gmail…');
@@ -1560,7 +1582,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     invoiced: { t: 'Invoiced to free zones', f: () => `Sum, ex VAT, of the commission invoices in Zoho Books${zt()} that bill the months in ${data.periodLabel}. The month an invoice bills is read from its number or text, else it is the month before the invoice date. The bar shows that as a share of the commission earned.` },
     collected: { t: 'Collected', f: () => `What has been paid on the Zoho Books commission invoices${zt()} that bill the months in ${data.periodLabel}: each invoice's total less its open balance. Amounts include 5% VAT.` },
     uninvoiced: { t: 'Not yet invoiced', f: () => `Sum of the commission on GP report entries in ${data.periodLabel}${zt()} that are not on any commission invoice line to their free zone in Zoho Books (entries on a quote only are included). The smaller figure underneath adds every month loaded.`, go: { scope: 'period', status: 'Pending commission invoice' }, filter: w => (w.flags || []).includes('Pending commission invoice') },
-    ready: { t: 'Ready to invoice', f: () => `For ${data.periodLabel}${zt()}: commission not yet invoiced on deals whose client invoice is paid in full in Zoho Books. Payment in full is taken as the sign that the work is done, so the commission invoice can be raised. Deals whose client invoice still has a balance are counted as waiting on client payment.`, filter: w => w.readiness === 'Ready to invoice' },
+    ready: { t: 'Ready to invoice', f: () => `For ${data.periodLabel}${zt()}: commission not yet invoiced on deals whose client invoice is paid in full with a payment recorded against it in Zoho Books. Payment in full is taken as the sign that the work is done, so the commission invoice can be raised. Deals whose client invoice still has a balance are counted as waiting on client payment.`, filter: w => w.readiness === 'Ready to invoice' },
     toCollect: { t: 'Still to collect', f: () => `Open today, whatever the period: the open balance on every commission invoice in Zoho Books${zt()}. Amounts include 5% VAT. The coloured bar splits it by days since the invoice date.` },
     deals: { t: 'Free zone deals', f: () => `GP report deals in ${data.periodLabel}${zt() || ' for RAK DAO, RAK ICC, Meydan and RAKEZ'}. Complete = Completed, No commission or Awaiting payment.`, go: { scope: 'period' } },
     renewals: { t: 'Renewals due', f: () => `As of today: Renewals sheet rows${zt()} that are Not started, Overdue or In progress — due within ${data.windowDays} days or already expired, with no renewal on the GP reports.` }
@@ -1829,6 +1851,12 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     built.kpis.exceptions = built.exceptions.length;
   }
 
+  // What Zoho Books says about the client's payment, with the payment record that proves it.
+  const payNote = w => { const ps = w.clientPayments, last = ps && ps.length ? ps[ps.length - 1] : null;
+    if (w.clientNoRecord) return '<span class="no">closed in Zoho Books, no payment recorded</span>';
+    if (w.clientPaid === true) return `<span class="yes">✓ paid</span>${last ? ` <span class="muted">payment ${esc(last.no)} · ${fmtDate(last.date)}</span>` : ' <span class="muted">(payment record not read)</span>'}`;
+    if (w.clientPaid === false) return `<span class="no">✗ AED ${aedFull(w.clientBalance)} unpaid</span>${last ? ` <span class="muted">part paid ${fmtDate(last.date)}</span>` : ''}`;
+    return ''; };
   const FZ_LABEL = { invoice: 'Invoiced', quote: 'On quote', missed: 'Missed', reversed: 'Reversed', none: 'No commission' };
   const fzPill = w => { const f = w.fz || { kind: 'none' }; return pill(FZ_LABEL[f.kind], { invoice: 'good', quote: 'warn', missed: 'critical', reversed: 'neutral', none: 'neutral' }[f.kind]); };
   const fzDoc = w => { const f = w.fz || {}; if (f.kind === 'invoice' || f.kind === 'quote') return `${f.kind === 'invoice' ? ext(booksUrl(f.docId), esc(f.number) + ' ↗') : esc(f.number)}<div class="muted small">${f.kind === 'quote' ? 'quote, ' + esc(f.status || '') : 'bills ' + monthLabel(f.period)}${Math.abs(f.diff || 0) > 1 ? ` · line is AED ${aedFull(f.lineAmount)}, ${f.diff > 0 ? 'AED ' + aedFull(f.diff) + ' more' : 'AED ' + aedFull(-f.diff) + ' less'} than the GP report` : ''}${f.late ? ' · billed later than the deal month' : ''}${f.shared ? ' · same amount as another deal' : ''}</div>`; if (f.kind === 'reversed') return `<span class="muted small">${esc(f.note)}</span>`; if (f.kind === 'missed') return '<span class="muted small">Not on any invoice or quote</span>'; return '<span class="muted">—</span>'; };
@@ -1851,7 +1879,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
       return `<div class="card"><h2>${monthLabel(m)} · ${zoneDots([z.code])} <span class="muted" style="font-weight:400;font-size:13px">${l.length} entr${l.length === 1 ? 'y' : 'ies'} · commission ${aed(sum(l))}${ms.length ? ` · <b style="color:var(--critical)">${ms.length} missed, ${aed(sum(ms))}</b>` : ''}</span></h2>
         <div class="tablewrap"><table><thead><tr><th>Date</th><th>Client / company</th><th>Service</th><th>Client invoice</th><th class="r">Commission</th><th>To the free zone</th><th>Invoice / quote</th><th></th></tr></thead><tbody>
         ${l.map(w => `<tr${w.fz.kind === 'missed' ? ' style="background:var(--critical-bg)"' : ''}><td class="nw">${fmtDate(w.date)}<div class="small">${w.gpRow ? rowLink(L.gp(w.month, w.gpRow), 'GP row ' + w.gpRow) : ''}</div></td><td><b>${esc(w.name)}</b>${w.client && w.client !== w.name ? `<div class="muted small">${esc(w.client)}</div>` : ''}${w.agent ? `<div class="muted small">${esc(w.agent)}</div>` : ''}</td><td>${esc(w.services)}<div class="muted small">${esc(w.type)}</div></td>
-          <td class="nw">${esc(w.invoice || '—')}${w.clientPaid != null ? `<div class="small">${w.clientPaid ? '<span class="yes">✓ client paid</span>' : `<span class="no">✗ AED ${aedFull(w.clientBalance)} unpaid</span>`}</div>` : ''}</td>
+          <td class="nw">${esc(w.invoice || '—')}<div class="small">${payNote(w)}</div></td>
           <td class="r"><b>${aedFull(w.commission)}</b></td><td>${fzPill(w)}${w.fz.kind === 'missed' && w.readiness ? `<div style="margin-top:4px">${pill(w.readiness)}</div>` : ''}</td><td>${fzDoc(w)}</td><td><button class="btn sm" type="button" data-deal="${data.workAll.indexOf(w)}">Explain</button></td></tr>`).join('')}
         </tbody></table></div>
         ${extra.length ? `<p class="muted small" style="margin:10px 0 0"><b>Lines billed for ${monthLabel(m)} with no matching entry:</b> ${extra.map(x => `${esc(x.doc)} ${esc(x.number)} · AED ${aedFull(x.amount)}`).join('; ')}. The amount differs from every open entry, so check these against the entries above.</p>` : ''}</div>`;
@@ -1897,12 +1925,12 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     const open = dealsIn(data.pm).filter(w => w.readiness);
     if (!data.sources.zoho || !data.sources.zoho.ok) return `<div class="card empty">Zoho Books was not read, so client payments cannot be checked. ${esc((data.sources.zoho && data.sources.zoho.detail) || '')}</div>`;
     if (!open.length) return `<div class="card empty">No commission is waiting to be invoiced for ${esc(data.periodLabel)}.</div>`;
-    const groups = [['Ready to invoice', 'The client invoice is paid in full in Zoho Books, so the work is treated as complete and the commission invoice can be raised.'], ['Waiting on client payment', 'The client invoice still has a balance in Zoho Books. Hold the commission invoice until it is paid.'], ['Client payment not confirmed', 'No Zoho invoice number on the GP report row, or the invoice was not found, is void or is a draft. Check the deal before invoicing.']];
+    const groups = [['Ready to invoice', 'The client invoice is paid in full and the payment is recorded in Zoho Books, so the work is treated as complete and the commission invoice can be raised.'], ['Waiting on client payment', 'The client invoice still has a balance in Zoho Books. Hold the commission invoice until it is paid.'], ['Client payment not confirmed', 'No Zoho invoice number on the GP report row; or the invoice was not found, is void or a draft; or it is closed in Zoho Books with no payment recorded against it. Check the deal before invoicing.']];
     const sum = l => l.reduce((a, w) => a + (w.commission || 0), 0);
     const rd = open.filter(w => w.readiness === 'Ready to invoice');
     const byZone = data.zones.filter(z => z.code !== 'OTHER' && zoneOk(z.code)).map(z => { const l = rd.filter(w => w.zone === z.code); return { z, n: l.length, amt: sum(l), months: [...new Set(l.map(w => w.month))].sort() }; }).filter(x => x.n);
     const table = l => `<div class="tablewrap"><table><thead><tr><th>Client / company</th><th>Free zone</th><th>Month</th><th>Client invoice</th><th>Paid in Zoho Books</th><th class="r">Client balance</th><th class="r">Commission to invoice</th><th></th></tr></thead><tbody>
-      ${l.sort((a, b) => (a.zone || '').localeCompare(b.zone || '') || (a.date || '').localeCompare(b.date || '')).map(w => { const ci = w.clientInvoiceRecord; return `<tr><td><b>${esc(w.name)}</b><div class="muted small">${esc(w.services)}${w.agent ? ' · ' + esc(w.agent) : ''}</div></td><td class="nw">${zoneDots([w.zone])}</td><td class="nw">${monthLabel(w.month)}</td><td class="nw">${ci && ci.id ? ext(booksUrl(ci.id), esc(w.invoice) + ' ↗') : esc(w.invoice || '—')}${w.invoiceStatus ? `<div>${pill(w.invoiceStatus)}</div>` : ''}</td><td>${yn(w.clientPaid)}</td><td class="r">${w.clientBalance == null ? '—' : aedFull(w.clientBalance)}</td><td class="r"><b>${aedFull(w.commission)}</b></td><td><button class="btn sm" type="button" data-deal="${data.workAll.indexOf(w)}">Explain</button></td></tr>`; }).join('')}
+      ${l.sort((a, b) => (a.zone || '').localeCompare(b.zone || '') || (a.date || '').localeCompare(b.date || '')).map(w => { const ci = w.clientInvoiceRecord; return `<tr><td><b>${esc(w.name)}</b><div class="muted small">${esc(w.services)}${w.agent ? ' · ' + esc(w.agent) : ''}</div></td><td class="nw">${zoneDots([w.zone])}</td><td class="nw">${monthLabel(w.month)}</td><td class="nw">${ci && ci.id ? ext(booksUrl(ci.id), esc(w.invoice) + ' ↗') : esc(w.invoice || '—')}${w.invoiceStatus ? `<div>${pill(w.invoiceStatus)}</div>` : ''}</td><td class="small">${payNote(w) || '<span class="muted">—</span>'}</td><td class="r">${w.clientBalance == null ? '—' : aedFull(w.clientBalance)}</td><td class="r"><b>${aedFull(w.commission)}</b></td><td><button class="btn sm" type="button" data-deal="${data.workAll.indexOf(w)}">Explain</button></td></tr>`; }).join('')}
       <tr class="total"><td colspan="6">Total</td><td class="r">${aedFull(sum(l))}</td><td></td></tr></tbody></table></div>`;
     return `<div class="card"><h2>Commission invoices you can raise · ${esc(data.periodLabel)}${gz ? ' · ' + esc(zoneName(gz)) : ''} <span class="acts"><button class="btn sm" type="button" id="rd_csv">Export CSV</button></span></h2>
         ${byZone.length ? `<p class="finding">${aed(sum(rd))} of commission is ready to invoice across ${rd.length} deal${rd.length === 1 ? '' : 's'}: the client has paid in full.</p>
@@ -1977,7 +2005,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   // What was merged into this page, and which copy of each rule is the one in force.
   const MERGED = [
     ['GP reports (one Google Sheet per month)', 'Every deal: client, company, agent, service, free zone fee and free zone commission.', 'The record of what was earned. Read live from the "Summary" tab of each monthly report.'],
-    ['Zoho Books', 'Client invoices and the commission invoices raised to RAK DAO, RAK ICC, Meydan and RAKEZ.', 'The record of what is invoiced, paid and still open. Each deal\'s client invoice is checked: paid in full = ready to invoice the commission. Read through the Zoho Analytics copy of Zoho Books.'],
+    ['Zoho Books', 'Client invoices, payments received, and the commission invoices and quotes raised to RAK DAO, RAK ICC, Meydan and RAKEZ.', 'The record of what is invoiced, paid and still open. Each deal\'s client invoice is checked against the payments recorded in Zoho Books: paid in full with a payment record = ready to invoice the commission. Read through the Zoho Analytics copy of Zoho Books.'],
     ['Renewals sheet', 'Licence expiry dates, renewal status and account manager.', 'Used for renewals due, overdue and in progress.'],
     ['CLIENTS DATABASE sheet', 'The company list: free zone, licence dates, manager and account manager.', 'Shown against each client; deals whose company is not on the list are marked.'],
     ['Gmail (optional)', 'Free zone and renewal emails.', 'Only used to show that a renewal is in progress.'],
