@@ -418,6 +418,37 @@ function refreshAliases() {
 }
 // Is this contact one of several Books contacts folded together (it, or another contact, maps onto the same canonical one)?
 const grouped = id => { const k = canonical(id); return k !== key(id) || [...aliases.values()].includes(k); };
+// The alias map before a balance lookup: on the very first lookup it is read (waiting at most `ms`), so a merged client
+// is never looked up under its own id while the map is still empty; afterwards it refreshes in the background.
+async function aliasesReady(ms = 8000) {
+  refreshAliases();
+  if (!aliasesAt && aliasLoading) await Promise.race([aliasLoading, new Promise(r => setTimeout(r, ms))]);
+}
+// The CFD balance of a client, merged contacts included. The Analytics balance table is keyed by the canonical contact
+// (every merged / duplicate contact folded onto it), so a client picked under any of its contacts gets that row. When the
+// table has no row under the canonical id (Analytics not yet resynced after a merge), the picked contact's own row is used.
+async function balanceOf(contactId) {
+  const raw = key(contactId);
+  if (!/^\d{1,30}$/.test(raw)) return null;
+  await aliasesReady();
+  const k = canonical(raw);
+  const rec = await analyticsBalance(k);
+  if (rec || k === raw) return rec;
+  return analyticsBalance(raw);
+}
+// The live Books contact for a client id. A contact merged into another in Zoho Books no longer exists there (404): the
+// client is then the contact it was merged into — its canonical contact, or another contact folded onto the same one.
+async function contactOf(contactId) {
+  const raw = key(contactId);
+  const own = await booksGetContact(raw);
+  if (own) return own;
+  await aliasesReady();
+  for (const id of groupIds(raw).filter(x => x !== raw).sort((a, b) => (b === canonical(raw)) - (a === canonical(raw)))) {
+    const c = await booksGetContact(id);
+    if (c) return c;
+  }
+  return null;
+}
 function refresh() {
   if (!loading) {
     loading = Promise.all([analyticsSql(SQL.split, 'CFD/COGS split'), analyticsSql(SQL.open, 'open invoice'), analyticsSql(SQL.pay, 'customer payment')])
@@ -597,10 +628,10 @@ async function run({ contactId, amount, paid, books: contactIn, committed, conne
   const raw = key(contactId);
   if (!/^\d{1,30}$/.test(raw)) throw Object.assign(new Error('Zoho Books contact id required'), { code: 'BOOKS' });
   // The Analytics ledger tables (slow exports) are needed only by the Books cross-verification: only it waits for them.
-  const [contact, dR] = await Promise.all([contactIn ? Promise.resolve(contactIn) : booksGetContact(raw), withBooks ? current().then(v => ({ v }), e => ({ e })) : { v: cached() }]);
+  const [contact, dR] = await Promise.all([contactIn ? Promise.resolve(contactIn) : contactOf(raw), withBooks ? current().then(v => ({ v }), e => ({ e })) : { v: cached() }]);
   const d = dR.v || null, k = canonical(raw);
   let rec = null, analyticsError = '';
-  try { rec = await analyticsBalance(k); }
+  try { rec = await balanceOf(raw); }
   catch (e) { analyticsError = String((e && e.message) || e).slice(0, 200); console.error('Zoho Analytics balance not read for', k, '—', analyticsError); }
   const { _raw, ...pay } = (d && d.pay.get(k)) || { payments: 0, received: 0, unapplied: 0, refunded: 0, last: '' };
   const f = analyticsDecision(evaluateFinance({ amount, paid, books: contact, rec, split: d ? d.split.get(k) || null : null, open: d ? d.open.get(k) || [] : [], pay, committed, grouped: grouped(raw),
@@ -630,7 +661,7 @@ const ledgerDebitsOr0 = async contactId => { const d = cached(); return d ? tota
 // The figure as of now if the cached data is fresh — the baseline when a card is topped up. null = not fresh.
 const ledgerDebitsNow = contactId => fresh() ? totalDebits(data, contactId) : null;
 
-return { run, record, prefetch, invalidate, forOps: financeForOps, fresh, canonical, ledgerDebits, ledgerDebitsOr0, ledgerDebitsNow };
+return { run, record, prefetch, invalidate, forOps: financeForOps, fresh, canonical, balanceOf, contactOf, ledgerDebits, ledgerDebitsOr0, ledgerDebitsNow };
 })();
 
 // ---- rules.js ----
@@ -1733,7 +1764,7 @@ function mountRequests(app) {
     booksRunning.add(r0.id);
     let fin;
     try {
-      const contact = await M_zoho.booksGetContact(r0.zohoClientId);
+      const contact = await M_finance.contactOf(r0.zohoClientId); // a client merged in Books: the contact it was merged into
       if (!contact) return fail(s, 422, 'The client is no longer in Zoho Books — nothing was changed.', { reason: 'CLIENT_NOT_FOUND' });
       const connections = await M_zoho.verifyConnections().catch(() => null);
       fin = await M_finance.run({ contactId: r0.zohoClientId, amount: Number(r0.approved || r0.requested) || 0, paid: r0.paid, books: contact, connections, withBooks: true,
@@ -2274,7 +2305,7 @@ app.post('/api/zoho/validate-client', async (q, s) => {
   }
   // The selection never waits long on Analytics: after 5 s the page shows "reading balance" and asks again.
   const balance = await Promise.race([
-    analyticsBalance(books.contactId).then(balanceOut, e => ({ found: false, error: e.message, source: 'Zoho Analytics · not reachable' })),
+    M_finance.balanceOf(books.contactId).then(balanceOut, e => ({ found: false, error: e.message, source: 'Zoho Analytics · not reachable' })),
     new Promise(r => setTimeout(() => r({ pending: true, source: 'Zoho Analytics · loading' }), 5000))
   ]);
   s.json({
@@ -2288,7 +2319,7 @@ app.get('/api/zoho/client-balance', async (q, s) => {
   if (store.hidesAmounts(q.user)) return s.status(403).json({ ok: false, error: 'Balances are not shown to Operations.' });
   const contactId = String(q.query.contactId || '');
   if (!/^\d{1,30}$/.test(contactId)) return s.status(400).json({ ok: false, error: 'contactId required' });
-  try { s.json({ ok: true, clientId: contactId, balance: balanceOut(await analyticsBalance(contactId)), checkedAt: new Date().toISOString() }); } catch (e) { zohoErr(s, e); }
+  try { s.json({ ok: true, clientId: contactId, balance: balanceOut(await M_finance.balanceOf(contactId)), checkedAt: new Date().toISOString() }); } catch (e) { zohoErr(s, e); }
 });
 
 // Send, step 1: the client is not locked and passes the three financial checks — Customer Fund Disbursement account,
@@ -2420,7 +2451,7 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
     return s.status(429).json({ ok: false, reason: 'CHECKED_RECENTLY', error: 'This request was checked a moment ago — try again in two minutes.' });
   let books;
   try {
-    if (known && known.zohoClientId && store.canSee(q.user, known)) books = await booksGetContact(known.zohoClientId);
+    if (known && known.zohoClientId && store.canSee(q.user, known)) books = await M_finance.contactOf(known.zohoClientId);
     else if (b.validationToken) {
       const v = gate.verify(b.validationToken, req.clientName);
       if (!v.ok) return s.status(403).json({ ok: false, reason: 'INVALID_VALIDATION_TOKEN', why: v.why, error: NOT_FOUND_MSG });
@@ -2446,7 +2477,7 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
     return s.status(409).json({ ok: false, reason: 'REQUEST_NOT_FOUND', error: 'The request has not reached the server yet — Sven checks it before approving.' });
   if (stored && stored.status === 'VOID') return s.status(409).json({ ok: false, reason: 'REQUEST_VOID', error: 'This request has been voided.' });
   // A check on a stored request is a check of THAT request: its client and its amount, never ones from the browser.
-  if (stored && stored.zohoClientId && String(stored.zohoClientId) !== String(books.contactId))
+  if (stored && stored.zohoClientId && M_finance.canonical(stored.zohoClientId) !== M_finance.canonical(books.contactId))
     return s.status(409).json({ ok: false, reason: 'CLIENT_MISMATCH', error: `This check was for a different client than ${stored.id}.` });
   if (stored) Object.assign(req, { requestedAmount: Number(stored.approved || stored.requested) || req.requestedAmount, clientName: books.contactName,
     company: stored.company || req.company, purpose: stored.purpose || req.purpose });
@@ -2458,7 +2489,7 @@ app.post('/api/zoho/client-funding-check', async (q, s) => {
   let rec, fin, held = 0;
   try {
     const committed = store.committedFor(books.contactId, stored ? stored.id : null, await M_finance.ledgerDebitsOr0(books.contactId));
-    [rec, fin] = await Promise.all([analyticsBalance(M_finance.canonical(books.contactId)).catch(() => null), M_finance.run({ contactId: books.contactId, amount: req.requestedAmount, paid: stored ? stored.paid : String(b.paid || ''), books, committed, connections, withBooks })]);
+    [rec, fin] = await Promise.all([M_finance.balanceOf(books.contactId).catch(() => null), M_finance.run({ contactId: books.contactId, amount: req.requestedAmount, paid: stored ? stored.paid : String(b.paid || ''), books, committed, connections, withBooks })]);
     held = committed.amount;
   } catch (e) { return zohoErr(s, e); }
   booksScopeAlert(fin);
