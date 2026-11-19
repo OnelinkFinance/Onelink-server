@@ -1040,7 +1040,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   const cellVal = (v, label) => typeof v === 'number' && /date|expiry|received on|renewed/i.test(label || '') && v > 20000 && v < 80000 ? `${fmtDate(core.parseSheetDate(v).date)} (stored as ${v})` : String(v);
   const SERIES = { RAKDAO: 'var(--s1)', RAKICC: 'var(--s2)', MEYDAN: 'var(--s3)', RAKEZ: 'var(--s4)', OTHER: 'var(--s-other)' };
   const STATUS = {
-    'Completed': 'good', 'On quote': 'warn', 'Ready to invoice': 'good', 'Waiting on client payment': 'warn', 'Client payment not confirmed': 'neutral', 'In database': 'good', 'Not in database': 'serious', 'Finalized': 'good', 'RECEIVED': 'good', 'Invoiced': 'good', 'paid': 'good', 'In progress': 'warn', 'Under review': 'warn', 'Awaiting payment': 'warn', 'TO COLLECT': 'warn',
+    'Completed': 'good', 'On quote': 'warn', 'Ready to invoice': 'good', 'Waiting on client payment': 'warn', 'Client payment not confirmed': 'neutral', 'Free zone cost not on GP report': 'serious', 'Month not closed yet': 'warn', 'In database': 'good', 'Not in database': 'serious', 'Finalized': 'good', 'RECEIVED': 'good', 'Invoiced': 'good', 'paid': 'good', 'In progress': 'warn', 'Under review': 'warn', 'Awaiting payment': 'warn', 'TO COLLECT': 'warn',
     'Pending commission invoice': 'serious', 'Uninvoiced': 'serious', 'Not on tracker': 'serious', 'Pending GP': 'serious', 'CANCELLED': 'neutral', 'No commission': 'neutral', 'draft': 'serious',
     'Pending invoice': 'critical', 'Commission missed': 'critical', 'Missed': 'critical', 'Renewal not started': 'serious', 'Not started': 'serious', 'Overdue': 'critical', 'Check date': 'warn',
     high: 'critical', medium: 'serious', low: 'warn'
@@ -1582,7 +1582,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     invoiced: { t: 'Invoiced to free zones', f: () => `Sum, ex VAT, of the commission invoices in Zoho Books${zt()} that bill the months in ${data.periodLabel}. The month an invoice bills is read from its number or text, else it is the month before the invoice date. The bar shows that as a share of the commission earned.` },
     collected: { t: 'Collected', f: () => `What has been paid on the Zoho Books commission invoices${zt()} that bill the months in ${data.periodLabel}: each invoice's total less its open balance. Amounts include 5% VAT.` },
     uninvoiced: { t: 'Not yet invoiced', f: () => `Sum of the commission on GP report entries in ${data.periodLabel}${zt()} that are not on any commission invoice line to their free zone in Zoho Books (entries on a quote only are included). The smaller figure underneath adds every month loaded.`, go: { scope: 'period', status: 'Pending commission invoice' }, filter: w => (w.flags || []).includes('Pending commission invoice') },
-    ready: { t: 'Ready to invoice', f: () => `For ${data.periodLabel}${zt()}: commission not yet invoiced on deals whose client invoice is paid in full with a payment recorded against it in Zoho Books. Payment in full is taken as the sign that the work is done, so the commission invoice can be raised. Deals whose client invoice still has a balance are counted as waiting on client payment.`, filter: w => w.readiness === 'Ready to invoice' },
+    ready: { t: 'Ready to invoice', f: () => `For ${data.periodLabel}${zt()}: commission not yet invoiced on entries where the client has paid in full (payment recorded in Zoho Books), the GP report row shows the free zone cost, and the month has ended. Payment in full is taken as the sign that the work is done, so the commission invoice can be raised. Deals whose client invoice still has a balance are counted as waiting on client payment.`, filter: w => w.readiness === 'Ready to invoice' },
     toCollect: { t: 'Still to collect', f: () => `Open today, whatever the period: the open balance on every commission invoice in Zoho Books${zt()}. Amounts include 5% VAT. The coloured bar splits it by days since the invoice date.` },
     deals: { t: 'Free zone deals', f: () => `GP report deals in ${data.periodLabel}${zt() || ' for RAK DAO, RAK ICC, Meydan and RAKEZ'}. Complete = Completed, No commission or Awaiting payment.`, go: { scope: 'period' } },
     renewals: { t: 'Renewals due', f: () => `As of today: Renewals sheet rows${zt()} that are Not started, Overdue or In progress — due within ${data.windowDays} days or already expired, with no renewal on the GP reports.` }
@@ -1792,6 +1792,21 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   // Zoho's line items carry an amount but no client name, so a line is matched to the deal of the same free
   // zone with the same commission (within AED 1): first in the month the document bills, then in earlier months.
   // ---------------------------------------------------------------------------------------------
+  // Ready to be invoiced to the free zone? Checked in this order for an entry whose commission is not yet on an invoice:
+  // 1. the client has paid in full, with a payment recorded in Zoho Books; 2. the GP report row carries the free zone
+  // cost for that client; 3. the month of the entry has ended (commission is invoiced after the month closes).
+  function readinessOf(w, today) {
+    if (!(w.commission > 0) || !(w.flags || []).includes('Pending commission invoice')) return null;
+    if (w.clientPaid === false) return 'Waiting on client payment';
+    if (w.clientPaid !== true) return 'Client payment not confirmed';
+    if (!(w.fee > 0)) return 'Free zone cost not on GP report';
+    if (w.month >= String(today).slice(0, 7)) return 'Month not closed yet';
+    return 'Ready to invoice';
+  }
+  const readyWhy = w => ({ 'Waiting on client payment': `client still owes AED ${aedFull(w.clientBalance)}`, 'Client payment not confirmed': w.clientNoRecord ? 'invoice closed in Zoho Books with no payment recorded' : w.invoice ? 'client invoice not found, void or draft in Zoho Books' : 'no client invoice number on the GP report',
+    'Free zone cost not on GP report': 'client paid, but the GP row shows no free zone cost', 'Month not closed yet': `client paid and cost recorded; invoice after ${monthLabel(w.month)} ends`, 'Ready to invoice': `client paid${w.clientPayments && w.clientPayments.length ? ' on ' + fmtDate(w.clientPayments[w.clientPayments.length - 1].date) : ''} · free zone cost AED ${aedFull(w.fee)} on the GP report` })[w.readiness] || '';
+  const readyCell = w => { const k = (w.fz || {}).kind; if (k === 'invoice') return '<span class="muted">Already invoiced</span>'; if (!w.readiness) return '<span class="muted">—</span>';
+    return `${w.readiness === 'Ready to invoice' ? pill('Yes — ready', 'good') : pill('Not yet', w.readiness === 'Waiting on client payment' || w.readiness === 'Month not closed yet' ? 'warn' : 'serious')}<div class="muted small">${esc(readyWhy(w))}</div>`; };
   function reconcile(built) {
     const zn = c => (core.zoneByCode(c) || {}).name || c;
     const deals = built.workAll.filter(w => w.source !== 'Renewals sheet');
@@ -1832,7 +1847,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
       if (z && z.balance > 1) flags.add('Awaiting payment');
       w.flags = [...flags];
       w.commissionInvoice = on ? w.fz.number : null; w.commissionInvoiceStatus = on ? (z && z.balance > 1 ? 'TO COLLECT' : 'RECEIVED') : w.fz.kind === 'quote' ? 'On quote' : null;
-      w.readiness = flags.has('Pending commission invoice') ? (w.clientPaid === true ? 'Ready to invoice' : w.clientPaid === false ? 'Waiting on client payment' : 'Client payment not confirmed') : null;
+      w.readiness = readinessOf(w, built.today);
       w.status = built.rules.statusOrder.find(s => flags.has(s)) || (w.fz.kind === 'reversed' ? 'No commission' : 'Completed');
     }
     for (const sm of built.summary) for (const code of Object.keys(sm.zones)) {
@@ -1877,10 +1892,10 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
       const extra = [...data.fzLines.filter(x => x.zone === z.code && x.period === m && !x.deal).map(x => ({ ...x, doc: 'Invoice' })), ...data.fzQuoteLines.filter(x => x.zone === z.code && x.period === m && !x.deal).map(x => ({ ...x, doc: 'Quote' }))];
       const ms = of(l, 'missed');
       return `<div class="card"><h2>${monthLabel(m)} · ${zoneDots([z.code])} <span class="muted" style="font-weight:400;font-size:13px">${l.length} entr${l.length === 1 ? 'y' : 'ies'} · commission ${aed(sum(l))}${ms.length ? ` · <b style="color:var(--critical)">${ms.length} missed, ${aed(sum(ms))}</b>` : ''}</span></h2>
-        <div class="tablewrap"><table><thead><tr><th>Date</th><th>Client / company</th><th>Service</th><th>Client invoice</th><th class="r">Commission</th><th>To the free zone</th><th>Invoice / quote</th><th></th></tr></thead><tbody>
+        <div class="tablewrap"><table><thead><tr><th>Date</th><th>Client / company</th><th>Service</th><th>Client invoice</th><th class="r">Free zone cost</th><th class="r">Commission</th><th>To the free zone</th><th>Invoice / quote</th><th>Ready to be invoiced</th><th></th></tr></thead><tbody>
         ${l.map(w => `<tr${w.fz.kind === 'missed' ? ' style="background:var(--critical-bg)"' : ''}><td class="nw">${fmtDate(w.date)}<div class="small">${w.gpRow ? rowLink(L.gp(w.month, w.gpRow), 'GP row ' + w.gpRow) : ''}</div></td><td><b>${esc(w.name)}</b>${w.client && w.client !== w.name ? `<div class="muted small">${esc(w.client)}</div>` : ''}${w.agent ? `<div class="muted small">${esc(w.agent)}</div>` : ''}</td><td>${esc(w.services)}<div class="muted small">${esc(w.type)}</div></td>
           <td class="nw">${esc(w.invoice || '—')}<div class="small">${payNote(w)}</div></td>
-          <td class="r"><b>${aedFull(w.commission)}</b></td><td>${fzPill(w)}${w.fz.kind === 'missed' && w.readiness ? `<div style="margin-top:4px">${pill(w.readiness)}</div>` : ''}</td><td>${fzDoc(w)}</td><td><button class="btn sm" type="button" data-deal="${data.workAll.indexOf(w)}">Explain</button></td></tr>`).join('')}
+          <td class="r">${w.fee ? aedFull(w.fee) : '<span class="muted">—</span>'}</td><td class="r"><b>${aedFull(w.commission)}</b></td><td>${fzPill(w)}</td><td>${fzDoc(w)}</td><td style="min-width:170px">${readyCell(w)}</td><td><button class="btn sm" type="button" data-deal="${data.workAll.indexOf(w)}">Explain</button></td></tr>`).join('')}
         </tbody></table></div>
         ${extra.length ? `<p class="muted small" style="margin:10px 0 0"><b>Lines billed for ${monthLabel(m)} with no matching entry:</b> ${extra.map(x => `${esc(x.doc)} ${esc(x.number)} · AED ${aedFull(x.amount)}`).join('; ')}. The amount differs from every open entry, so check these against the entries above.</p>` : ''}</div>`;
     }).join('')).join('');
@@ -1888,8 +1903,8 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
   }
   function wireMonthly() {
     wireDealLinks($('panes'));
-    const b = $('mo_csv'); if (b) b.onclick = () => saveCsv(`free-zone-entries-${data.pm[0]}-to-${data.month}.csv`, [['Month', 'Date', 'Free zone', 'Client / company', 'Client', 'Service', 'Type', 'Agent', 'GP row', 'Client invoice', 'Client paid', 'Client balance AED', 'Commission AED', 'To the free zone', 'Invoice / quote', 'Bills month', 'Ready to invoice?'],
-      ...dealsIn(data.pm).sort((a, b) => (a.month + a.zone + (a.date || '')).localeCompare(b.month + b.zone + (b.date || ''))).map(w => [w.month, w.date, zoneName(w.zone), w.name, w.client, w.services, w.type, w.agent, w.gpRow, w.invoice, w.clientPaid == null ? '' : w.clientPaid ? 'Yes' : 'No', w.clientBalance, w.commission, FZ_LABEL[(w.fz || {}).kind || 'none'], (w.fz || {}).number || '', (w.fz || {}).period || '', w.readiness || ''])]);
+    const b = $('mo_csv'); if (b) b.onclick = () => saveCsv(`free-zone-entries-${data.pm[0]}-to-${data.month}.csv`, [['Month', 'Date', 'Free zone', 'Client / company', 'Client', 'Service', 'Type', 'Agent', 'GP row', 'Client invoice', 'Client paid', 'Client balance AED', 'Commission AED', 'To the free zone', 'Invoice / quote', 'Bills month', 'Free zone cost AED', 'Ready to be invoiced', 'Why'],
+      ...dealsIn(data.pm).sort((a, b) => (a.month + a.zone + (a.date || '')).localeCompare(b.month + b.zone + (b.date || ''))).map(w => [w.month, w.date, zoneName(w.zone), w.name, w.client, w.services, w.type, w.agent, w.gpRow, w.invoice, w.clientPaid == null ? '' : w.clientPaid ? 'Yes' : 'No', w.clientBalance, w.commission, FZ_LABEL[(w.fz || {}).kind || 'none'], (w.fz || {}).number || '', (w.fz || {}).period || '', w.fee, (w.fz || {}).kind === 'invoice' ? 'Already invoiced' : w.readiness === 'Ready to invoice' ? 'Yes' : w.readiness ? 'Not yet' : '', w.readiness ? readyWhy(w) : ''])]);
   }
 
   const NO_AGENT = '(no agent on the GP report)';
@@ -1925,7 +1940,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     const open = dealsIn(data.pm).filter(w => w.readiness);
     if (!data.sources.zoho || !data.sources.zoho.ok) return `<div class="card empty">Zoho Books was not read, so client payments cannot be checked. ${esc((data.sources.zoho && data.sources.zoho.detail) || '')}</div>`;
     if (!open.length) return `<div class="card empty">No commission is waiting to be invoiced for ${esc(data.periodLabel)}.</div>`;
-    const groups = [['Ready to invoice', 'The client invoice is paid in full and the payment is recorded in Zoho Books, so the work is treated as complete and the commission invoice can be raised.'], ['Waiting on client payment', 'The client invoice still has a balance in Zoho Books. Hold the commission invoice until it is paid.'], ['Client payment not confirmed', 'No Zoho invoice number on the GP report row; or the invoice was not found, is void or a draft; or it is closed in Zoho Books with no payment recorded against it. Check the deal before invoicing.']];
+    const groups = [['Ready to invoice', 'The client invoice is paid in full and the payment is recorded in Zoho Books, so the work is treated as complete and the commission invoice can be raised.'], ['Waiting on client payment', 'The client invoice still has a balance in Zoho Books. Hold the commission invoice until it is paid.'], ['Free zone cost not on GP report', 'The client has paid, but the GP report row shows no cost paid to the free zone for this client. Add the cost to the GP report, or check the deal, before invoicing.'], ['Month not closed yet', 'The client has paid and the cost is on the GP report, but the month has not ended. Invoice the free zone after month end.'], ['Client payment not confirmed', 'No Zoho invoice number on the GP report row; or the invoice was not found, is void or a draft; or it is closed in Zoho Books with no payment recorded against it. Check the deal before invoicing.']];
     const sum = l => l.reduce((a, w) => a + (w.commission || 0), 0);
     const rd = open.filter(w => w.readiness === 'Ready to invoice');
     const byZone = data.zones.filter(z => z.code !== 'OTHER' && zoneOk(z.code)).map(z => { const l = rd.filter(w => w.zone === z.code); return { z, n: l.length, amt: sum(l), months: [...new Set(l.map(w => w.month))].sort() }; }).filter(x => x.n);
