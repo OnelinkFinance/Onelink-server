@@ -28,3 +28,9 @@ Upload both files to the artifact with `publish_files` (mode `patch`). `index.ht
 `cfi.js` shows every Client Payment Request (`cm_client_payment_request`, read live with `list_custom_module_records`) as a glass card with an analysis of the request: whether the client's CFDA funds cover it, what is committed to the client's other open requests, whether Zoho's own check is still current, possible duplicates, waiting time and the client's request history. `cfi-engine.js` is a browser copy of `server/cfi-engine.js`.
 
 The client's balance comes from `cm_client_cfda_balance`, and the client's latest CFDA entries (`cm_cfda_statement_line`) are read when a request is opened. Expected refunds and reserved funds are taken as zero. The background (six choices) is remembered in the viewer's browser.
+
+Each request shows who created it (the Zoho Books user behind `created_by_id`; names come from `list_users`, with a built-in list as fallback) and the tab can be filtered to one creator.
+
+# Page-wide glass theme
+
+`ol-theme.css` and `ol-theme.js` put the whole page on a chosen background (Aurora, Emerald, Dusk, Ocean, Sand, Mist) with glass cards, header and sidebar. The switcher sits in the page header; "Original" turns the theme off. The choice is kept in the viewer's browser (`ol.bg`). The stylesheet only overrides colour tokens and surface styles, so it must load after `onelink-redesign.css`.
