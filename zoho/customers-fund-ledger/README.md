@@ -23,15 +23,8 @@ The page is shared by link, so no P&L data is stored in it or in its shared data
 
 Upload both files to the artifact with `publish_files` (mode `patch`). `index.html` loads them with `<script src>` just before the `glass-ui` script, and holds the tab button (`data-t="pnl"`) and `<section id="p-pnl"><div id="pnlRoot"></div></section>`.
 
-# Fund intelligence tab
+# Fund requests tab
 
-`cfi.js` reads four Zoho Books custom modules live (`list_custom_module_records`, 200 a page) and `cfi-engine.js` (a browser copy of `server/cfi-engine.js`) works out each client's position:
+`cfi.js` shows every Client Payment Request (`cm_client_payment_request`, read live with `list_custom_module_records`) as a glass card with an analysis of the request: whether the client's CFDA funds cover it, what is committed to the client's other open requests, whether Zoho's own check is still current, possible duplicates, waiting time and the client's request history. `cfi-engine.js` is a browser copy of `server/cfi-engine.js`.
 
-| Module | Used for |
-|---|---|
-| `cm_client_cfda_balance` | received, paid out and balance per client |
-| `cm_client_payment_request` | open requests, and whether each is covered or short |
-| `cm_cfda_statement_line` | newest lines, and every line of a client when it is opened |
-| `cm_deal_submission` | listed as entered; fields are shown as they come |
-
-The Client Refund, Client Fund Intelligence, Fund Alert and Fund Audit Log modules described in `zoho/client-fund-intelligence/` are not read here; expected refunds and reserved funds are therefore taken as zero.
+The client's balance comes from `cm_client_cfda_balance`, and the client's latest CFDA entries (`cm_cfda_statement_line`) are read when a request is opened. Expected refunds and reserved funds are taken as zero. The background (six choices) is remembered in the viewer's browser.
