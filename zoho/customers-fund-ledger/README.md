@@ -22,3 +22,16 @@ The page is shared by link, so no P&L data is stored in it or in its shared data
 ## Publishing
 
 Upload both files to the artifact with `publish_files` (mode `patch`). `index.html` loads them with `<script src>` just before the `glass-ui` script, and holds the tab button (`data-t="pnl"`) and `<section id="p-pnl"><div id="pnlRoot"></div></section>`.
+
+# Fund intelligence tab
+
+`cfi.js` reads four Zoho Books custom modules live (`list_custom_module_records`, 200 a page) and `cfi-engine.js` (a browser copy of `server/cfi-engine.js`) works out each client's position:
+
+| Module | Used for |
+|---|---|
+| `cm_client_cfda_balance` | received, paid out and balance per client |
+| `cm_client_payment_request` | open requests, and whether each is covered or short |
+| `cm_cfda_statement_line` | newest lines, and every line of a client when it is opened |
+| `cm_deal_submission` | listed as entered; fields are shown as they come |
+
+The Client Refund, Client Fund Intelligence, Fund Alert and Fund Audit Log modules described in `zoho/client-fund-intelligence/` are not read here; expected refunds and reserved funds are therefore taken as zero.
