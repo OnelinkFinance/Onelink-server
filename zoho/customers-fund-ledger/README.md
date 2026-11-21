@@ -15,6 +15,12 @@ The "P&L review" tab of the Customers Fund Ledger page (Claude artifact). Two fi
 | Check | Probably in the wrong account (same supplier or wording is booked elsewhere nearly every time) · Client cost booked as overhead · Cost of sale with no client · Posted on the wrong side · Income booked by journal · Possible duplicates · Monthly cost missing or doubled · Unusually large for its account · Entered long after its date · Same kind of cost in two sections · Posted to a group account · Vague account · No reference · No description in Zoho Books · No receipt attached |
 | Tidy up | Accounts used once or twice · Accounts never used |
 
+## CFO review add-on (`pnl-cfo.js`)
+
+Loaded after `pnl-more.js` and before `pnl.js`. It wraps `window.PNLMore` to receive the tab's state and helpers and adds three views under the tab's first card, without changing `pnl.js`. Its months default to last month plus this month.
+
+Note: the live artifact also carries `pnl-more.js`, `freezone.html` and later edits to `pnl.js`, `cfi.js`, `ol-theme.css` and `ol-theme.js` that were published from another session and are not in this folder. Publish single files with `publish_files` (mode `patch`) and never overwrite those from here without reading the live copy first.
+
 ## Views
 
 | View | What it shows |
