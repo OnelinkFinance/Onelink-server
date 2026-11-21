@@ -218,6 +218,113 @@ function statement(R, monthSet) {
   return { secs, gross, oper, net, T };
 }
 
-const api = { analyse, statement, CHECKS, SEC_LABEL, addM, r2, median, normRef };
+/* ---------- line-by-line review: every entry gets a verdict and the reason it sits where it does ----------
+   Precedent = how the same supplier (or, with no supplier, the same merchant or the same reference wording) was
+   booked on every other entry. An entry is "justified" when it has a reference, nothing is flagged on it and its
+   account agrees with precedent, or it is a system document (invoice, credit note, payroll journal) that explains itself. */
+const VAGUE = /^(payment|paid|expense|expenses|misc|miscellaneous|other|others|charges?|fees?|na|n\/a|test|invoice|bill|transfer|cash|card|alaan|purchase)$/i;
+const POOL = /^(alaan suppliers?|suppliers?|vendor|vendors|misc|various|cash|petty cash|other|others|general)$/i;
+const SELF = new Set(['invoice', 'creditnote', 'customer_payment', 'invoice_payment', 'bill_payment', 'creditnote_refund', 'bad_debt']);
+function precedentKey(l) {
+  if (l.vname && !POOL.test(l.vname)) return ['supplier', l.vname.toLowerCase()];
+  if (l.merch) return ['merchant', l.merch.toLowerCase()];
+  const k = normRef(l.ref).split(' ').filter((w) => w.length > 2 && !/^\d+$/.test(w)).slice(0, 2).join(' ');
+  return k.length >= 5 ? ['wording', k] : null;
+}
+function review(R, monthSet) {
+  const flags = new Map();
+  for (const f of R.findings) for (const i of f.items) if (i.l) { if (!flags.has(i.l.atid)) flags.set(i.l.atid, []); flags.get(i.l.atid).push({ f, note: i.note, to: i.to || null }); }
+  /* precedent tables over the whole ledger, not only the chosen months */
+  const P = new Map();
+  for (const l of R.L) {
+    if (!l.doc) continue;
+    const pk = precedentKey(l); if (!pk) continue; l._pk = pk;
+    const k = pk[0] + '|' + pk[1]; if (!P.has(k)) P.set(k, { n: 0, by: new Map(), amts: new Map() });
+    const p = P.get(k); p.n++; p.by.set(l.a.id, (p.by.get(l.a.id) || 0) + 1);
+    if (!p.amts.has(l.a.id)) p.amts.set(l.a.id, []); p.amts.get(l.a.id).push(Math.abs(l.amt));
+  }
+  const rows = [];
+  for (const l of R.L) {
+    if (monthSet && !monthSet.has(l.m)) continue;
+    const a = l.a, fl = flags.get(l.atid) || [], issues = [], todo = [], basis = []; let strong = SELF.has(l.et);
+    let sev = 0; /* 0 justified, 1 to check, 2 must fix */
+    const push = (lv, text, act) => { issues.push(text); if (act) todo.push(act); if (lv > sev) sev = lv; };
+    for (const x of fl) {
+      const f = x.f; if (f.id === 'noref' || f.id === 'oneoff') continue;
+      push(f.sev === 'fix' ? 2 : f.sev === 'review' ? 1 : 0, f.title + (x.note ? ': ' + x.note : ''), f.todo);
+    }
+    /* reference */
+    if (l.doc && l.et !== 'bill') {
+      if (!l.ref && !l.desc) push(1, 'No reference and no description', 'Write what the money was for in the reference of the entry.');
+      else if (!l.ref) push(1, 'No reference (only a description)', 'Copy the purpose into the reference so it shows on the ledger.');
+      else if (VAGUE.test(l.ref.trim()) || l.ref.trim().length < 5) push(1, 'Reference “' + l.ref + '” does not say what it was for', 'Replace it with the supplier, the service and the client or period.');
+    }
+    /* precedent: where the same supplier / merchant / wording goes on other entries */
+    let prec = null;
+    if (l._pk) {
+      const p = P.get(l._pk[0] + '|' + l._pk[1]), others = p.n - 1, here = (p.by.get(a.id) || 0) - 1;
+      if (others >= 2) {
+        let top = null; for (const [id, c] of p.by) { const cc = id === a.id ? c - 1 : c; if (!top || cc > top[1]) top = [id, cc]; }
+        const ta = R.A.get(top[0]);
+        prec = { kind: l._pk[0], key: l._pk[1], others, here, top: ta, topN: top[1] };
+        if (here / others >= 0.6) { strong = true; basis.push('Same ' + l._pk[0] + ' is booked to this account on ' + here + ' of ' + others + ' other entries'); }
+        else if (ta && ta.id !== a.id && top[1] / others >= 0.75 && others >= 4) push(1, 'Same ' + l._pk[0] + ' is booked to “' + ta.name + '” on ' + top[1] + ' of ' + others + ' other entries, but here to “' + a.name + '”', 'Check the account; move it to “' + ta.name + '” if it is the same kind of cost.');
+        else basis.push('Same ' + l._pk[0] + ' is spread over ' + p.by.size + ' accounts (' + here + ' of ' + others + ' other entries here)');
+        const arr = (p.amts.get(a.id) || []).slice().sort((x, y) => x - y);
+        if (arr.length >= 4 && l._pk[0] !== 'wording') { const med = median(arr), v = Math.abs(l.amt); if (med > 0 && v >= med * 3 && v - med >= 1000) push(1, 'Amount is ' + (v / med).toFixed(1) + ' times the usual ' + med.toFixed(2) + ' for this ' + l._pk[0] + ' in this account', 'Confirm the amount against the invoice or receipt.'); else if (med > 0) basis.push('amount in line with the usual ' + med.toFixed(0)); }
+      } else if (l.doc) basis.push('No earlier entries for this ' + l._pk[0] + ' to compare with');
+    }
+    if (SELF.has(l.et)) basis.unshift((l.et === 'invoice' ? 'Sales invoice' : l.et === 'creditnote' ? 'Credit note' : 'System entry') + ' ' + (l.tno || '') + (l.cname ? ' to ' + l.cname : ''));
+    if (l.cname && (a.sec === 'cogs' || a.pass)) basis.push('linked to client ' + l.cname);
+    if (l.bk && l.bk.a) basis.push('receipt attached');
+    if (!SELF.has(l.et) && !basis.length && !issues.length) { basis.push('Has a reference; nothing else to compare it with'); }
+    /* an entry with nothing wrong but nothing to back it either stands on its reference alone */
+    const status = sev === 2 ? 'fix' : sev === 1 ? 'check' : strong || (l.bk && l.bk.a) ? 'ok' : 'thin';
+    if (status === 'thin') todo.push('Make sure the reference names the supplier, what was bought and the period or client, and attach the invoice.');
+    rows.push({ l, a, m: l.m, amt: l.amt, sev, status, issues, todo: [...new Set(todo)], basis: basis.join('; '), prec });
+  }
+  const sum = { n: rows.length, ok: 0, thin: 0, check: 0, fix: 0, amt: 0, okAmt: 0, thinAmt: 0, checkAmt: 0, fixAmt: 0 };
+  for (const r of rows) { const v = Math.abs(r.amt); sum[r.status]++; sum.amt += v; sum[r.status + 'Amt'] += v; }
+  return { rows, sum };
+}
+
+/* ---------- month pack: one month against the month before and the three-month average, with what moved ---------- */
+function monthPack(R, m) {
+  const prev = addM(m, -1), base = [1, 2, 3].map((k) => addM(m, -k)).filter((x) => R.months.includes(x));
+  const cur = statement(R, new Set([m])), pv = statement(R, new Set([prev]));
+  const avgOf = (a) => (base.length ? r2(base.reduce((t, x) => t + (a.by.get(x) || 0), 0) / base.length) : 0);
+  const lines = [], open = m >= R.curM; let pending = 0, pendingN = 0;
+  for (const a of R.A.values()) {
+    if (a.kids && !a.n) continue;
+    const v = a.by.get(m) || 0, p = a.by.get(prev) || 0, avg = avgOf(a);
+    const regular = base.filter((x) => (a.by.get(x) || 0) !== 0).length >= 2;
+    if (!v && !p && !avg) continue;
+    const ents = a.lines.filter((l) => l.m === m).sort((x, y) => Math.abs(y.amt) - Math.abs(x.amt));
+    const d = r2(v - avg), big = Math.abs(d) >= 2000 && (avg === 0 || Math.abs(d) / Math.abs(avg) >= 0.3);
+    let why = '';
+    if (big) {
+      if (!v) { why = open ? 'Not booked yet (the month is still open); usually about ' + avg.toFixed(0) + '.' : 'Nothing booked this month; usually about ' + avg.toFixed(0) + '. Check it was not missed or booked to another account.'; if (regular && (a.sec === 'opex' || a.sec === 'cogs' || a.sec === 'oexp') && avg > 0) { pending = r2(pending + avg); pendingN++; } }
+      else if (!avg) why = 'New this period: ' + ents.slice(0, 3).map((l) => (l.ref || l.vname || l.cname || l.tno || 'entry') + ' ' + l.amt.toFixed(0)).join('; ');
+      else why = (d > 0 ? 'Up' : 'Down') + ' ' + Math.abs(d).toFixed(0) + ' on the usual ' + avg.toFixed(0) + '. Largest: ' + ents.slice(0, 3).map((l) => (l.ref || l.vname || l.cname || l.tno || 'entry') + ' ' + l.amt.toFixed(0)).join('; ');
+    }
+    lines.push({ a, v: r2(v), prev: r2(p), avg, d, big, why, n: ents.length, missing: big && !v && regular && avg > 0 });
+  }
+  return { m, prev, base, open, pending, pendingN, cur: cur.T, pv: pv.T, lines };
+}
+
+/* ---------- change log from Zoho's own timestamps: what was entered or edited, and when ---------- */
+function changes(R, from, to, pick) {
+  const out = [];
+  for (const l of R.L) {
+    if (pick && !pick(l.a)) continue;
+    const c = l.ct ? l.ct.slice(0, 10) : '', e = l.lm ? l.lm.slice(0, 10) : '';
+    const inW = (d) => d && d >= from && d <= to;
+    if (inW(c)) { const late = l.td && days(l.td, c); out.push({ l, a: l.a, when: l.ct, kind: l.m < c.slice(0, 7) ? 'backdated' : 'created', note: l.m < c.slice(0, 7) ? 'Entered ' + c + ' but dated ' + l.td + ' (' + late + ' days earlier): it changed the ' + l.m + ' figures after that month ended' : 'Entered' }); }
+    if (inW(e) && e !== c && l.lm > l.ct) { const closed = l.m < e.slice(0, 7); out.push({ l, a: l.a, when: l.lm, kind: closed ? 'editclosed' : 'edited', note: (closed ? 'Edited ' + e + ' although it is dated ' + l.td + ': the ' + l.m + ' figures moved after that month ended' : 'Edited ' + e) + (l.ct ? ' (first entered ' + c + ')' : '') }); }
+  }
+  return out.sort((x, y) => y.when.localeCompare(x.when));
+}
+
+const api = { analyse, statement, review, monthPack, changes, CHECKS, SEC_LABEL, addM, r2, median, normRef };
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.PNLEngine = api;
 })(typeof window !== 'undefined' ? window : globalThis);

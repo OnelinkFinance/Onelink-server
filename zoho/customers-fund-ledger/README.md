@@ -15,6 +15,15 @@ The "P&L review" tab of the Customers Fund Ledger page (Claude artifact). Two fi
 | Check | Probably in the wrong account (same supplier or wording is booked elsewhere nearly every time) · Client cost booked as overhead · Cost of sale with no client · Posted on the wrong side · Income booked by journal · Possible duplicates · Monthly cost missing or doubled · Unusually large for its account · Entered long after its date · Same kind of cost in two sections · Posted to a group account · Vague account · No reference · No description in Zoho Books · No receipt attached |
 | Tidy up | Accounts used once or twice · Accounts never used |
 
+## Views
+
+| View | What it shows |
+|---|---|
+| Every entry | `PNLEngine.review()`: each income and cost entry of the period with a verdict (Justified, Reference only, To check, Must fix), what is wrong, what supports it (precedent: how the same supplier, merchant or reference wording is booked elsewhere) and what to do. |
+| Month pack | `PNLEngine.monthPack()`: a month against the previous month and its three-month average, the accounts that moved and the entries behind them, and regular costs with nothing booked. |
+| Change log | `PNLEngine.changes()`: entries entered or edited in the period by Zoho's timestamps, marking those that changed a month after it ended. Old and new values (account, amount, date, deletions) of cost-of-sales and disbursement entries come from a snapshot kept in the viewer's browser at each refresh. |
+| Overview | The checks list and the P&L by period. |
+
 ## Privacy
 
 The page is shared by link, so no P&L data is stored in it or in its shared database. Each viewer reads the figures with their own Zoho access; they are cached only in that viewer's browser (ledger lines for the tab session, Books descriptions for 12 hours).
