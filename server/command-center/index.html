@@ -1151,7 +1151,7 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
       const created = await call(S_ZOHO, 'ZohoAnalytics_createExportJobSQLQuery', { ...base, query_params: { CONFIG: JSON.stringify({ sqlQuery: sql, responseFormat: 'csv' }) } }, true);
       const jobId = created && created.data && created.data.data && created.data.data.jobId;
       if (!jobId) throw new Error('Zoho Analytics returned no export job');
-      for (let t0 = Date.now(), wait = 900; Date.now() - t0 < 20000; wait = Math.min(wait * 1.4, 3000)) {
+      for (let t0 = Date.now(), wait = 1200; Date.now() - t0 < 75000; wait = Math.min(wait * 1.4, 5000)) {
         await sleep(wait);
         try {
           const got = await mcp.callTool(S_ZOHO, 'ZohoAnalytics_downloadExportedData', { ...base, path_variables: { ...base.path_variables, 'job-id': String(jobId) } }, { cache: false });
@@ -1308,10 +1308,9 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
       // Line items of those invoices, and the quotes prepared for the free zones with their lines (to see which deal is on which document).
       try {
         const ids = core.TRACKED.map(z => sqlStr(z.booksCustomerId)).join(','), zoneOf = id => (core.TRACKED.find(z => z.booksCustomerId === String(id)) || {}).code;
-        const [li, qs, qi] = await Promise.all([
-          zsql(`select it."Invoice ID" as invoice_id, it."Item Name" as item_name, round(it."Sub Total (BCY)", 2) as amount from "Invoice Items" it join "Invoices" i on it."Invoice ID" = i."Invoice ID" where i."Customer ID" in (${ids}) and i."Invoice Date" >= ${sqlStr(months[0] + '-01')}`, fresh),
-          zsql(`select "Quote ID", "Quote Number", "Quote Date", "Status", "Customer ID", "Purchase Order#" from "Quotes" where "Customer ID" in (${ids})`, fresh),
-          zsql(`select qi."Quote ID" as quote_id, round(qi."Sub Total (BCY)", 2) as amount from "Quote Items" qi join "Quotes" q on qi."Quote ID" = q."Quote ID" where q."Customer ID" in (${ids})`, fresh)]);
+        const li = await zsql(`select it."Invoice ID" as invoice_id, it."Item Name" as item_name, round(it."Sub Total (BCY)", 2) as amount from "Invoice Items" it join "Invoices" i on it."Invoice ID" = i."Invoice ID" where i."Customer ID" in (${ids}) and i."Invoice Date" >= ${sqlStr(months[0] + '-01')}`, fresh);
+        const qs = await zsql(`select "Quote ID", "Quote Number", "Quote Date", "Status", "Customer ID", "Purchase Order#" from "Quotes" where "Customer ID" in (${ids})`, fresh);
+        const qi = await zsql(`select qi."Quote ID" as quote_id, round(qi."Sub Total (BCY)", 2) as amount from "Quote Items" qi join "Quotes" q on qi."Quote ID" = q."Quote ID" where q."Customer ID" in (${ids})`, fresh);
         const byId = new Map(zoneInv.map(z => [String(z.id), z]));
         zoneLines = li.filter(r => byId.has(String(r.invoice_id)) && !/draft/i.test(byId.get(String(r.invoice_id)).status)).map(r => { const z = byId.get(String(r.invoice_id)); return { docId: z.id, number: z.number, zone: z.zone, period: z.period, date: z.date, status: z.status, item: r.item_name || '', amount: money2(r.amount) }; });
         const quotes = new Map(qs.filter(q => !/invoiced|declined|expired|void/i.test(q['Status'])).map(q => { const date = core.parseSheetDate(q['Quote Date']).date, pr = core.invoicePeriod({ invoice_number: q['Quote Number'], reference_number: q['Purchase Order#'], date }); return [String(q['Quote ID']), { docId: q['Quote ID'], number: String(q['Quote Number']).toUpperCase(), zone: zoneOf(q['Customer ID']), period: pr.month, date, status: String(q['Status'] || '').toLowerCase() }]; }));
@@ -1757,14 +1756,15 @@ return { OTHER, TRACKED, ZONES, addDays, addMonths, buildDashboard, cellsOf, cla
     const done = k.deals ? Math.round(k.completed / k.deals * 100) : 0, invPct = k.commission ? Math.min(100, Math.round(k.invoiced / k.commission * 100)) : 0;
     const per = data.pm.length > 1 ? ` · avg ${aed(k.commission / data.pm.length)}/month` : '';
     const recSeries = data.summary.map(s => received([s.month]).reduce((a, x) => a + (x.amount || 0), 0));
+    const zok = !!(data.sources.zoho && data.sources.zoho.ok), zv = v => zok ? v : '—', zn = n => zok ? n : 'Zoho Books was not read — see the red message above, then press Refresh live';
     const tiles = [
       ['commission', 'Commission earned', aed(k.commission), `${esc(data.periodLabel)}${per}${delta != null ? ` · <span class="delta ${delta >= 0 ? 'up' : 'down'}">${delta >= 0 ? '▲' : '▼'} ${Math.abs(delta)}% vs ${vsLabel}</span>` : ''}`, '', { scope: 'period' }],
-      ['invoiced', 'Invoiced to free zones', aed(k.invoiced), `${invPct}% of earned · Zoho Books commission invoices for these months, ex VAT`, `<div class="bar"><span class="g" style="width:${invPct}%"></span><span class="w" style="width:${100 - invPct}%"></span></div>`, null],
-      ['collected', 'Collected', aed(k.collected), `Paid on ${k.collectedCount} commission invoice${k.collectedCount === 1 ? '' : 's'} billing these months · incl. VAT`, '', null],
-      ['uninvoiced', 'Not yet invoiced', aed(k.uninvoiced), `All ${data.summary.length} months: ${aed(k.uninvoicedAll)}`, '', { scope: 'period', status: 'Pending commission invoice' }],
-      ['toCollect', 'Still to collect', aed(k.toCollect), k.toCollect == null ? 'Zoho Books not read' : `${k.toCollectCount} invoices open today · Zoho Books`, `<div class="bar" aria-label="Aging">${ag.filter(b => b.amt).map(b => `<span class="${b.cls}" style="width:${b.amt / agTot * 100}%" title="${b.l}: AED ${aedFull(b.amt)}"></span>`).join('')}</div>`, null],
-      ['ready', 'Ready to invoice', aed(k.ready), `${k.readyCount} deal${k.readyCount === 1 ? '' : 's'} · client paid in Zoho Books · ${aed(k.waiting)} waiting on client payment`, '', null],
-      ['deals', 'Free zone deals', String(k.deals), `${k.newCount} new · ${k.renewalCount} renewals · ${k.completed} complete`, `<div class="bar"><span class="g" style="width:${done}%"></span><span class="w" style="width:${100 - done}%"></span></div>`, { scope: 'period' }],
+      ['invoiced', 'Invoiced to free zones', zv(aed(k.invoiced)), zn(`${invPct}% of earned · Zoho Books commission invoices for these months, ex VAT`), `<div class="bar"><span class="g" style="width:${invPct}%"></span><span class="w" style="width:${100 - invPct}%"></span></div>`, null],
+      ['collected', 'Collected', zv(aed(k.collected)), zn(`Paid on ${k.collectedCount} commission invoice${k.collectedCount === 1 ? '' : 's'} billing these months · incl. VAT`), '', null],
+      ['uninvoiced', 'Not yet invoiced', zv(aed(k.uninvoiced)), zn(`All ${data.summary.length} months: ${aed(k.uninvoicedAll)}`), '', { scope: 'period', status: 'Pending commission invoice' }],
+      ['toCollect', 'Still to collect', zv(aed(k.toCollect)), !zok || k.toCollect == null ? zn('') : `${k.toCollectCount} invoices open today · Zoho Books`, `<div class="bar" aria-label="Aging">${ag.filter(b => b.amt).map(b => `<span class="${b.cls}" style="width:${b.amt / agTot * 100}%" title="${b.l}: AED ${aedFull(b.amt)}"></span>`).join('')}</div>`, null],
+      ['ready', 'Ready to invoice', zv(aed(k.ready)), zn(`${k.readyCount} deal${k.readyCount === 1 ? '' : 's'} · client paid in Zoho Books · ${aed(k.waiting)} waiting on client payment`), '', null],
+      ['deals', 'Free zone deals', String(k.deals), zok ? `${k.newCount} new · ${k.renewalCount} renewals · ${k.completed} complete` : `${k.newCount} new · ${k.renewalCount} renewals · invoicing not checked (Zoho Books not read)`, `<div class="bar"><span class="g" style="width:${done}%"></span><span class="w" style="width:${100 - done}%"></span></div>`, { scope: 'period' }],
       ['renewals', 'Renewals due', String(k.renewals), `${k.overdue} overdue · within ${data.windowDays} days of today`, '', null]
     ];
     $('kpis').innerHTML = tiles.map(([key, l, v, n, viz, go], i) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="n">${n}</div>${viz || ''}<div class="foot">${go ? `<button class="btn sm" type="button" data-kgo="${i}">View deals</button>` : key === 'ready' ? '<button class="btn sm" type="button" data-ktab="ready">View deals</button>' : key === 'toCollect' || key === 'collected' || key === 'invoiced' ? '<button class="btn sm" type="button" data-ktab="invoices">View invoices</button>' : key === 'renewals' ? '<button class="btn sm" type="button" data-ktab="renewals">View renewals</button>' : ''}</div><button class="how" type="button" data-kpi="${key}" aria-label="How is ${esc(l)} calculated?">How?</button></div>`).join('');
