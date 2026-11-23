@@ -49,3 +49,9 @@ Each request shows who created it (the Zoho Books user behind `created_by_id`; n
 # Page-wide glass theme
 
 `ol-theme.css` and `ol-theme.js` put the whole page on a chosen background (Aurora, Emerald, Dusk, Ocean, Sand, Mist) with glass cards, header and sidebar. The switcher sits in the page header; "Original" turns the theme off. The choice is kept in the viewer's browser (`ol.bg`). The stylesheet only overrides colour tokens and surface styles, so it must load after `onelink-redesign.css`.
+
+## Submitted vs Approved (Fund requests)
+
+Each request has a stage taken from Zoho: **Submitted** (`status = pending_approval`), **Approved** (`approved`, not paid), **Paid** (`cf_status` Paid), **Rejected** (`status = rejected` or `cf_status` Rejected), Draft. The tab shows two worklists, "To pay" (approved) and "To approve" (submitted), each with its count, AED total, how many are short and the oldest. Cards carry a stamp (solid for Approved, dashed for Submitted), a Submitted → Approved → Paid rail, and an answer for the stage ("Ready to pay" / "Hold payment", "Can be approved" / "Do not approve yet").
+
+Funds are judged by stage: approved requests have first call on the client's CFDA balance; a submitted request is judged on what is left after them, with a warning when approving all of the client's submitted requests together would leave it short. Extra checks: paid date entered but not marked Paid, paid date before the request was raised, marked Paid without approval or without a paid date, payment status Rejected while Zoho still shows Submitted, same client and amount as a request already approved or paid, approved and unpaid for more than 14 days. Zoho's list does not return who approved a request or when, so waiting times count from the day it was raised.
