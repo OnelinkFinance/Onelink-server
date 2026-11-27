@@ -1,0 +1,213 @@
+// =====================================================================================================
+// Client Payment Request: CFDA balance check and re-verification
+// Zoho Books org: ELITE ONELINK CORPORATE SERVICES L.L.C S.O.C (898300452)
+// =====================================================================================================
+//
+// WHY THIS EXISTS
+//   The original check runs once, when a request is created, so "CFDA balance", "Covered or Short" and the
+//   recommendation go stale as money moves. Example: BuzzManagment LTD / Roland Josef Higyed was checked at
+//   2026-11-26 16:44 (balance AED 65, short AED 250) and never re-checked, although his Client CFDA Balance
+//   row changed to AED 380 the next morning.
+//
+//   The AED 315 behind that change is an Expense paid THROUGH the Customers Fund Disbursement Account
+//   (account type: other current liability). Paying through a liability CREDITS it, so the ledger, and the
+//   balance engine reading it, show the client's funds going UP by 315 when money went out. Correct pattern
+//   (e.g. MarAbierto, 26 Nov): expense account = CFDA, paid through = Alaan/bank.
+//   A blind re-check would therefore turn a short client into "Covered". This function re-checks, but treats
+//   any expense paid through CFDA as SUSPECT and never reports "Covered" if the client is only covered
+//   because of one.
+//
+// INSTALL (Zoho Books > Settings > Automation)
+//   1. Connections: create a Zoho OAuth connection named "zbooks" with scopes
+//      ZohoBooks.custommodules.ALL, ZohoBooks.expenses.READ.
+//   2. Custom Functions > Client Payment Request > New: paste reverifyPaymentRequest (argument:
+//      cm_client_payment_request, type Map). Workflow Rule on Client Payment Request: When "Created or Edited",
+//      action = this function. This replaces the create-only check.
+//   3. Custom Functions > Client CFDA Balance > New: paste reverifyOnBalanceChange (argument:
+//      cm_client_cfda_balance, type Map). Workflow Rule on Client CFDA Balance: When "Created or Edited".
+//      Every time the balance engine updates a client's balance, all that client's open requests re-check.
+//   4. Schedules > New, hourly: call reverifyAllOpenRequests() as a safety net.
+//   5. Check the API name of the "Recommendation" field (Settings > Modules > Client Payment Request).
+//      This script assumes cf_recommendation; change REC_FIELD below if it differs.
+//
+// Books custom functions cannot call each other, so functions 2 and 3 do not run the check themselves: they
+// stamp "Recheck requested" (cf_recheck_requested, assumed a single-line text field) on each open request,
+// and that edit fires function 1's workflow. If that field is a checkbox or dropdown, change the stamped value.
+//
+// Loop guard: function 1 writes to a request only when a check value actually changes, so its own edit
+// re-triggers it once at most and then stops.
+// =====================================================================================================
+
+
+// ---------- 1. Re-verify ONE request (workflow on Client Payment Request: created or edited) ----------
+void reverifyPaymentRequest(map cm_client_payment_request)
+{
+	ORG = "898300452";
+	CFDA_ACCOUNT_ID = "7050654000000685179";   // Customers Fund Disbursement Account
+	REC_FIELD = "cf_recommendation";
+	API = "https://www.zohoapis.com/books/v3/";
+
+	reqId = cm_client_payment_request.get("module_record_id");
+	// Always read the record fresh: the workflow map can be stale or partial.
+	r = invokeurl [ url: API + "cm_client_payment_request/" + reqId + "?organization_id=" + ORG type: GET connection: "zbooks" ];
+	req = r.get("module_record");
+	if(req == null) { info "Request " + reqId + " not found"; return; }
+
+	// Finished requests keep the figures they were approved on.
+	payStatus = ifnull(req.get("cf_status"), "");
+	recStatus = ifnull(req.get("status"), "");
+	if(payStatus.contains("Paid") || payStatus.contains("Rejected") || recStatus == "approved" || recStatus == "rejected") { return; }
+
+	clientId = ifnull(req.get("cf_client"), "");
+	clientName = ifnull(req.get("cf_client_formatted"), "");
+	amount = ifnull(req.get("cf_amount_aed"), 0).toDecimal();
+	if(clientId == "") { return; }
+
+	// --- A. Recorded CFDA balance: the client's Client CFDA Balance row (record_name = client name) ---
+	balance = 0.0;
+	balanceFound = false;
+	b = invokeurl [ url: API + "cm_client_cfda_balance?organization_id=" + ORG + "&per_page=50&search_text=" + encodeUrl(clientName) type: GET connection: "zbooks" ];
+	for each row in ifnull(b.get("module_records"), list())
+	{
+		if(ifnull(row.get("cf_client"), "") == clientId)
+		{
+			balance = ifnull(row.get("cf_cfda_balance"), 0).toDecimal();
+			balanceFound = true;
+		}
+	}
+
+	// --- B. Suspect entries: expenses for this client paid THROUGH CFDA (they raise the balance) ---
+	suspect = 0.0;
+	suspectRefs = list();
+	page = 1;
+	more = true;
+	while(more && page <= 10)
+	{
+		e = invokeurl [ url: API + "expenses?organization_id=" + ORG + "&customer_id=" + clientId + "&per_page=200&page=" + page type: GET connection: "zbooks" ];
+		for each x in ifnull(e.get("expenses"), list())
+		{
+			if(ifnull(x.get("paid_through_account_id"), "") == CFDA_ACCOUNT_ID)
+			{
+				suspect = suspect + ifnull(x.get("total"), 0).toDecimal();
+				suspectRefs.add(ifnull(x.get("date"), "") + " " + ifnull(x.get("reference_number"), x.get("expense_id")) + " AED " + x.get("total"));
+			}
+		}
+		more = e.get("page_context") != null && e.get("page_context").get("has_more_page") == true;
+		page = page + 1;
+	}
+
+	// --- C. Committed to this client's other open requests ---
+	committed = 0.0;
+	page = 1;
+	more = true;
+	while(more && page <= 20)
+	{
+		o = invokeurl [ url: API + "cm_client_payment_request?organization_id=" + ORG + "&per_page=200&page=" + page type: GET connection: "zbooks" ];
+		for each q in ifnull(o.get("module_records"), list())
+		{
+			qs = ifnull(q.get("cf_status"), "");
+			if(q.get("module_record_id") != reqId && ifnull(q.get("cf_client"), "") == clientId && q.get("status") == "pending_approval" && !qs.contains("Paid") && !qs.contains("Rejected"))
+			{
+				committed = committed + ifnull(q.get("cf_amount_aed"), 0).toDecimal();
+			}
+		}
+		more = o.get("page_context") != null && o.get("page_context").get("has_more_page") == true;
+		page = page + 1;
+	}
+
+	// --- D. Verdict ---
+	available = balance - committed - amount;
+	// Worst case: each suspect expense is really money OUT, so it was counted +X instead of -X.
+	worst = available - 2 * suspect;
+	if(!balanceFound)
+	{
+		verdict = "⚠️ Not verified";
+		rec = "⚠️ Hold - no Client CFDA Balance row found for " + clientName + ". Check the client link, then save again.";
+	}
+	else if(available < 0)
+	{
+		verdict = "⛔ Short";
+		rec = "⛔ Reject or hold - client is short by AED " + (0 - available).round(2) + ". Collect funds first, or approve as override.";
+	}
+	else if(suspect > 0 && worst < 0)
+	{
+		verdict = "⚠️ Check bookings";
+		rec = "⚠️ Hold - covered only because AED " + suspect.round(2) + " of expenses were paid THROUGH the CFDA account, which raises the balance. If they were payments out, the client is short by AED " + (0 - worst).round(2) + ". Re-book (expense account = CFDA) and save again. " + suspectRefs.toString("; ");
+	}
+	else
+	{
+		verdict = "✅ Covered";
+		rec = "✅ Approve - AED " + available.round(2) + " remains after this request.";
+	}
+	checkedAt = zoho.currenttime.toString("yyyy-MM-dd HH:mm", "Asia/Dubai") + " Dubai";
+
+	// --- E. Write back only if something changed (loop guard) ---
+	same = ifnull(req.get("cf_cfda_balance"), "").toString() == balance.toString()
+		&& ifnull(req.get("cf_committed_to_other_open_requests"), "").toString() == committed.toString()
+		&& ifnull(req.get("cf_available_after_this_request"), "").toString() == available.toString()
+		&& ifnull(req.get("cf_covered_or_short"), "") == verdict
+		&& ifnull(req.get(REC_FIELD), "") == rec;
+	if(same) { return; }
+
+	body = Map();
+	body.put("cf_cfda_balance", balance);
+	body.put("cf_committed_to_other_open_requests", committed);
+	body.put("cf_available_after_this_request", available);
+	body.put("cf_covered_or_short", verdict);
+	body.put("cf_balance_checked_at", checkedAt);
+	body.put(REC_FIELD, rec);
+	u = invokeurl [ url: API + "cm_client_payment_request/" + reqId + "?organization_id=" + ORG type: PUT parameters: body.toString() headers: {"Content-Type":"application/json"} connection: "zbooks" ];
+	info "Re-verified " + reqId + ": " + verdict + " | " + u.get("message");
+}
+
+
+// ---------- 2. Balance changed: re-verify that client's open requests (workflow on Client CFDA Balance) ----------
+void reverifyOnBalanceChange(map cm_client_cfda_balance)
+{
+	ORG = "898300452";
+	API = "https://www.zohoapis.com/books/v3/";
+	clientId = ifnull(cm_client_cfda_balance.get("cf_client"), "");
+	if(clientId == "") { return; }
+	page = 1;
+	more = true;
+	while(more && page <= 20)
+	{
+		o = invokeurl [ url: API + "cm_client_payment_request?organization_id=" + ORG + "&per_page=200&page=" + page type: GET connection: "zbooks" ];
+		for each q in ifnull(o.get("module_records"), list())
+		{
+			if(ifnull(q.get("cf_client"), "") == clientId && q.get("status") == "pending_approval")
+			{
+				touch = Map();
+				touch.put("cf_recheck_requested", zoho.currenttime.toString("yyyy-MM-dd HH:mm:ss", "Asia/Dubai"));
+				invokeurl [ url: API + "cm_client_payment_request/" + q.get("module_record_id") + "?organization_id=" + ORG type: PUT parameters: touch.toString() headers: {"Content-Type":"application/json"} connection: "zbooks" ];
+			}
+		}
+		more = o.get("page_context") != null && o.get("page_context").get("has_more_page") == true;
+		page = page + 1;
+	}
+}
+
+
+// ---------- 3. Hourly safety net: re-verify every open request ----------
+void reverifyAllOpenRequests()
+{
+	ORG = "898300452";
+	API = "https://www.zohoapis.com/books/v3/";
+	page = 1;
+	more = true;
+	while(more && page <= 20)
+	{
+		o = invokeurl [ url: API + "cm_client_payment_request?organization_id=" + ORG + "&per_page=200&page=" + page type: GET connection: "zbooks" ];
+		for each q in ifnull(o.get("module_records"), list())
+		{
+			if(q.get("status") == "pending_approval")
+			{
+				touch = Map();
+				touch.put("cf_recheck_requested", zoho.currenttime.toString("yyyy-MM-dd HH:mm:ss", "Asia/Dubai"));
+				invokeurl [ url: API + "cm_client_payment_request/" + q.get("module_record_id") + "?organization_id=" + ORG type: PUT parameters: touch.toString() headers: {"Content-Type":"application/json"} connection: "zbooks" ];
+			}
+		}
+		more = o.get("page_context") != null && o.get("page_context").get("has_more_page") == true;
+		page = page + 1;
+	}
+}
